@@ -135,6 +135,12 @@ CURVATURE_HOLD_ONSET_HEADING = 10.0    # deg of plan heading change that marks t
 CURVATURE_HOLD_ONSET_NEAR = 1.5        # m; corner this close -> full pre-wind
 CURVATURE_HOLD_ONSET_FAR_GATE = 5.0    # m; corner past this -> no pre-wind yet
 CURVATURE_HOLD_ONSET_FAR = 100.0       # m; sentinel "no corner found"
+# Path-reach gate: at a stop the plan can collapse to a 1-3 m stub that the 4/7 m probe
+# over-reads, freezing a capped hold that dumps full curvature on pull-away (wide-left
+# curb cut). Below the far lookahead the turn can't be estimated: scale 0 below MIN to
+# full at FULL; reach jumps past the gate the instant the car creeps.
+CURVATURE_HOLD_REACH_MIN = 7.0    # m; plan shorter than the far lookahead -> no pre-wind
+CURVATURE_HOLD_REACH_FULL = 12.0  # m; plan long enough to trust
 # The model counter-steers at every turn exit; an opposite-direction command is the
 # "turn is over" signal at any speed. Without this the floor converted the exit unwind
 # (-0.076) into a stuck +0.012 for 1.4 s and the driver had to unwind by hand
@@ -206,6 +212,12 @@ def get_plan_turn_onset_dist(model_v2) -> float:
     if abs(math.degrees(math.atan2(dy, dx))) > CURVATURE_HOLD_ONSET_HEADING:
       return math.hypot(xs[i], ys[i])
   return CURVATURE_HOLD_ONSET_FAR
+
+
+def get_plan_reach(model_v2) -> float:
+  # forward extent of the plan; collapses toward 0 at a standstill or planned stop
+  xs = model_v2.position.x
+  return xs[-1] if len(xs) else 0.0
 
 
 # Turn-initiation lead. The model's action and the fixed 4/7 m probes are anchored in
@@ -531,7 +543,12 @@ class Controls:
           onset = get_plan_turn_onset_dist(model_v2)
           onset_w = min(max((CURVATURE_HOLD_ONSET_FAR_GATE - onset) /
                             (CURVATURE_HOLD_ONSET_FAR_GATE - CURVATURE_HOLD_ONSET_NEAR), 0.0), 1.0)
-          plan_curvature *= onset_w
+          # Path-reach gate (CURVATURE_HOLD_REACH_*): a short standstill stub can't
+          # estimate the turn; suppress the pre-wind until the path is real.
+          reach = get_plan_reach(model_v2)
+          reach_w = min(max((reach - CURVATURE_HOLD_REACH_MIN) /
+                            (CURVATURE_HOLD_REACH_FULL - CURVATURE_HOLD_REACH_MIN), 0.0), 1.0)
+          plan_curvature *= onset_w * reach_w
           if plan_curvature * blinker_dir > turn_candidate * blinker_dir:
             turn_candidate = plan_curvature
         # Nudge-to-commit (see CURVATURE_HOLD_CONFIRM_*): the driver actively pushing in
