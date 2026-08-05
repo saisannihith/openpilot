@@ -54,6 +54,7 @@ DISPLAY_MENU_TIMER = 350                  # The length of time the following dis
 EARTH_RADIUS = 6378137                    # Radius of the Earth in meters
 MAX_ACCELERATION = 4.0                    # ISO 15622:2018
 MAX_T_FOLLOW = 3.0                        # Maximum allowed following duration. Larger values risk losing track of the lead but may be increased as models improve
+MIN_T_FOLLOW = 0.75                       # Minimum configurable base following duration; safety buffers remain applied downstream
 MINIMUM_LATERAL_ACCELERATION = 1.3        # m/s^2, typical minimum lateral acceleration when taking curves
 PLANNER_TIME = ModelConstants.T_IDXS[-1]  # Length of time the model projects out for
 THRESHOLD = 1 - 1 / math.e                # Requires the condition to be true for ~1 second
@@ -861,24 +862,24 @@ class StarPilotVariables:
     toggle.aggressive_jerk_danger = self.get_value("AggressiveJerkDanger", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.aggressive_jerk_speed = self.get_value("AggressiveJerkSpeed", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.aggressive_jerk_speed_decrease = self.get_value("AggressiveJerkSpeedDecrease", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
-    aggressive_follow_low = float(self.get_value("AggressiveFollow", cast=float, condition=toggle.custom_personalities, min=1, max=MAX_T_FOLLOW))
-    aggressive_follow_high = float(self.get_value("AggressiveFollowHigh", cast=float, condition=toggle.custom_personalities, min=1, max=MAX_T_FOLLOW))
+    aggressive_follow_low = float(self.get_value("AggressiveFollow", cast=float, condition=toggle.custom_personalities, min=MIN_T_FOLLOW, max=MAX_T_FOLLOW))
+    aggressive_follow_high = float(self.get_value("AggressiveFollowHigh", cast=float, condition=toggle.custom_personalities, min=MIN_T_FOLLOW, max=MAX_T_FOLLOW))
     toggle.aggressive_follow = [aggressive_follow_low, aggressive_follow_high]
     toggle.standard_jerk_acceleration = self.get_value("StandardJerkAcceleration", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.standard_jerk_deceleration = self.get_value("StandardJerkDeceleration", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.standard_jerk_danger = self.get_value("StandardJerkDanger", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.standard_jerk_speed = self.get_value("StandardJerkSpeed", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.standard_jerk_speed_decrease = self.get_value("StandardJerkSpeedDecrease", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
-    standard_follow_low = float(self.get_value("StandardFollow", cast=float, condition=toggle.custom_personalities, min=1, max=MAX_T_FOLLOW))
-    standard_follow_high = float(self.get_value("StandardFollowHigh", cast=float, condition=toggle.custom_personalities, min=1, max=MAX_T_FOLLOW))
+    standard_follow_low = float(self.get_value("StandardFollow", cast=float, condition=toggle.custom_personalities, min=MIN_T_FOLLOW, max=MAX_T_FOLLOW))
+    standard_follow_high = float(self.get_value("StandardFollowHigh", cast=float, condition=toggle.custom_personalities, min=MIN_T_FOLLOW, max=MAX_T_FOLLOW))
     toggle.standard_follow = [standard_follow_low, standard_follow_high]
     toggle.relaxed_jerk_acceleration = self.get_value("RelaxedJerkAcceleration", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.relaxed_jerk_deceleration = self.get_value("RelaxedJerkDeceleration", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.relaxed_jerk_danger = self.get_value("RelaxedJerkDanger", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.relaxed_jerk_speed = self.get_value("RelaxedJerkSpeed", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
     toggle.relaxed_jerk_speed_decrease = self.get_value("RelaxedJerkSpeedDecrease", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0)
-    relaxed_follow_low = float(self.get_value("RelaxedFollow", cast=float, condition=toggle.custom_personalities, min=1, max=MAX_T_FOLLOW))
-    relaxed_follow_high = float(self.get_value("RelaxedFollowHigh", cast=float, condition=toggle.custom_personalities, min=1, max=MAX_T_FOLLOW))
+    relaxed_follow_low = float(self.get_value("RelaxedFollow", cast=float, condition=toggle.custom_personalities, min=MIN_T_FOLLOW, max=MAX_T_FOLLOW))
+    relaxed_follow_high = float(self.get_value("RelaxedFollowHigh", cast=float, condition=toggle.custom_personalities, min=MIN_T_FOLLOW, max=MAX_T_FOLLOW))
     toggle.relaxed_follow = [relaxed_follow_low, relaxed_follow_high]
     toggle.traffic_mode_jerk_acceleration = [self.get_value("TrafficJerkAcceleration", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0), toggle.relaxed_jerk_acceleration]
     toggle.traffic_mode_jerk_deceleration = [self.get_value("TrafficJerkDeceleration", cast=float, condition=toggle.custom_personalities, conversion=0.01, min=0.25, max=2.0), toggle.relaxed_jerk_deceleration]
