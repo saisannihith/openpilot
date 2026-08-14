@@ -125,6 +125,23 @@ def get_test_toggles() -> SimpleNamespace:
 
 
 class TestHyundaiFingerprint:
+  def test_carnival_2024_torque_tune_and_slew(self):
+    carnival_cp = CarInterface.get_non_essential_params(CAR.KIA_CARNIVAL_4TH_GEN)
+    carnival_torque = carnival_cp.lateralTuning.torque
+
+    assert carnival_torque.latAccelFactor == pytest.approx(1.63)
+    assert carnival_torque.friction == pytest.approx(0.134)
+
+    low_speed_limits = CarControllerParams(carnival_cp, vEgoRaw=14.9)
+    highway_limits = CarControllerParams(carnival_cp, vEgoRaw=15.0)
+    assert (low_speed_limits.STEER_DELTA_UP, low_speed_limits.STEER_DELTA_DOWN) == (10, 8)
+    assert (highway_limits.STEER_DELTA_UP, highway_limits.STEER_DELTA_DOWN) == (3, 5)
+    assert highway_limits.STEER_MAX == 409
+
+    carnival_2025_cp = CarInterface.get_non_essential_params(CAR.KIA_CARNIVAL_2025)
+    carnival_2025_limits = CarControllerParams(carnival_2025_cp, vEgoRaw=15.0)
+    assert (carnival_2025_limits.STEER_DELTA_UP, carnival_2025_limits.STEER_DELTA_DOWN) == (2, 3)
+
   def test_carnival_2024_uses_clean_canfd_lfa_status(self):
     assert not preserve_stock_canfd_lfa_status(CAR.KIA_CARNIVAL_4TH_GEN)
     assert preserve_stock_canfd_lfa_status(CAR.KIA_CARNIVAL_2025)
