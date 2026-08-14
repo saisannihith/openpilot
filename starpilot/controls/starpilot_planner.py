@@ -326,6 +326,9 @@ class StarPilotPlanner:
     starpilotPlan.cscControllingSpeed = self.starpilot_vcruise.csc_controlling_speed
     starpilotPlan.cscSpeed = float(self.starpilot_vcruise.csc_target)
     starpilotPlan.cscTraining = self.starpilot_vcruise.csc.enable_training
+    starpilotPlan.cscOverridden = self.starpilot_vcruise.csc_override
+    starpilotPlan.cscLearnedLatAccel = float(self.starpilot_vcruise.csc.learned_lat_accel(self.road_curvature))
+    starpilotPlan.cscBindingDistance = float(self.starpilot_vcruise.csc.binding_distance)
 
     starpilotPlan.desiredFollowDistance = int(self.starpilot_following.desired_follow_distance)
     starpilotPlan.disableThrottle = self.starpilot_following.disable_throttle

@@ -758,6 +758,19 @@
         "settings_tier": "simple"
       },
       {
+        "key": "CurveSpeedMargin",
+        "label": "Curve Speed Margin",
+        "description": "How much of your learned cornering comfort to use for curves. Lower slows more; 100% matches how you take curves yourself.",
+        "data_type": "int",
+        "ui_type": "numeric",
+        "min": 70.0,
+        "max": 100.0,
+        "step": 5.0,
+        "unit": "%",
+        "parent_key": "CurveSpeedController",
+        "settings_tier": "simple"
+      },
+      {
         "key": "ShowCSCStatus",
         "label": "Status Widget",
         "description": "Show the \"Curve Speed Controller\" target speed on the driving screen.",

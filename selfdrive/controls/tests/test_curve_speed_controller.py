@@ -183,6 +183,51 @@ def test_comfort_margin_aims_below_the_learned_habit():
   assert controller.lat_accel_for_curvature(0.01) < controller.learned_lat_accel(0.01)
 
 
+def test_margin_slider_overrides_the_default():
+  _, controller = make_controller()
+  controller.starpilot_toggles = SimpleNamespace(csc_margin=0.7)
+
+  assert controller.comfort_margin == pytest.approx(0.7)
+  assert controller.lat_accel_for_curvature(0.01) == pytest.approx(
+    controller.learned_lat_accel(0.01) * 0.7)
+
+
+def test_margin_falls_back_to_default_without_toggles():
+  _, controller = make_controller()
+
+  # toggles are only attached once vcruise runs; a missing/zero value must not
+  # collapse the allowance to nothing
+  assert controller.comfort_margin == pytest.approx(CSC_COMFORT_MARGIN)
+  controller.starpilot_toggles = SimpleNamespace(csc_margin=0.0)
+  assert controller.comfort_margin == pytest.approx(CSC_COMFORT_MARGIN)
+
+
+def test_lower_margin_engages_on_gentler_curves():
+  planner, controller = make_controller(curve_profile=single_apex_profile(0.004, 0.0))
+  controller.starpilot_toggles = SimpleNamespace(csc_margin=1.0)
+  relaxed = converge(controller, 30.0, 30.0)
+
+  planner2, aggressive_controller = make_controller(curve_profile=single_apex_profile(0.004, 0.0))
+  aggressive_controller.starpilot_toggles = SimpleNamespace(csc_margin=0.7)
+  aggressive = converge(aggressive_controller, 30.0, 30.0)
+
+  assert aggressive < relaxed
+
+
+def test_binding_distance_reports_the_constraining_point():
+  _, controller = make_controller(curve_profile=single_apex_profile(0.02, 150.0))
+  converge(controller, 30.0, 30.0)
+
+  assert controller.binding_distance == pytest.approx(150.0, abs=1.0)
+
+
+def test_binding_distance_is_zero_when_unconstrained():
+  _, controller = make_controller()
+  converge(controller, 30.0, 30.0)
+
+  assert controller.binding_distance == 0.0
+
+
 def test_heavily_sampled_bucket_dominates_prior():
   _, controller = make_controller(curvature_data={"0.05": {"average": 3.0, "count": 100000}})
 

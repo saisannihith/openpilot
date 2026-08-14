@@ -5,7 +5,13 @@ from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 
-from openpilot.starpilot.common.starpilot_variables import CITY_SPEED_LIMIT, CRUISING_SPEED, DEFAULT_LATERAL_ACCELERATION, PLANNER_TIME
+from openpilot.starpilot.common.starpilot_variables import (
+  CITY_SPEED_LIMIT,
+  CRUISING_SPEED,
+  CSC_DEFAULT_MARGIN_PERCENT,
+  DEFAULT_LATERAL_ACCELERATION,
+  PLANNER_TIME,
+)
 
 CALIBRATION_PROGRESS_THRESHOLD = 10 / DT_MDL
 CSC_MIN_SPEED = CITY_SPEED_LIMIT * CV.MPH_TO_MS
@@ -35,7 +41,8 @@ CSC_TRAINING_QUIET_TIME = 5.0     # no passive samples this soon after CSC limit
 # Learning from yourself converges on your own cornering speeds, so matching the
 # learned value exactly means never slowing you below your habit. Aim under it.
 # Target speed scales with the square root: 0.85 here is ~8% slower through a curve.
-CSC_COMFORT_MARGIN = 0.85
+# User-tunable via the CurveSpeedMargin slider; this is the fallback.
+CSC_COMFORT_MARGIN = CSC_DEFAULT_MARGIN_PERCENT / 100.0
 
 MAX_CURVATURE = 0.1
 MIN_CURVATURE = 0.001
@@ -107,6 +114,8 @@ class CurveSpeedController:
   def __init__(self, StarPilotVCruise):
     self.starpilot_planner = StarPilotVCruise.starpilot_planner
 
+    self.starpilot_toggles = None
+
     self.enable_training = False
     self.nudge_applied = False
 
@@ -116,6 +125,7 @@ class CurveSpeedController:
     self.data_dirty = False
 
     self.target = 0.0
+    self.binding_distance = 0.0
     self.target_filter = FirstOrderFilter(0.0, CSC_TARGET_FILTER_RC, DT_MDL, initialized=False)
     self.seed_pending = True
 
@@ -313,8 +323,13 @@ class CurveSpeedController:
     """Comfort level learned for this curvature, before any control margin."""
     return float(np.interp(abs(curvature), self._curve_k, self._curve_a))
 
+  @property
+  def comfort_margin(self):
+    margin = getattr(self.starpilot_toggles, "csc_margin", None)
+    return float(margin) if margin else CSC_COMFORT_MARGIN
+
   def lat_accel_for_curvature(self, curvature):
-    lat_accel = np.interp(np.abs(curvature), self._curve_k, self._curve_a) * CSC_COMFORT_MARGIN
+    lat_accel = np.interp(np.abs(curvature), self._curve_k, self._curve_a) * self.comfort_margin
 
     weather = self.starpilot_planner.starpilot_weather
     if weather.weather_id != 0:
@@ -335,12 +350,15 @@ class CurveSpeedController:
     curvatures, distances = self.starpilot_planner.curve_profile
     if len(curvatures) == 0:
       raw_target = float(v_cruise)
+      self.binding_distance = 0.0
     else:
       lat_accel = self.lat_accel_for_curvature(curvatures)
       point_speeds = np.sqrt(lat_accel / np.maximum(curvatures, 1e-4))
       point_speeds = np.maximum(point_speeds, CSC_MIN_SPEED)
       allowed_speeds = np.sqrt(point_speeds**2 + 2.0 * CSC_APPROACH_DECEL * np.maximum(distances, 0.0))
-      raw_target = min(float(np.min(allowed_speeds)), float(v_cruise))
+      binding_index = int(np.argmin(allowed_speeds))
+      raw_target = min(float(allowed_speeds[binding_index]), float(v_cruise))
+      self.binding_distance = float(distances[binding_index]) if raw_target < v_cruise else 0.0
 
     # A fresh activation must not inherit a stale-high target and spend seconds
     # ramping down toward a curve the envelope already sees (e.g. engaging or

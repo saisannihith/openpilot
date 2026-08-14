@@ -482,6 +482,7 @@ class StarPilotVCruise:
     v_ego_diff = v_ego_cluster - v_ego
 
     # Curve Speed Controller: distance-resolved speed envelope over the model horizon
+    self.csc.starpilot_toggles = starpilot_toggles
     following_lead = bool(getattr(self.starpilot_planner.starpilot_following, "following_lead", False))
     manual_speed_control = is_manual_speed_control(sm)
     csc_available = (
