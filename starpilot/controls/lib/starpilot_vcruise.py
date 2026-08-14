@@ -502,6 +502,7 @@ class StarPilotVCruise:
     )
     csc_curve_detected = csc_available and self.starpilot_planner.road_curvature_detected
     if csc_curve_detected:
+      self.csc.car_model = getattr(starpilot_toggles, "car_model", "")
       self.csc.update_target(v_ego)
 
       self.csc_controlling_speed = True

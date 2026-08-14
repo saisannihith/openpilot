@@ -1,3 +1,5 @@
+import pytest
+
 from cereal import car, custom
 from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR
 from opendbc.car.nissan.values import CAR as NISSAN_CAR
@@ -37,9 +39,13 @@ def test_immediate_max_output_saturation_is_torque_controller_only():
   assert not commanded_torque_at_max_for_saturation(CP, 1.0)
 
 
-def test_gv70_uses_normal_saturation_timer_at_max_output():
+@pytest.mark.parametrize("fingerprint", [
+  HYUNDAI_CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN,
+  HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN,
+])
+def test_hyundai_torque_platforms_use_normal_saturation_timer_at_max_output(fingerprint):
   CP = car.CarParams.new_message()
-  CP.carFingerprint = HYUNDAI_CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN
+  CP.carFingerprint = fingerprint
   CP.steerControlType = car.CarParams.SteerControlType.torque
   CP.lateralTuning.init("torque")
 

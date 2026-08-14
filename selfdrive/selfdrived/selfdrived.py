@@ -61,7 +61,10 @@ IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 def commanded_torque_at_max_for_saturation(CP, output: float) -> bool:
   torque_controller = (CP.steerControlType == car.CarParams.SteerControlType.torque and
                        CP.lateralTuning.which() == "torque")
-  has_controller_grace = CP.carFingerprint == HYUNDAI_CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN
+  has_controller_grace = CP.carFingerprint in (
+    HYUNDAI_CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN,
+    HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN,
+  )
   return torque_controller and not has_controller_grace and abs(output) > 0.99
 
 

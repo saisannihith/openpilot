@@ -4,6 +4,7 @@ import pytest
 
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
+from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR
 from openpilot.starpilot.common.starpilot_variables import PLANNER_TIME
 from openpilot.starpilot.controls.lib.curve_speed_controller import CSC_MAX_DECEL_RATE, CurveSpeedController
 from openpilot.starpilot.controls.lib.starpilot_vcruise import (
@@ -280,6 +281,27 @@ def test_curve_speed_controller_does_not_slow_for_curve_speed_above_ego():
   controller.update_target(30.0)
 
   assert controller.target == pytest.approx(30.0)
+
+
+def test_carnival_curve_speed_respects_external_eps_authority():
+  planner = SimpleNamespace(
+    params=FakeParams(),
+    road_curvature=0.02,
+    time_to_curve=1.0,
+    starpilot_weather=SimpleNamespace(weather_id=0, reduce_lateral_acceleration=0.0),
+  )
+  controller = CurveSpeedController(SimpleNamespace(starpilot_planner=planner))
+  controller.car_model = HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN
+  controller.lateral_acceleration = 2.63
+  controller.target_set = True
+  controller.target = 10.0
+
+  for _ in range(30):
+    controller.update_target(10.0)
+
+  expected = (1.5 / planner.road_curvature) ** 0.5
+  assert controller.target == pytest.approx(expected)
+  assert controller.target < 25.0 * CV.MPH_TO_MS
 
 
 def test_active_slc_control_target_applies_offset_and_cluster_diff():
