@@ -19,6 +19,7 @@ from opendbc.car.hyundai.carcontroller import CarController, Ioniq6LongitudinalT
                                              should_use_ev6_gt_line_stop_direct_tracking, \
                                              should_track_stop_accel_directly_for_car, \
                                              should_send_stop_request, \
+                                             update_cancel_counter, cancel_button_ready, \
                                              preserve_stock_canfd_lfa_status, \
                                              suppress_redundant_gv70_brake_cancel
 from opendbc.car.hyundai.carstate import CarState, decode_canfd_camera_lead, decode_ioniq_6_blindspot_radar_state, \
@@ -46,6 +47,21 @@ def test_carnival_defers_stop_request_until_hold_speed():
   assert should_send_stop_request(CAR.KIA_CARNIVAL_4TH_GEN, True, 0.47)
   assert should_send_stop_request(CAR.KIA_CARNIVAL_2025, True, 4.5)
   assert not should_send_stop_request(CAR.KIA_CARNIVAL_4TH_GEN, False, 0.0)
+
+
+def test_hyundai_cancel_button_waits_for_stock_scc_brake_disengage():
+  counter = 0
+  for _ in range(10):
+    counter = update_cancel_counter(True, counter)
+    assert not cancel_button_ready(True, counter)
+
+  counter = update_cancel_counter(True, counter)
+  assert cancel_button_ready(True, counter)
+
+  counter = update_cancel_counter(False, counter)
+  assert counter == 0
+  assert not cancel_button_ready(False, counter)
+
 
 # Some platforms have date codes in a different format we don't yet parse (or are missing).
 # For now, assert list of expected missing date cars
