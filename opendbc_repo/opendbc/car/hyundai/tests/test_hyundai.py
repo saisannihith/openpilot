@@ -18,6 +18,7 @@ from opendbc.car.hyundai.carcontroller import CarController, Ioniq6LongitudinalT
                                              direct_angle_request_allowed, get_angle_smoothing_alpha, \
                                              should_use_ev6_gt_line_stop_direct_tracking, \
                                              should_track_stop_accel_directly_for_car, \
+                                             should_send_stop_request, \
                                              preserve_stock_canfd_lfa_status, \
                                              suppress_redundant_gv70_brake_cancel
 from opendbc.car.hyundai.carstate import CarState, decode_canfd_camera_lead, decode_ioniq_6_blindspot_radar_state, \
@@ -37,6 +38,14 @@ LongCtrlState = CarControl.Actuators.LongControlState
 from opendbc.car.hyundai.fingerprints import FW_VERSIONS
 
 Ecu = CarParams.Ecu
+
+
+def test_carnival_defers_stop_request_until_hold_speed():
+  assert not should_send_stop_request(CAR.KIA_CARNIVAL_4TH_GEN, True, 4.5)
+  assert not should_send_stop_request(CAR.KIA_CARNIVAL_4TH_GEN, True, 0.48)
+  assert should_send_stop_request(CAR.KIA_CARNIVAL_4TH_GEN, True, 0.47)
+  assert should_send_stop_request(CAR.KIA_CARNIVAL_2025, True, 4.5)
+  assert not should_send_stop_request(CAR.KIA_CARNIVAL_4TH_GEN, False, 0.0)
 
 # Some platforms have date codes in a different format we don't yet parse (or are missing).
 # For now, assert list of expected missing date cars

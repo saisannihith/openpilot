@@ -70,6 +70,7 @@ ANGLE_SAFETY_BASELINE_MODEL = str(CAR.KIA_SPORTAGE_HEV_2026)
 DEFAULT_ANGLE_SMOOTHING_VEGO_BP = [5.0, 10.0, 20.0]
 DEFAULT_ANGLE_SMOOTHING_ALPHA_V = [0.2, 0.1, 0.0]
 EV9_STOP_REQUEST_SPEED = 0.47
+KIA_CARNIVAL_4TH_GEN_STOP_REQUEST_SPEED = 0.47
 EV9_STANDSTILL_DELAY_FRAMES = 178
 EV9_STOP_RELEASE_DELAY_FRAMES = 6
 BLINDSPOT_WARNING_FLASH_SAMPLES = 20
@@ -198,6 +199,14 @@ def update_ev9_longitudinal_tuning(state: EV9LongitudinalTuningState, enabled: b
       )
 
   return EV9LongitudinalTuningState()
+
+
+def should_send_stop_request(car_fingerprint, stopping: bool, v_ego: float) -> bool:
+  if not stopping:
+    return False
+  if car_fingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
+    return v_ego <= KIA_CARNIVAL_4TH_GEN_STOP_REQUEST_SPEED
+  return True
 
 
 def update_blindspot_warning(state: BlindspotWarningState, escalated: bool,
@@ -696,11 +705,13 @@ class CarController(CarControllerBase):
 
     # *** CAN/CAN FD specific ***
     if self.CP.flags & HyundaiFlags.CANFD:
+      can_stopping = should_send_stop_request(self.CP.carFingerprint, stopping, CS.out.vEgo)
       can_sends.extend(self.create_canfd_msgs(now_nanos, apply_steer_req, apply_torque, apply_angle, set_speed_in_units, accel,
-                                              stopping, hud_control, CS, CC, starpilot_toggles, lka_icon, lfa_icon))
+                                              can_stopping, hud_control, CS, CC, starpilot_toggles, lka_icon, lfa_icon))
     else:
+      can_stopping = should_send_stop_request(self.CP.carFingerprint, stopping, CS.out.vEgo)
       can_sends.extend(self.create_can_msgs(apply_steer_req, apply_torque, torque_fault, set_speed_in_units, accel,
-                                            stopping, hud_control, actuators, CS, CC, lka_icon, lfa_icon))
+                                            can_stopping, hud_control, actuators, CS, CC, lka_icon, lfa_icon))
 
     new_actuators = actuators.as_builder()
     if self.CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING:
