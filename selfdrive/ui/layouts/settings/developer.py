@@ -8,6 +8,7 @@ from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.widgets import DialogResult
+from openpilot.starpilot.common.longitudinal_mode import set_alpha_longitudinal
 
 # Description constants
 DESCRIPTIONS = {
@@ -177,7 +178,7 @@ class DeveloperLayout(Widget):
     if state:
       def confirm_callback(result: int):
         if result == DialogResult.CONFIRM:
-          self._params.put_bool("AlphaLongitudinalEnabled", True)
+          set_alpha_longitudinal(self._params, True)
           self._params.put_bool("OnroadCycleRequested", True)
           self._update_toggles()
         else:
@@ -190,6 +191,6 @@ class DeveloperLayout(Widget):
       gui_app.push_widget(ConfirmDialog(content, tr("Enable"), rich=True, callback=confirm_callback))
 
     else:
-      self._params.put_bool("AlphaLongitudinalEnabled", False)
+      set_alpha_longitudinal(self._params, False)
       self._params.put_bool("OnroadCycleRequested", True)
       self._update_toggles()

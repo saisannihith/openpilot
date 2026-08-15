@@ -5,6 +5,7 @@ from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigInputDialog
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.starpilot.common.longitudinal_mode import set_alpha_longitudinal, set_experimental_mode
 from openpilot.selfdrive.ui.widgets.ssh_key import SshKeyFetcher
 
 
@@ -172,7 +173,7 @@ class DeveloperLayoutMici(NavScroller):
 
   def _on_lat_maneuver_mode(self, state: bool):
     ui_state.params.put_bool("LateralManeuverMode", state)
-    ui_state.params.put_bool("ExperimentalMode", False)
+    set_experimental_mode(ui_state.params, False)
     ui_state.params.put_bool("JoystickDebugMode", False)
     self._joystick_toggle.set_checked(False)
     ui_state.params.put_bool("LongitudinalManeuverMode", False)
@@ -181,6 +182,6 @@ class DeveloperLayoutMici(NavScroller):
 
   def _on_alpha_long_enabled(self, state: bool):
     # TODO: show confirmation dialog before enabling
-    ui_state.params.put_bool("AlphaLongitudinalEnabled", state)
+    set_alpha_longitudinal(ui_state.params, state)
     restart_needed_callback(state)
     self._update_toggles()

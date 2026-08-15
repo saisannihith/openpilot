@@ -40,6 +40,7 @@ from openpilot.system.hardware.hw import Paths
 _MANAGER_CORE_IMPORT_DONE = time.monotonic()
 
 from openpilot.starpilot.common.starpilot_functions import starpilot_boot_functions, install_starpilot, uninstall_starpilot
+from openpilot.starpilot.common.longitudinal_mode import reconcile_longitudinal_mode_params
 from openpilot.starpilot.common.starpilot_variables import (
   LEGACY_STARPILOT_PARAM_RENAMES,
   LEGACY_STARPILOT_STATS_KEY_RENAMES,
@@ -1035,6 +1036,9 @@ def manager_init() -> None:
         params.put(k, cached_value)
     else:
       params_cache.put(k, current_value)
+  reconciled_modes = reconcile_longitudinal_mode_params(params, params_cache)
+  if reconciled_modes:
+    cloudlog.warning(f"Reconciled conflicting longitudinal mode params: {reconciled_modes}")
   last_timing = _log_boot_timing("manager_init", "params_defaults_cache_sync", manager_init_start, last_timing)
 
   # Create folders needed for msgq

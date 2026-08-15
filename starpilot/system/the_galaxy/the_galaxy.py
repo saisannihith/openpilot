@@ -67,6 +67,12 @@ from openpilot.starpilot.common.maps_catalog import (
 )
 from openpilot.starpilot.common.maps_download_progress import load_size_cache, nonnegative_int, selection_key
 from openpilot.starpilot.common.experimental_state import sync_persist_chill_state, sync_persist_experimental_state
+from openpilot.starpilot.common.longitudinal_mode import (
+  set_alpha_longitudinal,
+  set_conditional_drive_mode,
+  set_experimental_mode,
+  set_openpilot_long_disabled,
+)
 from openpilot.starpilot.common.favorite_slots import (
   FAVORITE_ACTION_OPTIONS,
   FAVORITE_SLOTS_PARAM,
@@ -4624,12 +4630,26 @@ def setup(app):
           return jsonify({"error": "Cannot change Alpha Longitudinal while driving."}), 403
 
         enabled = str_val.strip() in ("1", "true", "True")
-        params.put_bool(key, enabled)
+        set_alpha_longitudinal(params, enabled)
         params.put_bool("OnroadCycleRequested", True)
         update_starpilot_toggles()
+        updated = {key: enabled}
+        if enabled:
+          updated["DisableOpenpilotLongitudinal"] = False
         return jsonify({
           "message": f"Parameter '{key}' updated successfully. The driving stack will restart shortly.",
-          "updated": {key: enabled},
+          "updated": updated,
+        }), 200
+
+      if key == "ExperimentalMode":
+        enabled = str_val.strip() in ("1", "true", "True")
+        set_experimental_mode(params, enabled)
+        update_starpilot_toggles()
+        updated = {key: enabled}
+        updated["ConditionalExperimental" if enabled else "ConditionalChill"] = False
+        return jsonify({
+          "message": f"Parameter '{key}' updated successfully.",
+          "updated": updated,
         }), 200
 
       if key == "ForceOffroad":
@@ -4662,6 +4682,18 @@ def setup(app):
 
       if key == "AutomaticUpdates" and params.get_bool("IsOnroad"):
         return jsonify({"error": "Cannot change Automatic Updates while driving."}), 403
+
+      if key == "DisableOpenpilotLongitudinal":
+        disabled = str_val.strip() in ("1", "true", "True")
+        set_openpilot_long_disabled(params, disabled)
+        update_starpilot_toggles()
+        updated = {key: disabled}
+        if disabled:
+          updated["AlphaLongitudinalEnabled"] = False
+        return jsonify({
+          "message": f"Parameter '{key}' updated successfully. Reboot before driving.",
+          "updated": updated,
+        }), 200
 
       if key in VASM_CONFIGURATION_KEYS and params.get_bool("IsOnroad"):
         return jsonify({"error": "Cannot change V-ASM configuration while driving."}), 403
@@ -4738,13 +4770,17 @@ def setup(app):
 
       if key in {"ConditionalExperimental", "ConditionalChill"}:
         enabled = str_val.strip() in ("1", "true", "True")
-        params.put_bool(key, enabled)
-
-        updated = {key: enabled}
         if enabled:
-          other_key = "ConditionalChill" if key == "ConditionalExperimental" else "ConditionalExperimental"
-          params.put_bool(other_key, False)
-          updated[other_key] = False
+          mode = "experimental" if key == "ConditionalExperimental" else "chill"
+          set_conditional_drive_mode(params, mode)
+        else:
+          params.put_bool(key, False)
+
+        updated = {
+          "ConditionalExperimental": params.get_bool("ConditionalExperimental"),
+          "ConditionalChill": params.get_bool("ConditionalChill"),
+          "ExperimentalMode": params.get_bool("ExperimentalMode"),
+        }
 
         update_starpilot_toggles()
         return jsonify({

@@ -86,9 +86,16 @@ def _params_client(monkeypatch, values, device_type):
     the_galaxy,
     "_get_param_type_info",
     lambda: (
-      {"AlphaLongitudinalEnabled", "ForceOffroad"},
+      {
+        "AlphaLongitudinalEnabled", "ConditionalChill", "ConditionalExperimental",
+        "DisableOpenpilotLongitudinal", "ExperimentalMode", "ForceOffroad",
+      },
       {
         "AlphaLongitudinalEnabled": bool,
+        "ConditionalChill": bool,
+        "ConditionalExperimental": bool,
+        "DisableOpenpilotLongitudinal": bool,
+        "ExperimentalMode": bool,
         "ForceOffroad": bool,
       },
     ),
@@ -271,11 +278,68 @@ def test_alpha_longitudinal_toggle_writes_and_requests_offroad_cycle(monkeypatch
 
   assert response.status_code == 200
   assert fake_params.values["AlphaLongitudinalEnabled"] is True
+  assert fake_params.values["DisableOpenpilotLongitudinal"] is False
   assert fake_params.values["OnroadCycleRequested"] is True
   assert fake_params.writes == [
     ("AlphaLongitudinalEnabled", True),
+    ("DisableOpenpilotLongitudinal", False),
     ("OnroadCycleRequested", True),
   ]
+
+
+def test_disable_openpilot_long_clears_alpha_longitudinal(monkeypatch):
+  client, fake_params = _params_client(monkeypatch, {
+    "AlphaLongitudinalEnabled": True,
+    "DisableOpenpilotLongitudinal": False,
+    "IsOnroad": False,
+  }, "tici")
+
+  response = client.put("/api/params", json={"key": "DisableOpenpilotLongitudinal", "value": True})
+
+  assert response.status_code == 200
+  assert response.get_json()["updated"] == {
+    "DisableOpenpilotLongitudinal": True,
+    "AlphaLongitudinalEnabled": False,
+  }
+  assert fake_params.values["DisableOpenpilotLongitudinal"] is True
+  assert fake_params.values["AlphaLongitudinalEnabled"] is False
+
+
+def test_conditional_chill_enables_base_experimental_mode(monkeypatch):
+  client, fake_params = _params_client(monkeypatch, {
+    "ConditionalChill": False,
+    "ConditionalExperimental": True,
+    "ExperimentalMode": False,
+    "IsOnroad": False,
+  }, "tici")
+
+  response = client.put("/api/params", json={"key": "ConditionalChill", "value": True})
+
+  assert response.status_code == 200
+  assert response.get_json()["updated"] == {
+    "ConditionalExperimental": False,
+    "ConditionalChill": True,
+    "ExperimentalMode": True,
+  }
+  assert fake_params.values["ExperimentalMode"] is True
+
+
+def test_disabling_base_experimental_mode_disables_conditional_chill(monkeypatch):
+  client, fake_params = _params_client(monkeypatch, {
+    "ConditionalChill": True,
+    "ConditionalExperimental": False,
+    "ExperimentalMode": True,
+    "IsOnroad": False,
+  }, "tici")
+
+  response = client.put("/api/params", json={"key": "ExperimentalMode", "value": False})
+
+  assert response.status_code == 200
+  assert response.get_json()["updated"] == {
+    "ExperimentalMode": False,
+    "ConditionalChill": False,
+  }
+  assert fake_params.values["ConditionalChill"] is False
 
 
 def test_alpha_longitudinal_toggle_rejects_onroad(monkeypatch):

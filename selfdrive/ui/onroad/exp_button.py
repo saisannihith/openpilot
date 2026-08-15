@@ -5,10 +5,14 @@ from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.starpilot.common.experimental_state import (
+  CCStatus,
   CEStatus,
+  next_manual_cc_status,
   next_manual_ce_status,
+  sync_manual_cc_state,
   sync_manual_ce_state,
 )
+from openpilot.starpilot.common.longitudinal_mode import set_experimental_mode
 
 
 class ExpButton(Widget):
@@ -83,9 +87,16 @@ class ExpButton(Widget):
         sync_manual_ce_state(self._params, override_value)
         self._held_mode = None
         self._hold_end_time = None
+      elif self._params.get_bool("ConditionalChill"):
+        current_status = ui_state.params_memory.get_int("CCStatus", default=CCStatus["OFF"])
+        override_value = next_manual_cc_status(current_status, self._experimental_mode)
+        ui_state.params_memory.put_int("CCStatus", override_value)
+        sync_manual_cc_state(self._params, override_value)
+        self._held_mode = None
+        self._hold_end_time = None
       else:
         new_mode = not self._experimental_mode
-        self._params.put_bool("ExperimentalMode", new_mode)
+        set_experimental_mode(self._params, new_mode)
 
         # Hold new state temporarily
         self._held_mode = new_mode

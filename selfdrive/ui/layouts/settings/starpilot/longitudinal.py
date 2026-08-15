@@ -15,6 +15,7 @@ from openpilot.system.ui.widgets.label import gui_label
 from openpilot.system.ui.widgets.option_dialog import MultiOptionDialog
 
 from openpilot.selfdrive.ui.layouts.settings.starpilot.panel import _SettingsPage
+from openpilot.starpilot.common.longitudinal_mode import set_conditional_drive_mode
 
 from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
   AETHER_LIST_METRICS,
@@ -193,14 +194,11 @@ class ConditionalDriveModeView(AdjustorTogglesPanelView):
 
   def _on_drive_mode_change(self, idx):
     if idx == 0:
-      self._controller._params.put_bool("ConditionalExperimental", False)
-      self._controller._params.put_bool("ConditionalChill", False)
+      set_conditional_drive_mode(self._controller._params, "off")
     elif idx == 1:
-      self._controller._params.put_bool("ConditionalExperimental", True)
-      self._controller._params.put_bool("ConditionalChill", False)
+      set_conditional_drive_mode(self._controller._params, "experimental")
     elif idx == 2:
-      self._controller._params.put_bool("ConditionalExperimental", False)
-      self._controller._params.put_bool("ConditionalChill", True)
+      set_conditional_drive_mode(self._controller._params, "chill")
     self._update_pagination()
 
   def _init_toggles(self):
@@ -978,14 +976,11 @@ class StarPilotLongitudinalLayout(_SettingsPage):
     def on_select(res):
       if res == DialogResult.CONFIRM and dialog.selection:
         if dialog.selection == "OFF":
-          self._params.put_bool("ConditionalExperimental", False)
-          self._params.put_bool("ConditionalChill", False)
+          set_conditional_drive_mode(self._params, "off")
         elif dialog.selection == "Conditional Experimental":
-          self._params.put_bool("ConditionalExperimental", True)
-          self._params.put_bool("ConditionalChill", False)
+          set_conditional_drive_mode(self._params, "experimental")
         elif dialog.selection == "Conditional Chill":
-          self._params.put_bool("ConditionalExperimental", False)
-          self._params.put_bool("ConditionalChill", True)
+          set_conditional_drive_mode(self._params, "chill")
 
     dialog = MultiOptionDialog(tr("Conditional Drive Mode"), options, current, callback=on_select)
     gui_app.push_widget(dialog)

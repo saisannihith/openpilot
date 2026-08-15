@@ -5,6 +5,7 @@ from openpilot.selfdrive.ui.mici.widgets.button import BigParamControl, BigMulti
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.starpilot.common.longitudinal_mode import set_experimental_mode
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
 
@@ -20,7 +21,7 @@ class TogglesLayoutMici(NavScroller):
 
     self._personality_toggle = BigMultiParamToggle("driving personality", "LongitudinalPersonality", ["aggressive", "standard", "relaxed"])
     self._safe_mode_btn = BigParamControl("safe mode", "SafeMode", toggle_callback=restart_needed_callback)
-    self._experimental_btn = BigParamControl("experimental mode", "ExperimentalMode")
+    self._experimental_btn = BigParamControl("experimental mode", "ExperimentalMode", toggle_callback=lambda state: set_experimental_mode(ui_state.params, state))
     is_metric_toggle = BigParamControl("use metric units", "IsMetric")
     ldw_toggle = BigParamControl("lane departure warnings", "IsLdwEnabled")
     always_on_dm_toggle = BigParamControl("always-on driver monitor", "AlwaysOnDM")
@@ -86,7 +87,7 @@ class TogglesLayoutMici(NavScroller):
     self._personality_toggle.set_enabled(not safe_mode)
     if safe_mode:
       if ui_state.params.get_bool("ExperimentalMode"):
-        ui_state.params.put_bool("ExperimentalMode", False)
+        set_experimental_mode(ui_state.params, False)
       if ui_state.params.get("LongitudinalPersonality", return_default=True) != int(log.LongitudinalPersonality.relaxed):
         ui_state.params.put_int("LongitudinalPersonality", int(log.LongitudinalPersonality.relaxed))
       self._experimental_btn.set_checked(False)

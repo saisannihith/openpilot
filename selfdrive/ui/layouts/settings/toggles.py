@@ -8,6 +8,7 @@ from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.widgets import DialogResult
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.starpilot.common.longitudinal_mode import set_experimental_mode
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
 
@@ -170,7 +171,7 @@ class TogglesLayout(Widget):
     safe_mode = self._params.get_bool("SafeMode")
     if safe_mode:
       if self._params.get_bool("ExperimentalMode"):
-        self._params.put_bool("ExperimentalMode", False)
+        set_experimental_mode(self._params, False)
       if self._params.get("LongitudinalPersonality", return_default=True) != int(log.LongitudinalPersonality.relaxed):
         self._params.put_int("LongitudinalPersonality", int(log.LongitudinalPersonality.relaxed))
       self._toggles["ExperimentalMode"].action_item.set_state(False)
@@ -234,7 +235,7 @@ class TogglesLayout(Widget):
     if state and not confirmed:
       def confirm_callback(result: int):
         if result == DialogResult.CONFIRM:
-          self._params.put_bool("ExperimentalMode", True)
+          set_experimental_mode(self._params, True)
           self._params.put_bool("ExperimentalModeConfirmed", True)
         else:
           self._toggles["ExperimentalMode"].action_item.set_state(False)
@@ -247,7 +248,7 @@ class TogglesLayout(Widget):
       gui_app.push_widget(dlg)
     else:
       self._update_experimental_mode_icon()
-      self._params.put_bool("ExperimentalMode", state)
+      set_experimental_mode(self._params, state)
 
   def _toggle_callback(self, state: bool, param: str):
     if param == "ExperimentalMode":

@@ -14,6 +14,7 @@ from openpilot.system.ui.lib.application import ASSETS_DIR, gui_app, FontWeight,
 from openpilot.selfdrive.ui.lib.mode_banner import ModeBannerVariant, get_mode_banner_variant, mode_atom_color
 from openpilot.selfdrive.ui.lib.starpilot_version import STARPILOT_DISPLAY_VERSION
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.starpilot.common.longitudinal_mode import set_experimental_mode
 
 HEAD_BUTTON_FONT_SIZE = 40
 HOME_PADDING = 8
@@ -216,7 +217,7 @@ class MiciHomeLayout(Widget):
         # long gating for experimental mode - only allow toggle if longitudinal control is available
         if ui_state.has_longitudinal_control:
           self._experimental_mode = not self._experimental_mode
-          ui_state.params.put("ExperimentalMode", self._experimental_mode)
+          set_experimental_mode(ui_state.params, self._experimental_mode)
           self._mode_status_atom.refresh()
         self._mouse_down_t = None
         self._did_long_press = True
