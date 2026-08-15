@@ -11,6 +11,7 @@ import time
 import threading
 from collections import defaultdict
 from pathlib import Path
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from openpilot.common.basedir import BASEDIR
@@ -34,6 +35,9 @@ FINALIZED = os.path.join(STAGING_ROOT, "finalized")
 
 OVERLAY_INIT = Path(os.path.join(BASEDIR, ".overlay_init"))
 
+SNITHPILOT_GIT_ORIGIN = "github.com/saisannihith/openpilot"
+SNITHPILOT_UPDATE_BRANCH = "snithpilot"
+
 # do not allow to engage after this many hours onroad and this many routes
 HOURS_NO_CONNECTIVITY_MAX = 24 * 365 * 100
 ROUTES_NO_CONNECTIVITY_MAX = 9001
@@ -50,6 +54,30 @@ class UserRequest:
 
 class UpdateAborted(Exception):
   pass
+
+
+def normalize_git_origin(origin: str) -> str:
+  value = str(origin or "").strip().rstrip("/")
+  if "://" in value:
+    parsed = urlparse(value.lower())
+    value = f"{parsed.hostname or ''}{parsed.path}"
+  else:
+    value = value.removeprefix("git@").replace(":", "/", 1)
+  return value.removesuffix(".git").lower()
+
+
+def pinned_update_branch_for_origin(origin: str) -> str | None:
+  if normalize_git_origin(origin) == SNITHPILOT_GIT_ORIGIN:
+    return SNITHPILOT_UPDATE_BRANCH
+  return None
+
+
+def get_pinned_update_branch(path: str) -> str | None:
+  try:
+    origin = run(["git", "config", "--get", "remote.origin.url"], path).strip()
+  except (subprocess.CalledProcessError, FileNotFoundError):
+    return None
+  return pinned_update_branch_for_origin(origin)
 
 
 class WaitTimeHelper:
@@ -273,12 +301,21 @@ class Updater:
     self.branches = defaultdict(str)
     self._has_internet: bool = False
 
+    pinned_branch = get_pinned_update_branch(BASEDIR)
+    if pinned_branch is not None:
+      self.params.put("UpdaterTargetBranch", pinned_branch)
+      self.params.put("UpdaterAvailableBranches", pinned_branch)
+
   @property
   def has_internet(self) -> bool:
     return self._has_internet
 
   @property
   def target_branch(self) -> str:
+    pinned_branch = get_pinned_update_branch(BASEDIR)
+    if pinned_branch is not None:
+      return pinned_branch
+
     b: str | None = self.params.get("UpdaterTargetBranch")
     if b is None:
       b = self.get_branch(BASEDIR)
@@ -401,6 +438,11 @@ class Updater:
       x = re.fullmatch(ls_remotes_re, line.strip())
       if x is not None and x.group('branch_name') not in excluded_branches:
         self.branches[x.group('branch_name')] = x.group('commit_sha')
+
+    pinned_branch = get_pinned_update_branch(OVERLAY_MERGED)
+    if pinned_branch is not None:
+      pinned_commit = self.branches.get(pinned_branch)
+      self.branches = defaultdict(lambda: None, {pinned_branch: pinned_commit} if pinned_commit is not None else {})
 
     cur_branch = self.get_branch(OVERLAY_MERGED)
     cur_commit = self.get_commit_hash(OVERLAY_MERGED)
