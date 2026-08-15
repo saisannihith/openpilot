@@ -118,8 +118,10 @@ def test_elantra_gets_lead_veto_margin_before_force_stop():
   assert get_lead_veto_distance(SimpleNamespace(carFingerprint="OTHER_CAR")) == pytest.approx(75.0)
 
 
-def test_camry_tss2_uses_closer_force_stop_handoff():
+def test_vehicle_force_stop_handoffs():
   assert get_force_stop_handoff_distance("TOYOTA_CAMRY_TSS2") == pytest.approx(4.5)
+  assert get_force_stop_handoff_distance(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN) == pytest.approx(9.0)
+  assert get_force_stop_handoff_distance(HYUNDAI_CAR.KIA_CARNIVAL_2025) == pytest.approx(6.0)
   assert get_force_stop_handoff_distance("TOYOTA_RAV4_TSS2") == pytest.approx(6.0)
 
 

@@ -19,6 +19,7 @@ TOYOTA_SIENNA_POST_DEPARTURE_RESTOP_MAX_LATERAL_OFFSET = 1.75
 TOYOTA_SIENNA_POST_DEPARTURE_RESTOP_MIN_BRAKE = 0.18
 TOYOTA_SIENNA_POST_DEPARTURE_RESTOP_MAX_BRAKE = 0.32
 TOYOTA_CAMRY_TSS2_FORCE_STOP_HANDOFF_M = 4.5
+KIA_CARNIVAL_4TH_GEN_FORCE_STOP_HANDOFF_M = 9.0
 DEFAULT_FORCE_STOP_HANDOFF_M = 6.0
 
 
@@ -115,6 +116,9 @@ def get_toyota_sienna_post_departure_restop_cap(CP, lead, v_ego, accel_min,
 
 def get_force_stop_handoff_distance(car_fingerprint):
   """Return the distance at which force-stop control hands off to MPC."""
-  if str(car_fingerprint) == "TOYOTA_CAMRY_TSS2":
+  fingerprint = str(car_fingerprint)
+  if fingerprint == "TOYOTA_CAMRY_TSS2":
     return TOYOTA_CAMRY_TSS2_FORCE_STOP_HANDOFF_M
+  if fingerprint == "KIA_CARNIVAL_4TH_GEN":
+    return KIA_CARNIVAL_4TH_GEN_FORCE_STOP_HANDOFF_M
   return DEFAULT_FORCE_STOP_HANDOFF_M
