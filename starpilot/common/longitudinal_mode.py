@@ -17,6 +17,7 @@ def set_experimental_mode(params: Params, enabled: bool) -> None:
   params.put_bool("ExperimentalMode", enabled)
   if enabled:
     params.put_bool("ConditionalExperimental", False)
+    params.put_bool("ConditionalChill", True)
   else:
     params.put_bool("ConditionalChill", False)
 
@@ -53,5 +54,7 @@ def reconcile_longitudinal_mode_params(params: Params, params_cache: Params | No
     update("ExperimentalMode", True)
   elif conditional_experimental:
     update("ExperimentalMode", False)
+  elif params.get_bool("ExperimentalMode"):
+    update("ConditionalChill", True)
 
   return updates
