@@ -1,4 +1,5 @@
 import math
+import time
 from dataclasses import dataclass, replace
 
 from opendbc.can import CANParser
@@ -19,6 +20,20 @@ MRR30_RADAR_START_ADDR = 0x210
 MRR30_RADAR_MSG_COUNT = 16
 MRR35_RADAR_START_ADDR = 0x3A5
 MRR35_RADAR_MSG_COUNT = 32
+CARNIVAL_4TH_GEN_OBJECT_START_ADDR = 0x180
+CARNIVAL_4TH_GEN_OBJECT_END_ADDR = 0x184
+CARNIVAL_4TH_GEN_OBJECT_BUS = 1
+CARNIVAL_4TH_GEN_OBJECT_LEN = 32
+CARNIVAL_4TH_GEN_OBJECT_LOG_INTERVAL = 1.0
+
+
+def get_little_unsigned(dat: bytes, start: int, size: int) -> int:
+  return (int.from_bytes(dat, "little", signed=False) >> start) & ((1 << size) - 1)
+
+
+def get_little_signed(dat: bytes, start: int, size: int) -> int:
+  val = get_little_unsigned(dat, start, size)
+  return val - (1 << size) if val & (1 << (size - 1)) else val
 
 
 @dataclass(frozen=True)
@@ -102,6 +117,14 @@ class RadarInterface(RadarInterfaceBase):
     self.ioniq_6_radar_probe = CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and CP.openpilotLongitudinalControl and self.radar_off_can
     self.ioniq_6_radar_probe_logged = False
     self.ioniq_6_radar_probe_updates = 0
+    # The 2024 Carnival exposes an MRR30-like object bank at 0x180-0x184 on bus 1.
+    # Keep this as a shadow probe until lateral/velocity fields are fully decoded;
+    # publishing it as liveTracks would immediately affect longitudinal planning.
+    self.carnival_object_probe = CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN
+    self.carnival_object_probe_prev: dict[tuple[int, int], tuple[float, float]] = {}
+    self.carnival_object_probe_last_log = 0.0
+    self.carnival_object_probe_seen = 0
+    self.carnival_object_probe_valid = 0
     self.rcp = get_radar_can_parser(CP, self.radar_config)
 
     # Precompute (addr, "RADAR_TRACK_xxx") pairs once. _update runs on the
@@ -114,6 +137,9 @@ class RadarInterface(RadarInterfaceBase):
                                             self.radar_config.start_addr + self.radar_config.can_parser_msg_count)]
 
   def update(self, can_strings):
+    if self.carnival_object_probe:
+      self._update_carnival_object_probe(can_strings)
+
     if self.ioniq_6_radar_probe and self.rcp is not None and not self.ioniq_6_radar_probe_logged:
       vls = self.rcp.update(can_strings)
       self.updated_messages.update(vls)
@@ -144,6 +170,57 @@ class RadarInterface(RadarInterfaceBase):
     self.updated_messages.clear()
 
     return rr
+
+  def _update_carnival_object_probe(self, can_strings):
+    now = time.monotonic()
+    best = None
+
+    for _, frames in can_strings:
+      for address, dat, src in frames:
+        if src != CARNIVAL_4TH_GEN_OBJECT_BUS:
+          continue
+        if not (CARNIVAL_4TH_GEN_OBJECT_START_ADDR <= address <= CARNIVAL_4TH_GEN_OBJECT_END_ADDR):
+          continue
+        if len(dat) != CARNIVAL_4TH_GEN_OBJECT_LEN:
+          continue
+
+        self.carnival_object_probe_seen += 1
+        for slot, bit_offset in ((1, 0), (2, 128)):
+          state = get_little_unsigned(dat, bit_offset + 55, 4)
+          state_alt = get_little_unsigned(dat, bit_offset + 51, 4)
+          d_rel = get_little_unsigned(dat, bit_offset + 64, 12) * 0.05
+          y_rel_raw = get_little_signed(dat, bit_offset + 76, 12) * 0.05
+          v_rel_raw = get_little_signed(dat, bit_offset + 88, 14) * 0.01
+          valid = state in (3, 4, 5) and 0.5 <= d_rel <= 220.0
+          if not valid:
+            continue
+
+          self.carnival_object_probe_valid += 1
+          key = (address, slot)
+          prev = self.carnival_object_probe_prev.get(key)
+          d_dot = float("nan")
+          if prev is not None:
+            prev_t, prev_d = prev
+            dt = now - prev_t
+            if 0.01 <= dt <= 1.0:
+              d_dot = (d_rel - prev_d) / dt
+          self.carnival_object_probe_prev[key] = (now, d_rel)
+
+          if best is None or (address, slot) == (0x180, 1) or d_rel < best[3]:
+            best = (address, slot, state, d_rel, y_rel_raw, v_rel_raw, d_dot, state_alt)
+
+    if best is None or now - self.carnival_object_probe_last_log < CARNIVAL_4TH_GEN_OBJECT_LOG_INTERVAL:
+      return
+
+    address, slot, state, d_rel, y_rel_raw, v_rel_raw, d_dot, state_alt = best
+    d_dot_str = "nan" if not math.isfinite(d_dot) else f"{d_dot:.2f}"
+    cloudlog.warning(
+      "Carnival 4th gen radar probe: "
+      f"addr=0x{address:x} slot={slot} state={state}/{state_alt} "
+      f"dRel={d_rel:.2f} yRaw={y_rel_raw:.2f} vRaw={v_rel_raw:.2f} dDot={d_dot_str} "
+      f"seen={self.carnival_object_probe_seen} valid={self.carnival_object_probe_valid}"
+    )
+    self.carnival_object_probe_last_log = now
 
   def _decode_g90_mando_values(self, dat: bytes):
     vals = {}
