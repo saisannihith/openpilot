@@ -89,7 +89,7 @@ from openpilot.starpilot.common.favorite_slots import (
 )
 from openpilot.starpilot.common.lateral_delay import full_lateral_delay
 from openpilot.starpilot.common.starpilot_utilities import delete_file, get_lock_status, run_cmd
-from openpilot.starpilot.common.starpilot_variables import ACTIVE_THEME_PATH, ERROR_LOGS_PATH, EXCLUDED_KEYS, LEGACY_STARPILOT_PARAM_RENAMES, MAPS_PATH, MODELS_PATH, RESOURCES_REPO, SCREEN_RECORDINGS_PATH, STOCK_THEME_PATH, THEME_SAVE_PATH,\
+from openpilot.starpilot.common.starpilot_variables import ACTIVE_THEME_PATH, BUTTON_FUNCTIONS, ERROR_LOGS_PATH, EXCLUDED_KEYS, LEGACY_STARPILOT_PARAM_RENAMES, MAPS_PATH, MODELS_PATH, RESOURCES_REPO, SCREEN_RECORDINGS_PATH, STOCK_THEME_PATH, THEME_SAVE_PATH,\
                                                            default_ev_tuning_enabled, migrate_cancel_button_controls, update_starpilot_toggles
 from openpilot.starpilot.common.testing_grounds import (
   DEFAULT_TESTING_GROUND_VARIANT as SHARED_DEFAULT_TESTING_GROUND_VARIANT,
@@ -115,6 +115,17 @@ LEGACY_LATERAL_METHOD_API_PREFIX = "/api/" + "".join(("f", "t", "m"))
 VASM_CONFIGURATION_KEYS = {"VASMEnabled", "VASMConfidenceThreshold", "VASMSmoothSeconds", "VASMAnnotationConfig"}
 PIP_PREVIEW_CONFIGURATION_KEYS = {"PIPPreviewEnabled", "PIPPreviewMask", "PIPPreviewShowOnBlinker", "PIPPreviewShowOnBSM"}
 MODEL_SMOOTHING_KEYS = {"LatSmoothSeconds", "LongSmoothSeconds"}
+PULSE_GLIDE_BUTTON_KEYS = {
+  "CancelButtonControl", "DistanceButtonControl",
+  "LongCancelButtonControl", "LongDistanceButtonControl",
+  "VeryLongCancelButtonControl", "VeryLongDistanceButtonControl",
+  "LKASButtonControl", "ModeButtonControl", "LongModeButtonControl", "VeryLongModeButtonControl",
+  "StarButtonControl", "LongStarButtonControl", "VeryLongStarButtonControl",
+}
+SENTRY_NUMERIC_PARAM_BOUNDS = {
+  "SentryModeSensitivity": (0.005, 1.0, 0.005),
+  "SentryModeWarningTime": (0.1, 10.0, 0.1),
+}
 
 GALAXY_DEPS_PATH = "/data/galaxy_deps"
 LEGACY_GALAXY_DEPS_PATH = "/data/" + "".join(chr(code) for code in (112, 111, 110, 100)) + "_deps"
@@ -753,6 +764,24 @@ def _sentry_push_subscription_count() -> int:
     return len(_load_sentry_push_subscriptions())
 
 
+def _sentry_public_base_url() -> str:
+  configured_url = os.getenv("STARPILOT_GALAXY_PUBLIC_URL", "").strip().rstrip("/")
+  if configured_url:
+    return configured_url
+
+  slug = _read_galaxy_text(_get_galaxy_dir() / "glxyslug")
+  return f"https://galaxy.firestar.link/{slug}" if slug else ""
+
+
+def _sentry_external_image_urls(event: dict) -> list[str]:
+  base_url = _sentry_public_base_url()
+  if not base_url:
+    return []
+
+  public_event = _public_sentry_event(event)
+  return [f"{base_url}{image_url}" for image_url in public_event["imageUrls"]]
+
+
 def _sentry_notification_channels() -> dict[str, bool]:
   return {
     "webPush": _sentry_push_subscription_count() > 0,
@@ -787,6 +816,9 @@ def _dispatch_sentry_push(event: dict) -> None:
     "eventId": event_id,
     "url": f"/sentry?event={quote(event_id, safe='')}",
   }
+  image_urls = _sentry_external_image_urls(event)
+  if image_urls:
+    payload["image"] = image_urls[0]
 
   with _SENTRY_PUSH_LOCK:
     subscriptions = _load_sentry_push_subscriptions()
@@ -846,10 +878,14 @@ def _dispatch_sentry_event(event: dict) -> None:
   ntfy_url = (params.get("SentryModeNtfyUrl", encoding="utf-8") or "").strip()
   if ntfy_url:
     try:
+      image_urls = _sentry_external_image_urls(event)
+      headers = {"Title": "StarPilot Sentry Mode", "Priority": "urgent", "Tags": "warning,car"}
+      if image_urls:
+        headers["Attach"] = image_urls[0]
       response = requests.post(
         ntfy_url,
         data=message.encode("utf-8"),
-        headers={"Title": "StarPilot Sentry Mode", "Priority": "urgent", "Tags": "warning,car"},
+        headers=headers,
         timeout=10,
       )
       response.raise_for_status()
@@ -957,6 +993,7 @@ _STATS_RESPONSE_CACHE = {
   "updated_at": 0.0,
   "payload": None,
 }
+_STATS_RESPONSE_LOCK = threading.Lock()
 
 try:
   FOOTAGE_PATHS = [
@@ -4865,6 +4902,21 @@ def setup(app):
       if key not in allowed_keys:
         return jsonify({"error": f"Parameter '{key}' is not editable."}), 403
 
+      if key == "PulseGlideSpeedDelta" or (key in PULSE_GLIDE_BUTTON_KEYS and str_val.strip() == str(BUTTON_FUNCTIONS["PULSE_AND_GLIDE"])):
+        if not params.get_bool("GalaxyDeveloperMode"):
+          return jsonify({"error": "Pulse and Glide is available only with Galaxy Developer Mode enabled."}), 403
+
+      if key in SENTRY_NUMERIC_PARAM_BOUNDS:
+        minimum, maximum, step = SENTRY_NUMERIC_PARAM_BOUNDS[key]
+        try:
+          numeric = float(data["value"])
+        except (TypeError, ValueError):
+          return jsonify({"error": f"{key} must be numeric."}), 400
+        if not math.isfinite(numeric) or numeric < minimum or numeric > maximum:
+          return jsonify({"error": f"{key} must be between {minimum} and {maximum}."}), 400
+        numeric = round(round(numeric / step) * step, 3)
+        str_val = str(numeric)
+
       if key == "AlphaLongitudinalEnabled":
         if not _get_alpha_longitudinal_available():
           return jsonify({"error": "Alpha Longitudinal is not available for the detected vehicle."}), 403
@@ -6331,8 +6383,7 @@ def setup(app):
 
     return jsonify({"message": "Speed limit processing started.", "status": "Calculating..."}), 202
 
-  @app.route("/api/stats", methods=["GET"])
-  def get_stats():
+  def _get_stats_locked():
     cache_now = time.monotonic()
     cached_payload = _STATS_RESPONSE_CACHE.get("payload")
     if cached_payload is not None and cache_now - _STATS_RESPONSE_CACHE.get("updated_at", 0.0) < STATS_RESPONSE_CACHE_SECONDS:
@@ -6375,6 +6426,18 @@ def setup(app):
       "payload": payload,
     })
     return payload
+
+  @app.route("/api/stats", methods=["GET"])
+  def get_stats():
+    cache_now = time.monotonic()
+    cached_payload = _STATS_RESPONSE_CACHE.get("payload")
+    if cached_payload is not None and cache_now - _STATS_RESPONSE_CACHE.get("updated_at", 0.0) < STATS_RESPONSE_CACHE_SECONDS:
+      return cached_payload
+
+    # Flask serves requests concurrently. Serialize cache misses so a slow
+    # storage scan cannot be multiplied by repeated homepage polling.
+    with _STATS_RESPONSE_LOCK:
+      return _get_stats_locked()
 
   @app.route("/api/stats/ignore_drive", methods=["POST"])
   def ignore_drive_stats():
