@@ -217,34 +217,59 @@ def iter_log_files(root: Path) -> list[Path]:
   return sorted(out, key=lambda p: (route_key(p, root), segment_index(p), p.name))
 
 
-def pull_logs(device: str, dest_root: Path, ssh_key: str | None, limit_routes: int | None) -> int:
+def remote_route_key(remote: str) -> str:
+  segment = Path(remote).parent.name
+  match = re.match(r"(.+--[0-9a-f]+)--\d+$", segment)
+  return match.group(1) if match else segment
+
+
+def pull_logs(device: str, dest_root: Path, ssh_key: str | None, limit_routes: int | None,
+              latest_routes: int | None) -> int:
   ssh = ["ssh"]
   scp = ["scp"]
   if ssh_key:
     ssh += ["-i", ssh_key]
     scp += ["-i", ssh_key]
-  ssh += ["-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", f"comma@{device}"]
-  scp += ["-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no"]
+  ssh += [
+    "-o", "IdentitiesOnly=yes",
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "ConnectTimeout=10",
+    "-o", "ServerAliveInterval=5",
+    "-o", "ServerAliveCountMax=2",
+    f"comma@{device}",
+  ]
+  scp += [
+    "-o", "IdentitiesOnly=yes",
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "ConnectTimeout=10",
+    "-o", "ServerAliveInterval=5",
+    "-o", "ServerAliveCountMax=2",
+  ]
 
   find_cmd = (
     "find /data/media/0/realdata -maxdepth 2 -type f "
     "\\( -name 'rlog.zst' -o -name 'qlog.zst' -o -name 'rlog.bz2' -o -name 'qlog.bz2' -o -name 'rlog' -o -name 'qlog' \\) | sort"
   )
   remote_files = run(ssh + [find_cmd], timeout=30).stdout.splitlines()
+  route_order = []
+  for remote in remote_files:
+    route = remote_route_key(remote)
+    if route not in route_order:
+      route_order.append(route)
+  if latest_routes is not None:
+    keep = set(route_order[-latest_routes:])
+    remote_files = [remote for remote in remote_files if remote_route_key(remote) in keep]
   if limit_routes is not None:
     route_order = []
-    filtered = []
     for remote in remote_files:
-      segment = Path(remote).parent.name
-      match = re.match(r"(.+--[0-9a-f]+)--\d+$", segment)
-      route = match.group(1) if match else segment
+      route = remote_route_key(remote)
       if route not in route_order:
         route_order.append(route)
-      if route_order.index(route) < limit_routes:
-        filtered.append(remote)
-    remote_files = filtered
+    keep = set(route_order[:limit_routes])
+    remote_files = [remote for remote in remote_files if remote_route_key(remote) in keep]
 
   copied = 0
+  failed = 0
   dest_root.mkdir(parents=True, exist_ok=True)
   for remote in remote_files:
     if not remote:
@@ -256,8 +281,23 @@ def pull_logs(device: str, dest_root: Path, ssh_key: str | None, limit_routes: i
     local_file = local_dir / name
     if local_file.exists():
       continue
-    run(scp + [f"comma@{device}:{remote}", str(local_file)], timeout=120)
-    copied += 1
+    last_error = None
+    for attempt in range(1, 4):
+      try:
+        run(scp + [f"comma@{device}:{remote}", str(local_file)], timeout=120)
+        copied += 1
+        last_error = None
+        break
+      except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        last_error = e
+        if local_file.exists():
+          local_file.unlink()
+        print(f"Warning: copy failed for {remote} (attempt {attempt}/3)", file=sys.stderr, flush=True)
+    if last_error is not None:
+      failed += 1
+      print(f"Warning: skipping {remote} after repeated copy failures", file=sys.stderr, flush=True)
+  if failed:
+    print(f"Warning: skipped {failed} log files due to copy failures", file=sys.stderr, flush=True)
   return copied
 
 
@@ -702,7 +742,13 @@ def main() -> None:
   args = parser.parse_args()
 
   if args.device and not args.skip_pull:
-    copied = pull_logs(args.device, args.log_root, args.ssh_key if Path(args.ssh_key).exists() else None, args.limit_routes)
+    copied = pull_logs(
+      args.device,
+      args.log_root,
+      args.ssh_key if Path(args.ssh_key).exists() else None,
+      args.limit_routes,
+      args.latest,
+    )
     print(f"Pulled {copied} new log files into {args.log_root}")
   elif not args.log_root.exists():
     raise SystemExit(f"Log root does not exist: {args.log_root}")
