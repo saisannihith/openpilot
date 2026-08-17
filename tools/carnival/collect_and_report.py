@@ -101,6 +101,22 @@ class LongitudinalMetrics:
 
 
 @dataclass
+class SteeringEventWindow:
+  event: str
+  t: float
+  v_ego: float
+  lat_active: bool
+  steering_pressed: bool
+  desired_curvature: float
+  curvature: float
+  curvature_error: float
+  desired_torque: float
+  output_torque: float
+  torque_error: float
+  in_curve: bool
+
+
+@dataclass
 class RouteReport:
   route: str
   files: int = 0
@@ -112,6 +128,7 @@ class RouteReport:
   radar: RadarMetrics = field(default_factory=RadarMetrics)
   lateral: LateralMetrics = field(default_factory=LateralMetrics)
   longitudinal: LongitudinalMetrics = field(default_factory=LongitudinalMetrics)
+  steering_windows: list[SteeringEventWindow] = field(default_factory=list)
   issues: list[str] = field(default_factory=list)
 
 
@@ -355,6 +372,35 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
   gas_pressed_samples = 0
   accel_commands = []
   harsh_brake_samples = 0
+  steering_window_last: dict[str, float] = {}
+
+  def capture_steering_window(event_name: str, t: float) -> None:
+    if len(report.steering_windows) >= 80:
+      return
+    if t - steering_window_last.get(event_name, -1e9) < 0.8:
+      return
+    steering_window_last[event_name] = t
+    v_ego = safe_float(safe_attr(latest_car_state, "vEgo", 0.0))
+    desired_curvature = safe_float(safe_attr(latest_controls_state, "desiredCurvature", 0.0))
+    curvature = safe_float(safe_attr(latest_controls_state, "curvature", 0.0))
+    desired_torque = safe_float(safe_attr(safe_attr(latest_car_control, "actuators"), "torque", 0.0))
+    output_torque = safe_float(safe_attr(safe_attr(latest_car_output, "actuatorsOutput"), "torque", 0.0))
+    curvature_error = abs(desired_curvature - curvature)
+    torque_error = abs(desired_torque - output_torque)
+    report.steering_windows.append(SteeringEventWindow(
+      event=event_name,
+      t=t,
+      v_ego=v_ego,
+      lat_active=bool(safe_attr(latest_car_control, "latActive", False)),
+      steering_pressed=bool(safe_attr(latest_car_state, "steeringPressed", False)),
+      desired_curvature=desired_curvature,
+      curvature=curvature,
+      curvature_error=curvature_error,
+      desired_torque=desired_torque,
+      output_torque=output_torque,
+      torque_error=torque_error,
+      in_curve=abs(desired_curvature) > 0.0015 or abs(curvature) > 0.0015,
+    ))
 
   def update_torque_clip() -> None:
     nonlocal torque_clip_samples, torque_clip_total
@@ -424,6 +470,8 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
         for onroad_event in event.onroadEvents:
           name = enum_name(onroad_event.name)
           events[name] += 1
+          if name in ("steerTempUnavailable", "steerTempUnavailableSilent", "steerUnavailable", "steerSaturated", "steerOverride", "steerDisengage"):
+            capture_steering_window(name, t)
 
       elif which == "radarState":
         lead = event.radarState.leadOne
@@ -600,6 +648,26 @@ def write_markdown(reports: list[RouteReport], output: Path, log_root: Path) -> 
       f"- Steering temp/saturated/takeover events: {report.lateral.steering_temp_events}/{report.lateral.steer_saturated_events}/{report.lateral.lateral_takeover_events}",
       f"- Torque clip samples: {report.lateral.torque_clip_samples} ({report.lateral.torque_clip_pct:.1%})",
       f"- Curvature error P90: {fmt(report.lateral.curvature_error_p90)}",
+      "",
+      "### Steering Event Windows",
+      "",
+    ]
+    if report.steering_windows:
+      lines += [
+        "| Event | t | vEgo | Curve | Lat Active | Driver Steer | Desired Curv | Actual Curv | Torque Err |",
+        "|---|---:|---:|---|---|---|---:|---:|---:|",
+      ]
+      for window in report.steering_windows[:30]:
+        lines.append(
+          f"| {window.event} | {window.t:.2f} | {window.v_ego:.1f} | "
+          f"{'yes' if window.in_curve else 'no'} | {'yes' if window.lat_active else 'no'} | "
+          f"{'yes' if window.steering_pressed else 'no'} | {window.desired_curvature:.5f} | "
+          f"{window.curvature:.5f} | {window.torque_error:.3f} |"
+        )
+    else:
+      lines.append("- No steering warning/override/saturation windows found.")
+
+    lines += [
       "",
       "### Longitudinal",
       "",
