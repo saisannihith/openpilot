@@ -226,7 +226,11 @@ class RadarInterface(RadarInterfaceBase):
     state, d_rel, y_rel_raw, v_rel_raw, d_dot, state_alt = primary
     d_dot_str = "nan" if not math.isfinite(d_dot) else f"{d_dot:.2f}"
     shadow_str = " ".join(f"{label}={d_shadow:.2f}" for label, d_shadow in shadow_distances) or "none"
-    publish_ready = math.isfinite(d_dot) and abs(d_dot) < 60.0 and abs(y_rel_raw) < 20.0
+    # This stream is confirmed present, but the current decode can still select
+    # the wrong object. Keep it explicitly shadow-only until object association,
+    # lateral position, and relative velocity are validated well enough for live
+    # longitudinal planning.
+    publish_ready = False
     cloudlog.warning(
       "Carnival 4th gen radar probe: "
       f"addr=0x{CARNIVAL_4TH_GEN_PRIMARY_OBJECT_ADDR:x} slot=1 state={state}/{state_alt} "
