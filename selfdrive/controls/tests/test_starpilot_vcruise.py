@@ -14,7 +14,10 @@ from openpilot.starpilot.controls.lib.starpilot_vcruise import (
   get_lead_veto_distance,
   get_slc_lead_drop_relaxed_target,
 )
-from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import get_force_stop_handoff_distance
+from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
+  get_force_stop_distance_bias,
+  get_force_stop_handoff_distance,
+)
 from types import SimpleNamespace
 
 
@@ -123,6 +126,11 @@ def test_vehicle_force_stop_handoffs():
   assert get_force_stop_handoff_distance(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN) == pytest.approx(9.0)
   assert get_force_stop_handoff_distance(HYUNDAI_CAR.KIA_CARNIVAL_2025) == pytest.approx(6.0)
   assert get_force_stop_handoff_distance("TOYOTA_RAV4_TSS2") == pytest.approx(6.0)
+
+
+def test_camry_tss2_gets_forward_force_stop_bias_only():
+  assert get_force_stop_distance_bias("TOYOTA_CAMRY_TSS2") == pytest.approx(2.0)
+  assert get_force_stop_distance_bias("TOYOTA_RAV4_TSS2") == pytest.approx(0.0)
 
 
 def test_curve_speed_controller_holds_target_through_brief_detector_dropout():

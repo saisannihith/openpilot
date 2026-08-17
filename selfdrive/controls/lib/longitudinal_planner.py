@@ -21,9 +21,12 @@ from openpilot.selfdrive.controls.lib.lead_follow_policy import is_nonurgent_dup
 from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   get_far_follow_output_slew_rates,
   get_follow_prebrake_min_headway,
+  get_force_stop_distance_bias,
   get_force_stop_handoff_distance,
+  allow_radar_standstill_gap_settle,
   is_gm_silverado_early_follow_lead,
   is_toyota_rav4_tss2_post_departure_tune,
+  get_toyota_rav4_tss2_early_lead_cap,
   get_toyota_sienna_post_departure_restop_cap,
   get_untracked_slow_lead_decel_scale,
 )
@@ -2180,7 +2183,10 @@ class LongitudinalPlanner:
     force_stop_x = None
     force_stop_handoff_m = get_force_stop_handoff_distance(self.CP.carFingerprint)
     if sm['starpilotPlan'].forcingStop and sm['starpilotPlan'].forcingStopLength > force_stop_handoff_m:
-      force_stop_x = float(sm['starpilotPlan'].forcingStopLength) + STOP_DISTANCE
+      force_stop_x = (
+        float(sm['starpilotPlan'].forcingStopLength) + STOP_DISTANCE +
+        get_force_stop_distance_bias(self.CP.carFingerprint)
+      )
 
     self.mpc.update(sm['radarState'], v_cruise, x, v, a, j,
                     sm['starpilotPlan'].dangerFactor, effective_t_follow,
@@ -2321,11 +2327,17 @@ class LongitudinalPlanner:
       output_a_target = min(output_a_target, approach_lift_cap)
 
     close_lead_caps = []
+    rav4_early_lead_caps = []
     tracked_vision_approach_caps = []
     vision_low_speed_stop_active = False
     vision_brake_cap_active = False
     if lead_control_active:
       for lead in (self.lead_one, self.lead_two):
+        rav4_early_lead_cap = get_toyota_rav4_tss2_early_lead_cap(
+          self.CP, lead, v_ego, output_accel_min,
+        )
+        if rav4_early_lead_cap is not None:
+          rav4_early_lead_caps.append(rav4_early_lead_cap)
         cap = self.get_close_lead_brake_cap(lead, v_ego, output_accel_min)
         if cap is not None:
           close_lead_caps.append(cap)
@@ -2447,7 +2459,12 @@ class LongitudinalPlanner:
       slow_creep_depart_detected and
       self.slow_creep_lead_depart_elapsed >= STANDSTILL_LEAD_CREEP_RELEASE_CONFIRM_TIME
     )
-    radar_gap_settle_active = self.update_radar_standstill_gap_settle(sm, standstill_nudge_gap)
+    radar_gap_settle_active = False
+    if allow_radar_standstill_gap_settle(self.CP):
+      radar_gap_settle_active = self.update_radar_standstill_gap_settle(sm, standstill_nudge_gap)
+    else:
+      self.radar_standstill_gap_settle_elapsed = 0.0
+      self.radar_standstill_gap_settle_active = False
 
     standstill_stopped_lead_guard_cap = None
     standstill_guard_lead_present = any(bool(getattr(lead, "status", False)) for lead in (self.lead_one, self.lead_two))
@@ -2724,6 +2741,11 @@ class LongitudinalPlanner:
     if close_final_guard_cap is not None:
       self.a_desired = min(self.a_desired, close_final_guard_cap)
       output_a_target = min(output_a_target, close_final_guard_cap)
+
+    if rav4_early_lead_caps:
+      rav4_early_lead_cap = min(rav4_early_lead_caps)
+      self.a_desired = min(self.a_desired, rav4_early_lead_cap)
+      output_a_target = min(output_a_target, rav4_early_lead_cap)
 
     if close_release_hold_cap is not None:
       self.a_desired = min(self.a_desired, close_release_hold_cap)

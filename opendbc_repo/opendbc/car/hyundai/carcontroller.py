@@ -432,12 +432,10 @@ def process_hud_alert(enabled, fingerprint, hud_control):
 
 
 def preserve_stock_canfd_lfa_status(car_fingerprint) -> bool:
-  # The 2022-24 Carnival expects a clean replacement status payload after its radar ECU is disabled.
-  return car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN
+  return car_fingerprint not in (CAR.KIA_CARNIVAL_4TH_GEN, CAR.KIA_CARNIVAL_2025, CAR.KIA_CARNIVAL_HEV_4TH_GEN)
 
 
 def preserve_stock_canfd_lkas_status(car_fingerprint) -> bool:
-  # Match the latest StarPilot CAN-FD status behavior for Carnival.
   return car_fingerprint not in (CAR.KIA_CARNIVAL_4TH_GEN, CAR.KIA_CARNIVAL_2025, CAR.KIA_CARNIVAL_HEV_4TH_GEN)
 
 
