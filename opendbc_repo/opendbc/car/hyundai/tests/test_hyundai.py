@@ -20,7 +20,8 @@ from opendbc.car.hyundai.carcontroller import CarController, Ioniq6LongitudinalT
                                              should_track_stop_accel_directly_for_car, \
                                              should_send_stop_request, \
                                              update_cancel_counter, cancel_button_ready, \
-                                             preserve_stock_canfd_lfa_status, \
+                                             preserve_stock_canfd_lfa_status, preserve_stock_canfd_lkas_status, \
+                                             apply_carnival_4th_gen_high_angle_torque_guard, \
                                              suppress_redundant_gv70_brake_cancel
 from opendbc.car.hyundai.carstate import CarState, decode_canfd_camera_lead, decode_ioniq_6_blindspot_radar_state, \
                                              get_canfd_cruise_available
@@ -159,9 +160,14 @@ class TestHyundaiFingerprint:
 
     low_speed_limits = CarControllerParams(carnival_cp, vEgoRaw=14.9)
     highway_limits = CarControllerParams(carnival_cp, vEgoRaw=15.0)
-    assert (low_speed_limits.STEER_DELTA_UP, low_speed_limits.STEER_DELTA_DOWN) == (10, 8)
-    assert (highway_limits.STEER_DELTA_UP, highway_limits.STEER_DELTA_DOWN) == (3, 5)
+    assert (low_speed_limits.STEER_DELTA_UP, low_speed_limits.STEER_DELTA_DOWN) == (6, 6)
+    assert (highway_limits.STEER_DELTA_UP, highway_limits.STEER_DELTA_DOWN) == (2, 3)
     assert highway_limits.STEER_MAX == 409
+    assert highway_limits.STEER_THRESHOLD == 150
+
+    assert apply_carnival_4th_gen_high_angle_torque_guard(CAR.KIA_CARNIVAL_4TH_GEN, 409, 60.0, True) == 409
+    assert apply_carnival_4th_gen_high_angle_torque_guard(CAR.KIA_CARNIVAL_4TH_GEN, 409, 220.0, True) == 143
+    assert apply_carnival_4th_gen_high_angle_torque_guard(CAR.KIA_CARNIVAL_4TH_GEN, 409, 220.0, False) == 0
 
     carnival_2025_cp = CarInterface.get_non_essential_params(CAR.KIA_CARNIVAL_2025)
     carnival_2025_limits = CarControllerParams(carnival_2025_cp, vEgoRaw=15.0)
@@ -169,9 +175,13 @@ class TestHyundaiFingerprint:
 
   def test_carnival_2024_uses_clean_canfd_lfa_status(self):
     assert not preserve_stock_canfd_lfa_status(CAR.KIA_CARNIVAL_4TH_GEN)
+    assert not preserve_stock_canfd_lkas_status(CAR.KIA_CARNIVAL_4TH_GEN)
     assert preserve_stock_canfd_lfa_status(CAR.KIA_CARNIVAL_2025)
     assert preserve_stock_canfd_lfa_status(CAR.KIA_CARNIVAL_HEV_4TH_GEN)
     assert preserve_stock_canfd_lfa_status(CAR.HYUNDAI_IONIQ_6)
+    assert not preserve_stock_canfd_lkas_status(CAR.KIA_CARNIVAL_2025)
+    assert not preserve_stock_canfd_lkas_status(CAR.KIA_CARNIVAL_HEV_4TH_GEN)
+    assert preserve_stock_canfd_lkas_status(CAR.HYUNDAI_IONIQ_6)
 
     CP = CarParams.new_message()
     CP.carFingerprint = CAR.KIA_CARNIVAL_4TH_GEN

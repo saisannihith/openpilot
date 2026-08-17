@@ -22,6 +22,9 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 MAX_ANGLE = 85
 MAX_ANGLE_FRAMES = 89
 MAX_ANGLE_CONSECUTIVE_FRAMES = 2
+CARNIVAL_4TH_GEN_HIGH_ANGLE_TAPER_START = 85.0
+CARNIVAL_4TH_GEN_HIGH_ANGLE_TAPER_FULL = 220.0
+CARNIVAL_4TH_GEN_HIGH_ANGLE_TORQUE_MIN_SCALE = 0.35
 # Some Hyundai/Kia cancel buttons are pause/resume toggles. Give a brake press
 # time to disengage stock SCC before sending the fallback button message.
 CANCEL_BUTTON_DELAY_FRAMES = 10
@@ -433,6 +436,30 @@ def preserve_stock_canfd_lfa_status(car_fingerprint) -> bool:
   return car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN
 
 
+def preserve_stock_canfd_lkas_status(car_fingerprint) -> bool:
+  # Match the latest StarPilot CAN-FD status behavior for Carnival.
+  return car_fingerprint not in (CAR.KIA_CARNIVAL_4TH_GEN, CAR.KIA_CARNIVAL_2025, CAR.KIA_CARNIVAL_HEV_4TH_GEN)
+
+
+def apply_carnival_4th_gen_high_angle_torque_guard(car_fingerprint, apply_torque: int,
+                                                   steering_angle_deg: float, apply_steer_req: bool) -> int:
+  if car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN:
+    return apply_torque
+
+  angle = abs(steering_angle_deg)
+  if angle < CARNIVAL_4TH_GEN_HIGH_ANGLE_TAPER_START:
+    return apply_torque
+
+  if not apply_steer_req:
+    return 0
+
+  scale = np.interp(angle,
+                    [CARNIVAL_4TH_GEN_HIGH_ANGLE_TAPER_START, CARNIVAL_4TH_GEN_HIGH_ANGLE_TAPER_FULL],
+                    [1.0, CARNIVAL_4TH_GEN_HIGH_ANGLE_TORQUE_MIN_SCALE])
+  scale = float(np.clip(scale, CARNIVAL_4TH_GEN_HIGH_ANGLE_TORQUE_MIN_SCALE, 1.0))
+  return int(round(apply_torque * scale))
+
+
 def suppress_redundant_gv70_brake_cancel(CP, brake_pressed: bool, lat_active: bool) -> bool:
   return bool(
     CP.carFingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN and
@@ -619,6 +646,8 @@ class CarController(CarControllerBase):
       self.angle_limit_counter, apply_steer_req = common_fault_avoidance(abs(CS.out.steeringAngleDeg) >= MAX_ANGLE, CC.latActive,
                                                                          self.angle_limit_counter, MAX_ANGLE_FRAMES,
                                                                          MAX_ANGLE_CONSECUTIVE_FRAMES)
+      apply_torque = apply_carnival_4th_gen_high_angle_torque_guard(self.CP.carFingerprint, apply_torque,
+                                                                    CS.out.steeringAngleDeg, apply_steer_req)
 
       if not CC.latActive:
         apply_torque = 0
@@ -831,7 +860,8 @@ class CarController(CarControllerBase):
     # payload. Forwarding its stock status bits leaves lane-safety state asserted
     # while StarPilot is suppressing the stock LFA path.
     preserve_stock_lkas = bool(self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING) and \
-      not self.long_active_ecu and self.CP.carFingerprint != CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN
+      not self.long_active_ecu and self.CP.carFingerprint != CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN and \
+      preserve_stock_canfd_lkas_status(self.CP.carFingerprint)
     angle_lkas_alt = bool(self.CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and
                           self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING_ALT)
     ccnc_angle_long = self.CP.carFingerprint in CANFD_ANGLE_LONGITUDINAL_CAR and \

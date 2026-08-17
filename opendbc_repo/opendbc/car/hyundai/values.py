@@ -44,12 +44,15 @@ class CarControllerParams:
       self.STEER_DRIVER_ALLOWANCE = 100
       self.STEER_DRIVER_MULTIPLIER = 2
       self.STEER_THRESHOLD = 100
+      if CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
+        self.STEER_THRESHOLD = 150
       if vEgoRaw < 15.0:  # below ~34 mph - more aggressive for tight turns
-        self.STEER_DELTA_UP = 10
-        self.STEER_DELTA_DOWN = 8
-      elif CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
-        self.STEER_DELTA_UP = 3
-        self.STEER_DELTA_DOWN = 5
+        if CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
+          self.STEER_DELTA_UP = 6
+          self.STEER_DELTA_DOWN = 6
+        else:
+          self.STEER_DELTA_UP = 10
+          self.STEER_DELTA_DOWN = 8
       else:
         self.STEER_DELTA_UP = 2
         self.STEER_DELTA_DOWN = 3
