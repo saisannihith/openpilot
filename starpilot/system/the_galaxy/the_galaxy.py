@@ -123,8 +123,8 @@ PULSE_GLIDE_BUTTON_KEYS = {
   "StarButtonControl", "LongStarButtonControl", "VeryLongStarButtonControl",
 }
 SENTRY_NUMERIC_PARAM_BOUNDS = {
-  "SentryModeSensitivity": (0.005, 1.0, 0.005),
-  "SentryModeWarningTime": (0.1, 10.0, 0.1),
+  "SentryModeSensitivity": (0.005, 1.0),
+  "SentryModeWarningTime": (0.1, 10.0),
 }
 
 GALAXY_DEPS_PATH = "/data/galaxy_deps"
@@ -782,6 +782,16 @@ def _sentry_external_image_urls(event: dict) -> list[str]:
   return [f"{base_url}{image_url}" for image_url in public_event["imageUrls"]]
 
 
+def _sentry_first_image(event: dict) -> tuple[str, bytes] | None:
+  for raw_path in event.get("imagePaths", []):
+    path = Path(str(raw_path))
+    try:
+      return path.name, path.read_bytes()
+    except OSError:
+      continue
+  return None
+
+
 def _sentry_notification_channels() -> dict[str, bool]:
   return {
     "webPush": _sentry_push_subscription_count() > 0,
@@ -878,16 +888,18 @@ def _dispatch_sentry_event(event: dict) -> None:
   ntfy_url = (params.get("SentryModeNtfyUrl", encoding="utf-8") or "").strip()
   if ntfy_url:
     try:
-      image_urls = _sentry_external_image_urls(event)
       headers = {"Title": "StarPilot Sentry Mode", "Priority": "urgent", "Tags": "warning,car"}
-      if image_urls:
-        headers["Attach"] = image_urls[0]
-      response = requests.post(
-        ntfy_url,
-        data=message.encode("utf-8"),
-        headers=headers,
-        timeout=10,
-      )
+      image = _sentry_first_image(event)
+      if image is None:
+        response = requests.post(ntfy_url, data=message.encode("utf-8"), headers=headers, timeout=10)
+      else:
+        filename, image_data = image
+        headers.update({
+          "Content-Type": "image/jpeg",
+          "Filename": filename,
+          "Message": f"StarPilot Sentry Mode: {event['message']}",
+        })
+        response = requests.put(ntfy_url, data=image_data, headers=headers, timeout=10)
       response.raise_for_status()
     except Exception:
       cloudlog.exception("Galaxy: ntfy notification failed")
@@ -2155,6 +2167,18 @@ def _git_stdout(repo_path, args, timeout=15):
     raise RuntimeError(stderr)
   return (result.stdout or "").strip()
 
+def _clear_generated_build_state(repo_path):
+  """Drop ignored build metadata that is unsafe to carry across revisions."""
+  root = Path(repo_path)
+  for path in (root / ".sconsign.dblite", root / "cereal" / "gen"):
+    try:
+      if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+      else:
+        path.unlink(missing_ok=True)
+    except OSError as exception:
+      raise RuntimeError(f"Unable to clear stale build state at {path}: {exception}") from exception
+
 def _git_config_get(repo_path, key):
   try:
     return _git_stdout(repo_path, ["config", "--local", "--get", key], timeout=10)
@@ -2491,6 +2515,7 @@ def _fast_update_worker():
     reset = _run_git(repo_path, ["reset", "--hard", "FETCH_HEAD"], timeout=120)
     if reset.returncode != 0:
       raise RuntimeError((reset.stderr or reset.stdout or "git reset failed").strip())
+    _clear_generated_build_state(repo_path)
     _set_fast_update_progress(3, "Applying fetched commit", 100.0, "Repository reset complete.")
 
     _run_submodule_update_if_needed(repo_path, step=4)
@@ -2543,6 +2568,7 @@ def _branch_switch_worker(target_branch):
     reset = _run_git(repo_path, ["reset", "--hard", "FETCH_HEAD"], timeout=120)
     if reset.returncode != 0:
       raise RuntimeError((reset.stderr or reset.stdout or "git reset failed").strip())
+    _clear_generated_build_state(repo_path)
 
     _run_git(repo_path, ["branch", "--set-upstream-to", f"origin/{target_branch}", target_branch], timeout=30)
     _set_fast_update_progress(3, "Switching branch", 100.0, f"Now on '{target_branch}'.")
@@ -2611,6 +2637,7 @@ def _rollback_worker():
     reset = _run_git(repo_path, ["reset", "--hard", target_commit], timeout=120)
     if reset.returncode != 0:
       raise RuntimeError((reset.stderr or reset.stdout or "git reset failed").strip())
+    _clear_generated_build_state(repo_path)
 
     _run_git(repo_path, ["branch", "--set-upstream-to", f"origin/{target_branch}", target_branch], timeout=30)
     _set_fast_update_progress(3, "Applying rollback target", 100.0, f"Now on {target_branch} @ {short_commit}.")
@@ -4458,6 +4485,7 @@ def setup(app):
       "/assets/components/router.js",
       "/assets/components/sentry_notifications.js",
       "/assets/js/utils.js",
+      "/assets/components/settings.js",
       "/assets/components/home/home.js",
       "/assets/components/home/home.css",
       "/assets/components/tools/device_settings.js",
@@ -4907,14 +4935,13 @@ def setup(app):
           return jsonify({"error": "Pulse and Glide is available only with Galaxy Developer Mode enabled."}), 403
 
       if key in SENTRY_NUMERIC_PARAM_BOUNDS:
-        minimum, maximum, step = SENTRY_NUMERIC_PARAM_BOUNDS[key]
+        minimum, maximum = SENTRY_NUMERIC_PARAM_BOUNDS[key]
         try:
           numeric = float(data["value"])
         except (TypeError, ValueError):
           return jsonify({"error": f"{key} must be numeric."}), 400
         if not math.isfinite(numeric) or numeric < minimum or numeric > maximum:
           return jsonify({"error": f"{key} must be between {minimum} and {maximum}."}), 400
-        numeric = round(round(numeric / step) * step, 3)
         str_val = str(numeric)
 
       if key == "AlphaLongitudinalEnabled":

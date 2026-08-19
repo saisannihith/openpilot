@@ -487,7 +487,7 @@ class CAR(Platforms):
     [
       HyundaiCarDocs("Hyundai Palisade (without HDA II) 2023-25", "Highway Driving Assist",
                      car_parts=CarParts.common([CarHarness.hyundai_a])),
-      HyundaiCarDocs("Hyundai Palisade (with HDA II) 2023-24", "Highway Driving Assist II",
+      HyundaiCarDocs("Hyundai Palisade (with HDA II) 2023-25", "Highway Driving Assist II",
                      car_parts=CarParts.common([CarHarness.hyundai_r])),
       HyundaiCarDocs("Kia Telluride (without HDA II) 2023-25", "Highway Driving Assist",
                      car_parts=CarParts.common([CarHarness.hyundai_l])),
@@ -974,23 +974,17 @@ CANCEL_BUTTON_ENABLE_CARS = frozenset({
   CAR.HYUNDAI_PALISADE_2023,
 })
 
+CAN_CANFD_BLENDED_HDA2_LONGITUDINAL_CAR = frozenset({
+  CAR.HYUNDAI_PALISADE_2023,
+})
+
 KIA_EV6_GT_LINE_LONG_TUNING_VDS_PREFIXES = frozenset({
   "C4DLC",
 })
 
 
-# These classic HKG platforms publish the LKAS button on CLU13 over the alt bus.
-# Keep G90 excluded until its alt-bus path is route-proven without the recent
-# engage/disengage regression.
-ALT_BUS_LDA_BUTTON_CARS = frozenset({
-  CAR.HYUNDAI_SONATA,
-})
-
-# On these Sonata layouts the alt-bus LKAS button pulses through the CLU13
-# steering-wheel-status field instead of the dedicated LKAS bit.
-ALT_BUS_LDA_BUTTON_SWL_STAT_CARS = frozenset({
-  CAR.HYUNDAI_SONATA,
-})
+ALT_BUS_LDA_BUTTON_CARS = frozenset()
+ALT_BUS_LDA_BUTTON_SWL_STAT_CARS = frozenset()
 
 
 def hyundai_cancel_button_enables_cruise(car_fingerprint) -> bool:
