@@ -27,10 +27,49 @@ CARNIVAL_4TH_GEN_PRIMARY_OBJECT_SLOT_OFFSET = 0
 CARNIVAL_4TH_GEN_OBJECT_BUS = 1
 CARNIVAL_4TH_GEN_OBJECT_LEN = 32
 CARNIVAL_4TH_GEN_OBJECT_LOG_INTERVAL = 1.0
+CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID = 0xC4101
+CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE = 0.25
+CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST = 3
+CARNIVAL_4TH_GEN_CONFIRMATION_MAX_GAP = 0.15
 CARNIVAL_4TH_GEN_SHADOW_DISTANCE_FIELDS = (
   ("u11@4x0.03", 4, 11, 0.03),
   ("u10@5x0.02", 5, 10, 0.02),
 )
+CARNIVAL_4TH_GEN_SHADOW_LATERAL_FIELDS = (
+  ("s8@76x0.01", 76, 8, 0.01),
+  ("s8@78x0.01", 78, 8, 0.01),
+  ("s8@80x0.01", 80, 8, 0.01),
+)
+CARNIVAL_4TH_GEN_SHADOW_VELOCITY_FIELDS = (
+  ("s10@90x0.005", 90, 10, 0.005),
+  ("s10@91x0.01", 91, 10, 0.01),
+  ("s8@92sccFit", 92, 8, 0.10038812996608489),
+  ("s10@92sccFit", 92, 10, 0.10829942713591408),
+  ("s12@89alt4Fit", 89, 12, 0.012627710973957268),
+  ("s10@90alt6Fit", 90, 10, 0.0254301516520513),
+  ("s8@93fit", 93, 8, 0.11248251363290525),
+  ("s14@88compactFit", 88, 14, 0.004776276420154466),
+)
+CARNIVAL_4TH_GEN_CONFIRMATION_SPECS = {
+  (3, 6): (80, 0.25),
+  (3, 8): (80, 0.30),
+  (4, 4): (76, None),
+  (4, 6): (76, 0.40),
+  (4, 8): (76, 0.40),
+  (4, 10): (76, None),
+  (4, 12): (76, None),
+  (4, 14): (76, None),
+}
+CARNIVAL_4TH_GEN_CONFIRMATION_VEL_BY_STATE_ALT = {
+  (3, 6): (89, 14, 0.012816497532684136, -102.47277125484996),
+  (3, 8): (91, 8, 0.050066083726851514, 2.4059439014445294),
+  (4, 4): (89, 12, 0.012627710973957268, 2.473553325611029),
+  (4, 6): (90, 10, 0.0254301516520513, -10.57402966185409),
+  (4, 8): (93, 8, 0.21134808418254836, 2.813726385579173),
+  (4, 10): (92, 10, 0.10829942713591408, 2.936194664391474),
+  (4, 12): (92, 8, 0.10038812996608489, 2.519855039553459),
+  (4, 14): (93, 8, 0.20908604269296968, 2.8070581722888535),
+}
 
 
 def get_little_unsigned(dat: bytes, start: int, size: int) -> int:
@@ -40,6 +79,36 @@ def get_little_unsigned(dat: bytes, start: int, size: int) -> int:
 def get_little_signed(dat: bytes, start: int, size: int) -> int:
   val = get_little_unsigned(dat, start, size)
   return val - (1 << size) if val & (1 << (size - 1)) else val
+
+
+def decode_carnival_confirmation_velocity(dat: bytes, bit_offset: int, state: int, state_alt: int) -> float:
+  start, size, scale, offset = CARNIVAL_4TH_GEN_CONFIRMATION_VEL_BY_STATE_ALT[(state, state_alt)]
+  return get_little_signed(dat, bit_offset + start, size) * scale + offset
+
+
+def carnival_confirmation_lateral(dat: bytes, bit_offset: int, state: int, state_alt: int) -> float | None:
+  spec = CARNIVAL_4TH_GEN_CONFIRMATION_SPECS.get((state, state_alt))
+  if spec is None:
+    return None
+  lateral_start, _ = spec
+  return get_little_signed(dat, bit_offset + lateral_start, 8) * 0.01
+
+
+def carnival_confirmation_lateral_sane(y_rel: float, state: int, state_alt: int) -> bool:
+  _, max_y = CARNIVAL_4TH_GEN_CONFIRMATION_SPECS[(state, state_alt)]
+  return max_y is None or abs(y_rel) <= max_y
+
+
+def carnival_confirmation_continuous(prev: tuple[float, float, int, int] | None, now: float,
+                                     d_rel: float, state: int, state_alt: int) -> bool:
+  if prev is None:
+    return False
+  prev_t, prev_d, prev_state, prev_alt = prev
+  dt = now - prev_t
+  d_limit = max(1.5, 35.0 * max(dt, 0.0))
+  return (prev_state == state and prev_alt == state_alt and
+          0.0 <= dt <= CARNIVAL_4TH_GEN_CONFIRMATION_MAX_GAP and
+          abs(d_rel - prev_d) <= d_limit)
 
 
 @dataclass(frozen=True)
@@ -131,6 +200,9 @@ class RadarInterface(RadarInterfaceBase):
     self.carnival_object_probe_last_log = 0.0
     self.carnival_object_probe_seen = 0
     self.carnival_object_probe_valid = 0
+    self.carnival_confirmation_track: tuple[float, float, float, float] | None = None
+    self.carnival_confirmation_prev: tuple[float, float, int, int] | None = None
+    self.carnival_confirmation_persist = 0
     self.rcp = get_radar_can_parser(CP, self.radar_config)
 
     # Precompute (addr, "RADAR_TRACK_xxx") pairs once. _update runs on the
@@ -162,7 +234,10 @@ class RadarInterface(RadarInterfaceBase):
         self.updated_messages.clear()
 
     if self.radar_off_can or (self.rcp is None):
-      return super().update(None)
+      rr = super().update(None)
+      if rr is not None and self.carnival_object_probe:
+        self._add_carnival_confirmation_track(rr)
+      return rr
 
     vls = self.rcp.update(can_strings)
     self.updated_messages.update(vls)
@@ -174,6 +249,8 @@ class RadarInterface(RadarInterfaceBase):
 
     rr = self._update(self.updated_messages)
     self.updated_messages.clear()
+    if self.carnival_object_probe:
+      self._add_carnival_confirmation_track(rr)
 
     return rr
 
@@ -181,6 +258,9 @@ class RadarInterface(RadarInterfaceBase):
     now = time.monotonic()
     primary = None
     shadow_distances = []
+    shadow_laterals = []
+    shadow_velocities = []
+    confirmation_gate_active = False
 
     for _, frames in can_strings:
       for address, dat, src in frames:
@@ -214,11 +294,46 @@ class RadarInterface(RadarInterfaceBase):
               d_dot = (d_rel - prev_d) / dt
           self.carnival_object_probe_prev[key] = (now, d_rel)
           primary = (state, d_rel, y_rel_raw, v_rel_raw, d_dot, state_alt)
+          y_shadow = carnival_confirmation_lateral(dat, bit_offset, state, state_alt)
+          confirmation_gate_active = (y_shadow is not None and
+                                      carnival_confirmation_lateral_sane(y_shadow, state, state_alt))
+          if confirmation_gate_active:
+            if carnival_confirmation_continuous(self.carnival_confirmation_prev, now, d_rel, state, state_alt):
+              self.carnival_confirmation_persist += 1
+            else:
+              self.carnival_confirmation_persist = 1
+            self.carnival_confirmation_prev = (now, d_rel, state, state_alt)
+            v_shadow = decode_carnival_confirmation_velocity(dat, bit_offset, state, state_alt)
+            if self.carnival_confirmation_persist >= CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST:
+              self.carnival_confirmation_track = (now, d_rel, y_shadow, v_shadow)
+            else:
+              self.carnival_confirmation_track = None
+          else:
+            self.carnival_confirmation_track = None
+            self.carnival_confirmation_persist = 0
+            self.carnival_confirmation_prev = None
 
         for label, start, size, scale in CARNIVAL_4TH_GEN_SHADOW_DISTANCE_FIELDS:
           d_shadow = get_little_unsigned(dat, start, size) * scale
           if 0.5 <= d_shadow <= 220.0:
             shadow_distances.append((label, d_shadow))
+        for label, start, size, scale in CARNIVAL_4TH_GEN_SHADOW_LATERAL_FIELDS:
+          shadow_laterals.append((label, get_little_signed(dat, bit_offset + start, size) * scale))
+        for label, start, size, scale in CARNIVAL_4TH_GEN_SHADOW_VELOCITY_FIELDS:
+          offset = 0.0
+          if label == "s8@93fit":
+            offset = 0.9638295363157041
+          elif label == "s14@88compactFit":
+            offset = 1.9954503521173612
+          elif label == "s8@92sccFit":
+            offset = 2.519855039553459
+          elif label == "s10@92sccFit":
+            offset = 2.936194664391474
+          elif label == "s12@89alt4Fit":
+            offset = 2.473553325611029
+          elif label == "s10@90alt6Fit":
+            offset = -10.57402966185409
+          shadow_velocities.append((label, get_little_signed(dat, bit_offset + start, size) * scale + offset))
 
     if primary is None or now - self.carnival_object_probe_last_log < CARNIVAL_4TH_GEN_OBJECT_LOG_INTERVAL:
       return
@@ -226,19 +341,45 @@ class RadarInterface(RadarInterfaceBase):
     state, d_rel, y_rel_raw, v_rel_raw, d_dot, state_alt = primary
     d_dot_str = "nan" if not math.isfinite(d_dot) else f"{d_dot:.2f}"
     shadow_str = " ".join(f"{label}={d_shadow:.2f}" for label, d_shadow in shadow_distances) or "none"
-    # This stream is confirmed present, but the current decode can still select
-    # the wrong object. Keep it explicitly shadow-only until object association,
-    # lateral position, and relative velocity are validated well enough for live
-    # longitudinal planning.
-    publish_ready = False
+    lateral_str = " ".join(f"{label}={y_shadow:.2f}" for label, y_shadow in shadow_laterals) or "none"
+    velocity_str = " ".join(f"{label}={v_shadow:.2f}" for label, v_shadow in shadow_velocities) or "none"
+    # These compact 0x180.1 gates are validated for vision-led model-lead
+    # confirmation/debug tracks, but not for independent radar-only braking.
+    visual_candidate = confirmation_gate_active
+    lead_confirm_candidate = confirmation_gate_active
+    confirmation_track = confirmation_gate_active and self.carnival_confirmation_persist >= CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST
+    publish_ready = confirmation_track
+    control_ready = False
     cloudlog.warning(
       "Carnival 4th gen radar probe: "
       f"addr=0x{CARNIVAL_4TH_GEN_PRIMARY_OBJECT_ADDR:x} slot=1 state={state}/{state_alt} "
       f"dRel={d_rel:.2f} yRaw={y_rel_raw:.2f} vRaw={v_rel_raw:.2f} dDot={d_dot_str} "
-      f"shadowDistance={shadow_str} publishReady={publish_ready} "
+      f"shadowDistance={shadow_str} shadowY={lateral_str} shadowV={velocity_str} "
+      f"confirmationGate={confirmation_gate_active} visualCandidate={visual_candidate} "
+      f"leadConfirmCandidate={lead_confirm_candidate} confirmationTrack={confirmation_track} "
+      f"persist={self.carnival_confirmation_persist} "
+      f"publishReady={publish_ready} controlReady={control_ready} "
       f"seen={self.carnival_object_probe_seen} valid={self.carnival_object_probe_valid}"
     )
     self.carnival_object_probe_last_log = now
+
+  def _add_carnival_confirmation_track(self, rr):
+    if self.carnival_confirmation_track is None:
+      return
+
+    now, d_rel, y_rel, v_rel = self.carnival_confirmation_track
+    if time.monotonic() - now > CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE:
+      return
+
+    pt = structs.RadarData.RadarPoint()
+    pt.trackId = CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID
+    pt.measured = True
+    pt.dRel = float(d_rel)
+    pt.yRel = float(y_rel)
+    pt.vRel = float(v_rel)
+    pt.aRel = float("nan")
+    pt.yvRel = float("nan")
+    rr.points = list(rr.points) + [pt]
 
   def _decode_g90_mando_values(self, dat: bytes):
     vals = {}

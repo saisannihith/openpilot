@@ -41,6 +41,12 @@ ADJACENT_STOP_REST_FRAMES = 15
 ADJACENT_STOP_MIN_Y = 1.8         # m — inside this is our own lane
 ADJACENT_STOP_MAX_Y = 7.5         # m — beyond this is roadside, not an adjacent lane
 ADJACENT_STOP_MAX_D = 110.0       # m
+CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN = 0xC4100
+CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MAX = 0xC41FF
+
+
+def is_carnival_confirmation_track(identifier: int) -> bool:
+  return CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN <= identifier <= CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MAX
 
 
 class KalmanParams:
@@ -65,6 +71,7 @@ class KalmanParams:
 class Track:
   def __init__(self, identifier: int, v_lead: float, kalman_params: KalmanParams):
     self.identifier = identifier
+    self.confirmationOnly = is_carnival_confirmation_track(identifier)
     self.cnt = 0
     self.aLeadTau = FirstOrderFilter(_LEAD_ACCEL_TAU, 0.45, DT_MDL)
     self.K_A = kalman_params.A
@@ -134,6 +141,9 @@ class Track:
     }
 
   def potential_adjacent_lead(self, left: bool, standstill: bool, model_data: capnp._DynamicStructReader):
+    if self.confirmationOnly:
+      return False
+
     if standstill or self.vLead < 1 or self.leadTrackID == self.identifier:
       return False
 
@@ -151,6 +161,9 @@ class Track:
     y == -yRel, laneLines[1] left boundary and [2] right), plus an outer bound so
     roadside returns past the neighbouring lane don't qualify.
     """
+    if self.confirmationOnly:
+      return False
+
     if not (self.seen_moving and self.rest_frames >= ADJACENT_STOP_REST_FRAMES):
       return False
 
@@ -169,6 +182,9 @@ class Track:
     return bool(model_y < left_lane or model_y > right_lane)
 
   def potential_low_speed_lead(self, v_ego: float):
+    if self.confirmationOnly:
+      return False
+
     # stop for stuff in front of you and low speed, even without model confirmation
     # Radar points closer than 0.75, are almost always glitches on toyota radars
     return abs(self.yRel) < 1.0 and (v_ego < V_EGO_STATIONARY) and (0.75 < self.dRel < 25)
