@@ -174,6 +174,7 @@ class StarPilotVCruise:
     self.standstill_force_stop_reason = None
     self.force_stop_from_light = False
     self.force_stop_light_clear_since = None
+    self.lone_high_speed_red_light_suppressed = False
     self.controls_enabled_previously = False
     # Kinematic distance estimator. Same attribute also published as
     # starpilotPlan.forcingStopLength, so the existing reader keeps working.
@@ -384,11 +385,25 @@ class StarPilotVCruise:
       model_length_active = self.starpilot_planner.model_length < ACTIVATION_M
     self.activation_gate_active = model_length_active and stop_light_detected
     raw_model_stopped = bool(getattr(self.starpilot_planner, "raw_model_stopped", False))
+    lone_high_speed_red_light = (
+      stop_light_detected and
+      v_ego >= FORCE_STOP_HIGH_SPEED_EVIDENCE_MS and
+      not raw_model_stopped and
+      not dash_active and
+      not lead_present
+    )
+    if lone_high_speed_red_light:
+      self.lone_high_speed_red_light_suppressed = True
+    elif not stop_light_detected or raw_model_stopped or dash_active or lead_present:
+      self.lone_high_speed_red_light_suppressed = False
+
     high_speed_force_stop_evidence = (
-      v_ego < FORCE_STOP_HIGH_SPEED_EVIDENCE_MS
-      or raw_model_stopped
-      or dash_active
-      or lead_present
+      not self.lone_high_speed_red_light_suppressed and (
+        v_ego < FORCE_STOP_HIGH_SPEED_EVIDENCE_MS
+        or raw_model_stopped
+        or dash_active
+        or lead_present
+      )
     )
 
     cem_path = (stop_light_detected

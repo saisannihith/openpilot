@@ -15,7 +15,7 @@ from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 import openpilot.selfdrive.controls.lib.longitudinal_planner as longitudinal_planner_module
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
-from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, get_coast_accel, get_vehicle_min_accel, should_publish_planner_fcw, should_guard_carnival_lone_high_speed_red_light
+from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, get_coast_accel, get_vehicle_min_accel, should_publish_planner_fcw, should_guard_carnival_lone_high_speed_red_light, update_carnival_lone_high_speed_red_light_suppression
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LongitudinalMpc,
   build_model_lead_trajectory,
@@ -75,10 +75,20 @@ def test_carnival_lone_high_speed_red_light_guard_requires_no_other_stop_evidenc
   CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
   assert should_guard_carnival_lone_high_speed_red_light(CP, 20.0, True, False, False, False)
   assert not should_guard_carnival_lone_high_speed_red_light(CP, 16.0, True, False, False, False)
-  assert not should_guard_carnival_lone_high_speed_red_light(CP, 20.0, True, True, False, False)
+  assert should_guard_carnival_lone_high_speed_red_light(CP, 20.0, True, True, False, False)
   assert not should_guard_carnival_lone_high_speed_red_light(CP, 20.0, True, False, True, False)
   assert not should_guard_carnival_lone_high_speed_red_light(CP, 20.0, True, False, False, True)
   assert not should_guard_carnival_lone_high_speed_red_light(SimpleNamespace(carFingerprint="HONDA_CIVIC"), 20.0, True, False, False, False)
+
+
+def test_carnival_lone_high_speed_red_light_guard_latches_until_evidence_or_clear():
+  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
+  suppressed = update_carnival_lone_high_speed_red_light_suppression(CP, 20.0, True, False, False, False)
+  assert suppressed
+  assert update_carnival_lone_high_speed_red_light_suppression(CP, 14.0, True, False, False, suppressed)
+  assert not update_carnival_lone_high_speed_red_light_suppression(CP, 14.0, False, False, False, suppressed)
+  assert not update_carnival_lone_high_speed_red_light_suppression(CP, 14.0, True, True, False, suppressed)
+  assert not update_carnival_lone_high_speed_red_light_suppression(CP, 14.0, True, False, True, suppressed)
 
 
 def test_mpc_duplicate_lead_filters_do_not_cross_contaminate_tracks():

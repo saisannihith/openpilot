@@ -521,16 +521,23 @@ def get_accel_from_plan(speeds, accels, action_t=DT_MDL, vEgoStopping=0.05):
   return a_target, should_stop
 
 
-def should_guard_carnival_lone_high_speed_red_light(CP, v_ego, red_light, forcing_stop,
-                                                    model_should_stop, lead_control_active):
+def update_carnival_lone_high_speed_red_light_suppression(CP, v_ego, red_light,
+                                                          model_should_stop, lead_control_active,
+                                                          currently_suppressed=False):
   return bool(
     str(getattr(CP, "carFingerprint", "")) == "KIA_CARNIVAL_4TH_GEN" and
-    float(v_ego) >= LONE_HIGH_SPEED_RED_LIGHT_EVIDENCE_MIN_SPEED and
     red_light and
-    not forcing_stop and
     not model_should_stop and
-    not lead_control_active
+    not lead_control_active and
+    (currently_suppressed or float(v_ego) >= LONE_HIGH_SPEED_RED_LIGHT_EVIDENCE_MIN_SPEED)
   )
+
+
+def should_guard_carnival_lone_high_speed_red_light(CP, v_ego, red_light, _forcing_stop,
+                                                    model_should_stop, lead_control_active,
+                                                    currently_suppressed=False):
+  return update_carnival_lone_high_speed_red_light_suppression(
+    CP, v_ego, red_light, model_should_stop, lead_control_active, currently_suppressed)
 
 
 class LongitudinalPlanner:
@@ -607,6 +614,7 @@ class LongitudinalPlanner:
     self.duplicate_vision_comfort_lead_source = None
     self.prev_experimental_mode = None
     self.experimental_release_accel_until = 0.0
+    self.carnival_lone_high_speed_red_light_suppressed = False
 
     if self.is_preap:
       try:
@@ -2902,15 +2910,15 @@ class LongitudinalPlanner:
     if force_slow_decel and scene_v_ego > 0.1:
       output_a_target = min(output_a_target, FORCE_DECEL_MIN_ACCEL)
 
-    lone_high_speed_red_light_guard = should_guard_carnival_lone_high_speed_red_light(
+    self.carnival_lone_high_speed_red_light_suppressed = update_carnival_lone_high_speed_red_light_suppression(
       self.CP,
       scene_v_ego,
       bool(getattr(sm['starpilotPlan'], 'redLight', False)),
-      bool(getattr(sm['starpilotPlan'], 'forcingStop', False)),
       bool(getattr(sm['modelV2'].action, 'shouldStop', False)),
       lead_control_active,
+      self.carnival_lone_high_speed_red_light_suppressed,
     )
-    if lone_high_speed_red_light_guard:
+    if self.carnival_lone_high_speed_red_light_suppressed:
       red_light_floor = -LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE
       self.a_desired = max(self.a_desired, red_light_floor)
       output_a_target = max(output_a_target, red_light_floor)
