@@ -43,6 +43,10 @@ ADJACENT_STOP_MAX_Y = 7.5         # m — beyond this is roadside, not an adjace
 ADJACENT_STOP_MAX_D = 110.0       # m
 CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN = 0xC4100
 CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MAX = 0xC41FF
+CARNIVAL_4TH_GEN_CONFIRMATION_DIST_SCALE = 0.22
+CARNIVAL_4TH_GEN_CONFIRMATION_DIST_FLOOR = 4.0
+CARNIVAL_4TH_GEN_CONFIRMATION_Y_STD_SCALE = 1.5
+CARNIVAL_4TH_GEN_CONFIRMATION_Y_FLOOR = 1.2
 
 
 def is_carnival_confirmation_track(identifier: int) -> bool:
@@ -225,6 +229,41 @@ def track_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: 
   return dist_sane and vel_sane and lat_sane
 
 
+def carnival_confirmation_matches_vision(track: Track, lead: capnp._DynamicStructReader) -> bool:
+  if not track.confirmationOnly or track.cnt < 1:
+    return False
+
+  offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
+  dist_sane = abs(track.dRel - offset_vision_dist) < max(abs(offset_vision_dist) * CARNIVAL_4TH_GEN_CONFIRMATION_DIST_SCALE,
+                                                         CARNIVAL_4TH_GEN_CONFIRMATION_DIST_FLOOR)
+  lat_sane = abs(track.yRel + lead.y[0]) < max(CARNIVAL_4TH_GEN_CONFIRMATION_Y_FLOOR,
+                                               CARNIVAL_4TH_GEN_CONFIRMATION_Y_STD_SCALE * max(float(lead.yStd[0]), 0.2))
+  return dist_sane and lat_sane
+
+
+def get_RadarState_from_carnival_confirmation(track: Track, lead_msg: capnp._DynamicStructReader,
+                                              v_ego: float, model_v_ego: float, model_prob: float):
+  # The Carnival hidden radar distance/lateral association is now validated well
+  # enough to stabilize a model lead. Its velocity decode is still being refined,
+  # so keep velocity and acceleration model-led for longitudinal safety.
+  model_v_rel = float(lead_msg.v[0] - model_v_ego)
+  model_v_lead = float(v_ego + model_v_rel)
+  return {
+    "dRel": float(track.dRel),
+    "yRel": float(track.yRel),
+    "vRel": model_v_rel,
+    "vLead": model_v_lead,
+    "vLeadK": model_v_lead,
+    "aLeadK": float(lead_msg.a[0]),
+    "aLeadTau": 0.3,
+    "status": True,
+    "fcw": track.is_potential_fcw(model_prob),
+    "modelProb": model_prob,
+    "radar": True,
+    "radarTrackId": track.identifier,
+  }
+
+
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, model_data: capnp._DynamicStructReader, tracks: dict[int, Track],
                           starpilot_toggles: SimpleNamespace, g90_radar_filter: bool = False,
                           preferred_track_id: int = -1):
@@ -240,6 +279,14 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, model_
 
   if not tracks:
     return None
+
+  confirmation_tracks = [track for track in tracks.values() if carnival_confirmation_matches_vision(track, lead)]
+  if confirmation_tracks:
+    offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
+    return min(confirmation_tracks, key=lambda c: (
+      abs(c.dRel - offset_vision_dist),
+      abs(c.yRel + lead.y[0]),
+    ))
 
   def prob(c):
     offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
@@ -307,7 +354,10 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
 
   lead_dict = {'status': False}
   if track is not None:
-    lead_dict = track.get_RadarState(filtered_lead_prob)
+    if track.confirmationOnly:
+      lead_dict = get_RadarState_from_carnival_confirmation(track, lead_msg, v_ego, model_v_ego, filtered_lead_prob)
+    else:
+      lead_dict = track.get_RadarState(filtered_lead_prob)
   elif (track is None) and ready and (filtered_lead_prob > lead_detection_probability):
     lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, filtered_lead_prob)
 
