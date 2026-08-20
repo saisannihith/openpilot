@@ -523,12 +523,14 @@ def get_accel_from_plan(speeds, accels, action_t=DT_MDL, vEgoStopping=0.05):
 
 def update_carnival_lone_high_speed_red_light_suppression(CP, v_ego, red_light,
                                                           model_should_stop, lead_control_active,
+                                                          forcing_stop=False,
                                                           currently_suppressed=False):
   return bool(
     str(getattr(CP, "carFingerprint", "")) == "KIA_CARNIVAL_4TH_GEN" and
     red_light and
     not model_should_stop and
     not lead_control_active and
+    (currently_suppressed or not forcing_stop) and
     (currently_suppressed or float(v_ego) >= LONE_HIGH_SPEED_RED_LIGHT_EVIDENCE_MIN_SPEED)
   )
 
@@ -537,7 +539,7 @@ def should_guard_carnival_lone_high_speed_red_light(CP, v_ego, red_light, _forci
                                                     model_should_stop, lead_control_active,
                                                     currently_suppressed=False):
   return update_carnival_lone_high_speed_red_light_suppression(
-    CP, v_ego, red_light, model_should_stop, lead_control_active, currently_suppressed)
+    CP, v_ego, red_light, model_should_stop, lead_control_active, _forcing_stop, currently_suppressed)
 
 
 class LongitudinalPlanner:
@@ -2916,6 +2918,7 @@ class LongitudinalPlanner:
       bool(getattr(sm['starpilotPlan'], 'redLight', False)),
       bool(getattr(sm['modelV2'].action, 'shouldStop', False)),
       lead_control_active,
+      bool(getattr(sm['starpilotPlan'], 'forcingStop', False)),
       self.carnival_lone_high_speed_red_light_suppressed,
     )
     if self.carnival_lone_high_speed_red_light_suppressed:
