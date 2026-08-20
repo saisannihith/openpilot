@@ -146,6 +146,9 @@ class CarState(CarStateBase):
     self.stock_camera_lead_distance = 0.0
     self.stock_camera_lead_rel_speed = 0.0
     self.stock_camera_lead_ts = 0
+    self.mdps_lka_fault = 0
+    self.mdps_lka_active = 0
+    self.mdps_lka_angle_fault = 0
     self.stock_blinker_stalks_ts = 0
     self.blindspots_rear_corners = {}
     self.blindspots_front_corner_1 = {}
@@ -485,10 +488,14 @@ class CarState(CarStateBase):
     ret.steeringTorque = cp.vl["MDPS"]["STEERING_COL_TORQUE"]
     ret.steeringTorqueEps = cp.vl["MDPS"]["STEERING_OUT_TORQUE"]
     ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > self.params.STEER_THRESHOLD, 5)
-    ret.steerFaultTemporary = cp.vl["MDPS"]["LKA_FAULT"] != 0
+    self.mdps_lka_fault = int(cp.vl["MDPS"]["LKA_FAULT"])
+    self.mdps_lka_active = int(cp.vl["MDPS"]["LKA_ACTIVE"])
+    self.mdps_lka_angle_fault = 0
+    ret.steerFaultTemporary = self.mdps_lka_fault != 0
     if self.CP.carFingerprint in CANFD_ANGLE_LONGITUDINAL_CAR:
       self.angle_steering_angle = cp.vl["MDPS"]["STEERING_ANGLE_2"]
-      self.angle_steering_fault = cp.vl["MDPS"]["LKA_ANGLE_FAULT"] != 0
+      self.mdps_lka_angle_fault = int(cp.vl["MDPS"]["LKA_ANGLE_FAULT"])
+      self.angle_steering_fault = self.mdps_lka_angle_fault != 0
       ret.steerFaultTemporary = ret.steerFaultTemporary or self.angle_steering_fault
 
     ccnc_non_hda2 = self.CP.flags & HyundaiFlags.CCNC and not self.CP.flags & HyundaiFlags.CANFD_LKA_STEERING

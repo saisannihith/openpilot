@@ -13,6 +13,7 @@ from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParam
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.params import Params
+from openpilot.common.swaglog import cloudlog
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
@@ -25,6 +26,14 @@ MAX_ANGLE_CONSECUTIVE_FRAMES = 2
 CARNIVAL_4TH_GEN_HIGH_ANGLE_TAPER_START = 85.0
 CARNIVAL_4TH_GEN_HIGH_ANGLE_TAPER_FULL = 220.0
 CARNIVAL_4TH_GEN_HIGH_ANGLE_TORQUE_MIN_SCALE = 0.35
+CARNIVAL_4TH_GEN_EPS_GUARD_MIN_SPEED = 17.0
+CARNIVAL_4TH_GEN_EPS_GUARD_MIN_ANGLE = 3.0
+CARNIVAL_4TH_GEN_EPS_GUARD_TORQUE_FRACTION = 0.92
+CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES = 70
+CARNIVAL_4TH_GEN_EPS_GUARD_HOLD_FRAMES = 120
+CARNIVAL_4TH_GEN_EPS_GUARD_RELEASE_FRAMES = 8
+CARNIVAL_4TH_GEN_EPS_GUARD_CAP_LOW = 0.94
+CARNIVAL_4TH_GEN_EPS_GUARD_CAP_HIGH = 0.88
 # Some Hyundai/Kia cancel buttons are pause/resume toggles. Give a brake press
 # time to disengage stock SCC before sending the fallback button message.
 CANCEL_BUTTON_DELAY_FRAMES = 10
@@ -458,6 +467,43 @@ def apply_carnival_4th_gen_high_angle_torque_guard(car_fingerprint, apply_torque
   return int(round(apply_torque * scale))
 
 
+def apply_carnival_4th_gen_eps_fault_guard(car_fingerprint, apply_torque: int, steer_max: int,
+                                           v_ego: float, steering_angle_deg: float, lat_active: bool,
+                                           steering_pressed: bool, apply_torque_last: int, high_torque_frames: int,
+                                           guard_frames: int) -> tuple[int, int, int, bool, bool]:
+  if car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN or not lat_active or steering_pressed:
+    return apply_torque, 0, max(guard_frames - 1, 0), False, False
+
+  torque_fraction = abs(apply_torque) / max(float(steer_max), 1.0)
+  near_limit = (
+    v_ego >= CARNIVAL_4TH_GEN_EPS_GUARD_MIN_SPEED and
+    abs(steering_angle_deg) >= CARNIVAL_4TH_GEN_EPS_GUARD_MIN_ANGLE and
+    torque_fraction >= CARNIVAL_4TH_GEN_EPS_GUARD_TORQUE_FRACTION
+  )
+  high_torque_frames = high_torque_frames + 1 if near_limit else max(high_torque_frames - 2, 0)
+  if high_torque_frames >= CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES:
+    guard_frames = CARNIVAL_4TH_GEN_EPS_GUARD_HOLD_FRAMES
+  else:
+    guard_frames = max(guard_frames - 1, 0)
+
+  guard_active = guard_frames > 0
+  if not guard_active:
+    return apply_torque, high_torque_frames, guard_frames, False, near_limit
+
+  cap_fraction = np.interp(abs(steering_angle_deg), [8.0, 28.0],
+                           [CARNIVAL_4TH_GEN_EPS_GUARD_CAP_LOW, CARNIVAL_4TH_GEN_EPS_GUARD_CAP_HIGH])
+  cap_fraction = float(np.clip(cap_fraction, CARNIVAL_4TH_GEN_EPS_GUARD_CAP_HIGH,
+                               CARNIVAL_4TH_GEN_EPS_GUARD_CAP_LOW))
+  cap = int(round(steer_max * cap_fraction))
+  limited_torque = int(np.clip(apply_torque, -cap, cap))
+
+  if abs(limited_torque) < abs(apply_torque):
+    release_delta = CARNIVAL_4TH_GEN_EPS_GUARD_RELEASE_FRAMES
+    limited_torque = int(rate_limit(limited_torque, apply_torque_last, -release_delta, release_delta))
+
+  return limited_torque, high_torque_frames, guard_frames, True, near_limit
+
+
 def suppress_redundant_gv70_brake_cancel(CP, brake_pressed: bool, lat_active: bool) -> bool:
   return bool(
     CP.carFingerprint == CAR.GENESIS_GV70_ELECTRIFIED_1ST_GEN and
@@ -499,6 +545,10 @@ class CarController(CarControllerBase):
     self._dash_lat_disengage_blink_frame = 0
     self._dash_lat_disengage_init = False
     self._dash_prev_lat_active = False
+    self._carnival_4th_gen_high_torque_frames = 0
+    self._carnival_4th_gen_eps_guard_frames = 0
+    self._carnival_4th_gen_eps_guard_active_last = False
+    self._carnival_4th_gen_steer_fault_temporary_last = False
 
   def _update_dash_icon_state(self, CC):
     if CC.latActive:
@@ -646,6 +696,21 @@ class CarController(CarControllerBase):
                                                                          MAX_ANGLE_CONSECUTIVE_FRAMES)
       apply_torque = apply_carnival_4th_gen_high_angle_torque_guard(self.CP.carFingerprint, apply_torque,
                                                                     CS.out.steeringAngleDeg, apply_steer_req)
+      requested_torque_before_eps_guard = apply_torque
+      apply_torque, self._carnival_4th_gen_high_torque_frames, self._carnival_4th_gen_eps_guard_frames, \
+        carnival_eps_guard_active, carnival_eps_near_limit = apply_carnival_4th_gen_eps_fault_guard(
+          self.CP.carFingerprint, apply_torque, self.params.STEER_MAX, CS.out.vEgoRaw, CS.out.steeringAngleDeg,
+          CC.latActive, CS.out.steeringPressed, self.apply_torque_last, self._carnival_4th_gen_high_torque_frames,
+          self._carnival_4th_gen_eps_guard_frames)
+      if carnival_eps_guard_active != self._carnival_4th_gen_eps_guard_active_last:
+        cloudlog.warning(
+          "Carnival 4th gen EPS torque guard active=%s vEgo=%.2f angle=%.2f requestedTorque=%d applyTorque=%d "
+          "highTorqueFrames=%d guardFrames=%d nearLimit=%s steerPressed=%s",
+          carnival_eps_guard_active, CS.out.vEgoRaw, CS.out.steeringAngleDeg,
+          requested_torque_before_eps_guard, apply_torque, self._carnival_4th_gen_high_torque_frames,
+          self._carnival_4th_gen_eps_guard_frames, carnival_eps_near_limit, CS.out.steeringPressed,
+        )
+      self._carnival_4th_gen_eps_guard_active_last = carnival_eps_guard_active
 
       if not CC.latActive:
         apply_torque = 0
@@ -655,6 +720,17 @@ class CarController(CarControllerBase):
       torque_fault = CC.latActive and not apply_steer_req
 
     self.apply_torque_last = apply_torque
+    if self.CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
+      steer_fault_temporary = bool(CS.out.steerFaultTemporary)
+      if steer_fault_temporary and not self._carnival_4th_gen_steer_fault_temporary_last:
+        cloudlog.warning(
+          "Carnival 4th gen MDPS temporary steering fault vEgo=%.2f angle=%.2f steerTorque=%.2f epsTorque=%.2f "
+          "applyTorque=%d lkaFault=%s lkaActive=%s lkaAngleFault=%s latActive=%s steeringPressed=%s",
+          CS.out.vEgoRaw, CS.out.steeringAngleDeg, CS.out.steeringTorque, CS.out.steeringTorqueEps,
+          apply_torque, getattr(CS, "mdps_lka_fault", -1), getattr(CS, "mdps_lka_active", -1),
+          getattr(CS, "mdps_lka_angle_fault", -1), CC.latActive, CS.out.steeringPressed,
+        )
+      self._carnival_4th_gen_steer_fault_temporary_last = steer_fault_temporary
 
     # accel + longitudinal
     accel_cmd = float(np.clip(actuators.accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
