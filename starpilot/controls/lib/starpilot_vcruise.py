@@ -4,6 +4,7 @@ import math
 
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
+from openpilot.common.swaglog import cloudlog
 
 from openpilot.starpilot.common.starpilot_variables import CITY_SPEED_LIMIT, CRUISING_SPEED
 from openpilot.starpilot.controls.lib.curve_speed_controller import CurveSpeedController, is_manual_speed_control
@@ -65,6 +66,7 @@ HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_MODEL_LENGTH_M = 160.0
 HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DROP_RATIO = 0.70
 HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DECEL = 0.30
 HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_DECEL = 3.00
+HIGH_SPEED_RED_LIGHT_LOG_INTERVAL = 2.0
 DASH_SEED_M = 27.0        # ~88 ft — typical ADAS detection distance, used to snap
                           # tracked length closer when dashboard confirms a sign
 DASH_MODEL_AGREE_M = 50.0 # m — dash arm/snap needs model_length under this; a lone dash bit
@@ -188,6 +190,9 @@ class StarPilotVCruise:
     self.high_speed_red_light_distance = 0.0
     self.high_speed_red_light_last_time = None
     self.high_speed_red_light_last_v = 0.0
+    self.high_speed_red_light_confirmed = False
+    self.high_speed_red_light_last_log_time = None
+    self.high_speed_red_light_last_log_state = ""
     self.controls_enabled_previously = False
     # Kinematic distance estimator. Same attribute also published as
     # starpilotPlan.forcingStopLength, so the existing reader keeps working.
@@ -425,6 +430,7 @@ class StarPilotVCruise:
       self.high_speed_red_light_distance = 0.0
       self.high_speed_red_light_last_time = None
       self.high_speed_red_light_last_v = 0.0
+      self.high_speed_red_light_confirmed = False
 
     stop_distance_for_decel = max(model_length + force_stop_distance_bias_m - force_stop_handoff_m, 1.0)
     required_stop_decel = (float(v_ego) * float(v_ego)) / (2.0 * stop_distance_for_decel)
@@ -437,13 +443,18 @@ class StarPilotVCruise:
       red_light_model_drop / self.high_speed_red_light_distance
       if self.high_speed_red_light_distance > 1.0 else 0.0
     )
-    plausible_high_speed_red_light_approach = (
+    plausible_high_speed_red_light_now = (
       high_speed_lone_red_light_candidate and
       red_light_approach_elapsed >= HIGH_SPEED_RED_LIGHT_CONFIRM_TIME and
       self.high_speed_red_light_distance >= HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DISTANCE_M and
       model_length <= HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_MODEL_LENGTH_M and
       red_light_approach_ratio >= HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DROP_RATIO and
       HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DECEL <= required_stop_decel <= HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_DECEL
+    )
+    self.high_speed_red_light_confirmed |= plausible_high_speed_red_light_now
+    plausible_high_speed_red_light_approach = (
+      high_speed_lone_red_light_candidate and
+      self.high_speed_red_light_confirmed
     )
     close_red_light_stop_evidence = (
       stop_light_detected and
@@ -477,6 +488,46 @@ class StarPilotVCruise:
         or plausible_high_speed_red_light_approach
       )
     )
+    if carnival_lone_red_light_latch_allowed and stop_light_detected:
+      if raw_model_stopped:
+        red_light_gate_state = "model"
+      elif dash_active:
+        red_light_gate_state = "dash"
+      elif lead_present:
+        red_light_gate_state = "lead"
+      elif plausible_high_speed_red_light_approach:
+        red_light_gate_state = "plausible_high_speed"
+      elif close_red_light_stop_evidence:
+        red_light_gate_state = "close"
+      elif self.lone_high_speed_red_light_suppressed:
+        red_light_gate_state = "suppressed"
+      elif high_speed_force_stop_evidence:
+        red_light_gate_state = "low_speed"
+      else:
+        red_light_gate_state = "waiting"
+
+      should_log_gate = red_light_gate_state != self.high_speed_red_light_last_log_state
+      if not should_log_gate and self.high_speed_red_light_last_log_time is not None:
+        should_log_gate = self._elapsed_seconds(now, self.high_speed_red_light_last_log_time) >= HIGH_SPEED_RED_LIGHT_LOG_INTERVAL
+      if should_log_gate:
+        self.high_speed_red_light_last_log_state = red_light_gate_state
+        self.high_speed_red_light_last_log_time = now
+        cloudlog.warning(
+          "Carnival red light gate state=%s v=%.2f modelLength=%.2f elapsed=%.2f "
+          "distance=%.2f dropRatio=%.2f reqDecel=%.2f suppressed=%s forceStop=%s",
+          red_light_gate_state,
+          float(v_ego),
+          model_length,
+          red_light_approach_elapsed,
+          self.high_speed_red_light_distance,
+          red_light_approach_ratio,
+          required_stop_decel,
+          self.lone_high_speed_red_light_suppressed,
+          self.forcing_stop,
+        )
+    else:
+      self.high_speed_red_light_last_log_state = ""
+      self.high_speed_red_light_last_log_time = None
 
     cem_path = (stop_light_detected
                 and controls_enabled and starpilot_toggles.force_stops
