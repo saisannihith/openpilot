@@ -86,7 +86,9 @@ def test_carnival_lone_high_speed_red_light_guard_latches_until_evidence_or_clea
   suppressed = update_carnival_lone_high_speed_red_light_suppression(CP, 20.0, True, False, False)
   assert suppressed
   assert update_carnival_lone_high_speed_red_light_suppression(
-    CP, 14.0, True, False, False, currently_suppressed=suppressed)
+    CP, 14.0, True, False, False, currently_suppressed=suppressed, model_length=120.0)
+  assert not update_carnival_lone_high_speed_red_light_suppression(
+    CP, 12.0, True, False, False, currently_suppressed=suppressed, model_length=30.0)
   assert not update_carnival_lone_high_speed_red_light_suppression(
     CP, 14.0, False, False, False, currently_suppressed=suppressed)
   assert not update_carnival_lone_high_speed_red_light_suppression(

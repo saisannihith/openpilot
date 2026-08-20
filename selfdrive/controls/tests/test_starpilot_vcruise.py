@@ -90,8 +90,9 @@ def update_vcruise(vcruise, sm, toggles, *, now, v_ego=0.0, controls_enabled=Tru
   )
 
 
-def make_toggles():
+def make_toggles(*, car_model=""):
   return SimpleNamespace(
+    car_model=car_model,
     force_stops=True,
     force_standstill=False,
     curve_speed_controller=False,
@@ -697,7 +698,7 @@ def test_high_speed_lone_red_light_does_not_force_stop():
 def test_high_speed_lone_red_light_stays_suppressed_after_slowing_below_gate():
   _, vcruise = make_vcruise(red_light=True, raw_model_stopped=False, forcing_stop=False, road_curvature=0.001)
   sm = make_sm(standstill=False)
-  toggles = make_toggles()
+  toggles = make_toggles(car_model=str(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN))
 
   update_vcruise(vcruise, sm, toggles, now=0.0, v_ego=19.5)
   for frame in range(1, 14):
@@ -708,10 +709,44 @@ def test_high_speed_lone_red_light_stays_suppressed_after_slowing_below_gate():
   assert not vcruise.forcing_stop
 
 
+def test_high_speed_lone_red_light_releases_for_close_slow_stop_line():
+  planner, vcruise = make_vcruise(red_light=True, raw_model_stopped=False, forcing_stop=False, road_curvature=0.001)
+  sm = make_sm(standstill=False)
+  toggles = make_toggles(car_model=str(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN))
+
+  update_vcruise(vcruise, sm, toggles, now=0.0, v_ego=19.5)
+  assert vcruise.lone_high_speed_red_light_suppressed
+
+  planner.model_length = 30.0
+  for frame in range(1, 14):
+    result = update_vcruise(vcruise, sm, toggles, now=frame * DT_MDL, v_ego=12.0)
+
+  assert 0.0 < result < 20.0
+  assert vcruise.force_stop_timer >= 0.5
+  assert vcruise.forcing_stop
+  assert not vcruise.lone_high_speed_red_light_suppressed
+
+
+def test_high_speed_lone_red_light_latch_is_carnival_only():
+  _, vcruise = make_vcruise(red_light=True, raw_model_stopped=False, forcing_stop=False, road_curvature=0.001)
+  sm = make_sm(standstill=False)
+  toggles = make_toggles(car_model="OTHER_CAR")
+
+  update_vcruise(vcruise, sm, toggles, now=0.0, v_ego=19.5)
+  assert not vcruise.lone_high_speed_red_light_suppressed
+
+  for frame in range(1, 14):
+    result = update_vcruise(vcruise, sm, toggles, now=frame * DT_MDL, v_ego=14.0)
+
+  assert 0.0 < result < 20.0
+  assert vcruise.force_stop_timer >= 0.5
+  assert vcruise.forcing_stop
+
+
 def test_high_speed_lone_red_light_suppression_clears_with_model_stop_evidence():
   planner, vcruise = make_vcruise(red_light=True, raw_model_stopped=False, forcing_stop=False, road_curvature=0.001)
   sm = make_sm(standstill=False)
-  toggles = make_toggles()
+  toggles = make_toggles(car_model=str(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN))
 
   update_vcruise(vcruise, sm, toggles, now=0.0, v_ego=19.5)
   planner.raw_model_stopped = True

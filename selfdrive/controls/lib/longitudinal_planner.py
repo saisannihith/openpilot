@@ -70,6 +70,8 @@ MODEL_LAUNCH_MOVING_SPEED = 1.2
 MODEL_LAUNCH_MAX_ACCEL = 1.5
 LONE_HIGH_SPEED_RED_LIGHT_EVIDENCE_MIN_SPEED = 17.88
 LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE = 0.45
+LONE_HIGH_SPEED_RED_LIGHT_RELEASE_SPEED_MS = 13.41
+LONE_HIGH_SPEED_RED_LIGHT_RELEASE_MODEL_LENGTH_M = 35.0
 RAW_LEAD_SAFETY_MIN_CLOSING_SPEED = 0.5
 RAW_LEAD_SAFETY_TTC = 7.0
 RAW_LEAD_SAFETY_DISTANCE = 40.0
@@ -524,12 +526,19 @@ def get_accel_from_plan(speeds, accels, action_t=DT_MDL, vEgoStopping=0.05):
 def update_carnival_lone_high_speed_red_light_suppression(CP, v_ego, red_light,
                                                           model_should_stop, lead_control_active,
                                                           forcing_stop=False,
-                                                          currently_suppressed=False):
+                                                          currently_suppressed=False,
+                                                          model_length=float("inf")):
+  close_red_light_stop_evidence = (
+    red_light and
+    float(v_ego) <= LONE_HIGH_SPEED_RED_LIGHT_RELEASE_SPEED_MS and
+    float(model_length) <= LONE_HIGH_SPEED_RED_LIGHT_RELEASE_MODEL_LENGTH_M
+  )
   return bool(
     str(getattr(CP, "carFingerprint", "")) == "KIA_CARNIVAL_4TH_GEN" and
     red_light and
     not model_should_stop and
     not lead_control_active and
+    not close_red_light_stop_evidence and
     (currently_suppressed or not forcing_stop) and
     (currently_suppressed or float(v_ego) >= LONE_HIGH_SPEED_RED_LIGHT_EVIDENCE_MIN_SPEED)
   )
@@ -537,9 +546,10 @@ def update_carnival_lone_high_speed_red_light_suppression(CP, v_ego, red_light,
 
 def should_guard_carnival_lone_high_speed_red_light(CP, v_ego, red_light, _forcing_stop,
                                                     model_should_stop, lead_control_active,
-                                                    currently_suppressed=False):
+                                                    currently_suppressed=False,
+                                                    model_length=float("inf")):
   return update_carnival_lone_high_speed_red_light_suppression(
-    CP, v_ego, red_light, model_should_stop, lead_control_active, _forcing_stop, currently_suppressed)
+    CP, v_ego, red_light, model_should_stop, lead_control_active, _forcing_stop, currently_suppressed, model_length)
 
 
 class LongitudinalPlanner:
@@ -2920,6 +2930,7 @@ class LongitudinalPlanner:
       lead_control_active,
       bool(getattr(sm['starpilotPlan'], 'forcingStop', False)),
       self.carnival_lone_high_speed_red_light_suppressed,
+      float(getattr(sm['starpilotPlan'], 'forcingStopLength', float("inf"))),
     )
     if self.carnival_lone_high_speed_red_light_suppressed:
       red_light_floor = -LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE

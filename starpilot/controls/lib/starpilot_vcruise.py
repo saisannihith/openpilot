@@ -57,6 +57,8 @@ FORCE_STOP_APPROACH_DECEL = 0.65  # m/s^2 — speed ceiling before commit. LOWER
                           # braking; don't go under FORCE_STOP_MODEL_APPROACH_DECEL
 ADAS_MAX_MS = 17.88       # 40 mph — cross-street ADAS guard
 FORCE_STOP_HIGH_SPEED_EVIDENCE_MS = 17.88  # 40 mph - block lone light blips on highways
+LONE_HIGH_SPEED_RED_LIGHT_RELEASE_SPEED_MS = 13.41  # 30 mph - allow close stop-line evidence again
+LONE_HIGH_SPEED_RED_LIGHT_RELEASE_MODEL_LENGTH_M = 35.0
 DASH_SEED_M = 27.0        # ~88 ft — typical ADAS detection distance, used to snap
                           # tracked length closer when dashboard confirms a sign
 DASH_MODEL_AGREE_M = 50.0 # m — dash arm/snap needs model_length under this; a lone dash bit
@@ -385,16 +387,27 @@ class StarPilotVCruise:
       model_length_active = self.starpilot_planner.model_length < ACTIVATION_M
     self.activation_gate_active = model_length_active and stop_light_detected
     raw_model_stopped = bool(getattr(self.starpilot_planner, "raw_model_stopped", False))
+    carnival_lone_red_light_latch_allowed = (
+      str(getattr(starpilot_toggles, "car_model", "")) == "KIA_CARNIVAL_4TH_GEN"
+    )
+    close_red_light_stop_evidence = (
+      stop_light_detected and
+      v_ego <= LONE_HIGH_SPEED_RED_LIGHT_RELEASE_SPEED_MS and
+      self.starpilot_planner.model_length <= LONE_HIGH_SPEED_RED_LIGHT_RELEASE_MODEL_LENGTH_M
+    )
     lone_high_speed_red_light = (
+      carnival_lone_red_light_latch_allowed and
       stop_light_detected and
       v_ego >= FORCE_STOP_HIGH_SPEED_EVIDENCE_MS and
       not raw_model_stopped and
       not dash_active and
       not lead_present
     )
-    if lone_high_speed_red_light:
+    if not carnival_lone_red_light_latch_allowed:
+      self.lone_high_speed_red_light_suppressed = False
+    elif lone_high_speed_red_light:
       self.lone_high_speed_red_light_suppressed = True
-    elif not stop_light_detected or raw_model_stopped or dash_active or lead_present:
+    elif not stop_light_detected or raw_model_stopped or dash_active or lead_present or close_red_light_stop_evidence:
       self.lone_high_speed_red_light_suppressed = False
 
     high_speed_force_stop_evidence = (
@@ -403,6 +416,7 @@ class StarPilotVCruise:
         or raw_model_stopped
         or dash_active
         or lead_present
+        or close_red_light_stop_evidence
       )
     )
 
