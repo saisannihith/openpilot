@@ -56,6 +56,7 @@ LEAD_VETO_M_OVERRIDES = {
 FORCE_STOP_APPROACH_DECEL = 0.65  # m/s^2 — speed ceiling before commit. LOWER = more early
                           # braking; don't go under FORCE_STOP_MODEL_APPROACH_DECEL
 ADAS_MAX_MS = 17.88       # 40 mph — cross-street ADAS guard
+FORCE_STOP_HIGH_SPEED_EVIDENCE_MS = 17.88  # 40 mph - block lone light blips on highways
 DASH_SEED_M = 27.0        # ~88 ft — typical ADAS detection distance, used to snap
                           # tracked length closer when dashboard confirms a sign
 DASH_MODEL_AGREE_M = 50.0 # m — dash arm/snap needs model_length under this; a lone dash bit
@@ -375,15 +376,25 @@ class StarPilotVCruise:
     # force_stop_timer's ramp. Scoped to a detected stop so the wider release threshold
     # can't leak into ordinary slow driving.
     stop_light_detected = self.starpilot_planner.starpilot_cem.stop_light_detected
+    dash_value = sm["starpilotCarState"].dashboardStopSign
+    dash_active = dash_value > 0
     if self.activation_gate_active and stop_light_detected:
       model_length_active = self.starpilot_planner.model_length < ACTIVATION_M + ACTIVATION_HYSTERESIS_M
     else:
       model_length_active = self.starpilot_planner.model_length < ACTIVATION_M
     self.activation_gate_active = model_length_active and stop_light_detected
+    raw_model_stopped = bool(getattr(self.starpilot_planner, "raw_model_stopped", False))
+    high_speed_force_stop_evidence = (
+      v_ego < FORCE_STOP_HIGH_SPEED_EVIDENCE_MS
+      or raw_model_stopped
+      or dash_active
+      or lead_present
+    )
 
     cem_path = (stop_light_detected
                 and controls_enabled and starpilot_toggles.force_stops
                 and model_length_active
+                and high_speed_force_stop_evidence
                 and self.override_force_stop_timer <= 0
                 and not self.starpilot_planner.driving_in_curve
                 and not curved_approach_scene
@@ -393,8 +404,6 @@ class StarPilotVCruise:
 
     # Dashboard path: ADAS camera confirms a stop sign on our road. Field is 0 on
     # platforms that don't publish ADAS_0x380, so dash_path is naturally inert there.
-    dash_value = sm["starpilotCarState"].dashboardStopSign
-    dash_active = dash_value > 0
     dash_path = (dash_active and controls_enabled and starpilot_toggles.force_stops
                  and v_ego < ADAS_MAX_MS
                  and self.starpilot_planner.model_length < DASH_MODEL_AGREE_M
@@ -418,7 +427,6 @@ class StarPilotVCruise:
     if dash_path:
       self.stop_sign_confirmed = True
 
-    raw_model_stopped = bool(getattr(self.starpilot_planner, "raw_model_stopped", False))
     standstill_force_stop_scene_active = bool(force_stop_active or raw_model_stopped)
     standstill = bool(sm["carState"].standstill)
     engaged_at_standstill = controls_enabled and not self.controls_enabled_previously and standstill
@@ -686,6 +694,7 @@ class StarPilotVCruise:
       # no latch, recomputed each frame, releases on green.
       if (stop_light_detected
           and controls_enabled and starpilot_toggles.force_stops
+          and high_speed_force_stop_evidence
           and self.override_force_stop_timer <= 0
           and not self.starpilot_planner.driving_in_curve
           and not curved_approach_scene

@@ -680,6 +680,32 @@ def test_force_stop_still_activates_for_straight_red_light_approach():
   assert vcruise.forcing_stop
 
 
+def test_high_speed_lone_red_light_does_not_force_stop():
+  _, vcruise = make_vcruise(red_light=True, raw_model_stopped=False, forcing_stop=False, road_curvature=0.001)
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+
+  for frame in range(12):
+    result = update_vcruise(vcruise, sm, toggles, now=frame * DT_MDL, v_ego=19.5)
+
+  assert result == pytest.approx(20.0)
+  assert vcruise.force_stop_timer == pytest.approx(0.0)
+  assert not vcruise.forcing_stop
+
+
+def test_high_speed_model_stop_still_force_stops():
+  _, vcruise = make_vcruise(red_light=True, raw_model_stopped=True, forcing_stop=False, road_curvature=0.001)
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+
+  for frame in range(12):
+    result = update_vcruise(vcruise, sm, toggles, now=frame * DT_MDL, v_ego=19.5)
+
+  assert 0.0 < result < 20.0
+  assert vcruise.force_stop_timer >= 0.5
+  assert vcruise.forcing_stop
+
+
 def test_force_stop_turn_scene_does_not_abandon_moving_commitment():
   _, vcruise = make_vcruise(red_light=False, raw_model_stopped=False, forcing_stop=True)
   sm = make_sm(standstill=False)

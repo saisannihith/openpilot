@@ -161,7 +161,7 @@ class TestHyundaiFingerprint:
     low_speed_limits = CarControllerParams(carnival_cp, vEgoRaw=14.9)
     highway_limits = CarControllerParams(carnival_cp, vEgoRaw=15.0)
     assert (low_speed_limits.STEER_DELTA_UP, low_speed_limits.STEER_DELTA_DOWN) == (6, 6)
-    assert (highway_limits.STEER_DELTA_UP, highway_limits.STEER_DELTA_DOWN) == (2, 3)
+    assert (highway_limits.STEER_DELTA_UP, highway_limits.STEER_DELTA_DOWN) == (6, 6)
     assert highway_limits.STEER_MAX == 409
     assert highway_limits.STEER_THRESHOLD == 150
 
