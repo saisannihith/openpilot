@@ -35,11 +35,12 @@ TOYOTA_RAV4_TSS2_RADAR_FOLLOW_DISTANCE_TIME = 4.5
 TOYOTA_RAV4_TSS2_RADAR_FOLLOW_DISTANCE_OFFSET = 32.0
 TOYOTA_RAV4_TSS2_RADAR_FOLLOW_MAX_LATERAL_OFFSET = 1.75
 TOYOTA_CAMRY_TSS2_FORCE_STOP_HANDOFF_M = 4.5
-KIA_CARNIVAL_4TH_GEN_FORCE_STOP_HANDOFF_M = 9.0
+KIA_CARNIVAL_4TH_GEN_FORCE_STOP_HANDOFF_M = 5.5
 # The Camry's force-stop path otherwise consumes the model endpoint before the
 # normal MPC stop-distance margin can be applied. Keep it within the forward
 # offset range exposed by the Force Stop setting.
 TOYOTA_CAMRY_TSS2_FORCE_STOP_DISTANCE_BIAS_M = 6.0
+KIA_CARNIVAL_4TH_GEN_FORCE_STOP_DISTANCE_BIAS_M = 2.0
 DEFAULT_FORCE_STOP_HANDOFF_M = 6.0
 
 
@@ -221,6 +222,9 @@ def get_force_stop_handoff_distance(car_fingerprint):
 
 
 def get_force_stop_distance_bias(car_fingerprint):
-  if str(car_fingerprint) == "TOYOTA_CAMRY_TSS2":
+  fingerprint = str(car_fingerprint)
+  if fingerprint == "TOYOTA_CAMRY_TSS2":
     return TOYOTA_CAMRY_TSS2_FORCE_STOP_DISTANCE_BIAS_M
+  if fingerprint == "KIA_CARNIVAL_4TH_GEN":
+    return KIA_CARNIVAL_4TH_GEN_FORCE_STOP_DISTANCE_BIAS_M
   return 0.0
