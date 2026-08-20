@@ -727,6 +727,21 @@ def test_high_speed_lone_red_light_releases_for_close_slow_stop_line():
   assert not vcruise.lone_high_speed_red_light_suppressed
 
 
+def test_high_speed_lone_red_light_releases_for_persistent_plausible_approach():
+  planner, vcruise = make_vcruise(red_light=True, raw_model_stopped=False, forcing_stop=False, road_curvature=0.001)
+  sm = make_sm(standstill=False)
+  toggles = make_toggles(car_model=str(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN))
+
+  for frame in range(90):
+    planner.model_length = 190.0 - (24.0 * DT_MDL * 0.8 * frame)
+    result = update_vcruise(vcruise, sm, toggles, now=frame * DT_MDL, v_ego=24.0)
+
+  assert 0.0 < result < 20.0
+  assert vcruise.force_stop_timer >= 0.5
+  assert vcruise.forcing_stop
+  assert not vcruise.lone_high_speed_red_light_suppressed
+
+
 def test_high_speed_lone_red_light_latch_is_carnival_only():
   _, vcruise = make_vcruise(red_light=True, raw_model_stopped=False, forcing_stop=False, road_curvature=0.001)
   sm = make_sm(standstill=False)

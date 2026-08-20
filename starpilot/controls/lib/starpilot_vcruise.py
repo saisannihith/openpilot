@@ -59,6 +59,12 @@ ADAS_MAX_MS = 17.88       # 40 mph — cross-street ADAS guard
 FORCE_STOP_HIGH_SPEED_EVIDENCE_MS = 17.88  # 40 mph - block lone light blips on highways
 LONE_HIGH_SPEED_RED_LIGHT_RELEASE_SPEED_MS = 13.41  # 30 mph - allow close stop-line evidence again
 LONE_HIGH_SPEED_RED_LIGHT_RELEASE_MODEL_LENGTH_M = 35.0
+HIGH_SPEED_RED_LIGHT_CONFIRM_TIME = 3.0
+HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DISTANCE_M = 40.0
+HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_MODEL_LENGTH_M = 160.0
+HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DROP_RATIO = 0.70
+HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DECEL = 0.30
+HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_DECEL = 3.00
 DASH_SEED_M = 27.0        # ~88 ft — typical ADAS detection distance, used to snap
                           # tracked length closer when dashboard confirms a sign
 DASH_MODEL_AGREE_M = 50.0 # m — dash arm/snap needs model_length under this; a lone dash bit
@@ -177,6 +183,11 @@ class StarPilotVCruise:
     self.force_stop_from_light = False
     self.force_stop_light_clear_since = None
     self.lone_high_speed_red_light_suppressed = False
+    self.high_speed_red_light_since = None
+    self.high_speed_red_light_start_model_length = 0.0
+    self.high_speed_red_light_distance = 0.0
+    self.high_speed_red_light_last_time = None
+    self.high_speed_red_light_last_v = 0.0
     self.controls_enabled_previously = False
     # Kinematic distance estimator. Same attribute also published as
     # starpilotPlan.forcingStopLength, so the existing reader keeps working.
@@ -390,10 +401,54 @@ class StarPilotVCruise:
     carnival_lone_red_light_latch_allowed = (
       str(getattr(starpilot_toggles, "car_model", "")) == "KIA_CARNIVAL_4TH_GEN"
     )
+    model_length = float(self.starpilot_planner.model_length)
+    high_speed_lone_red_light_candidate = (
+      carnival_lone_red_light_latch_allowed and
+      stop_light_detected and
+      not raw_model_stopped and
+      not dash_active and
+      not lead_present
+    )
+    if high_speed_lone_red_light_candidate:
+      if self.high_speed_red_light_since is None:
+        self.high_speed_red_light_since = now
+        self.high_speed_red_light_start_model_length = model_length
+        self.high_speed_red_light_distance = 0.0
+      elif self.high_speed_red_light_last_time is not None:
+        dt = max(0.0, self._elapsed_seconds(now, self.high_speed_red_light_last_time))
+        self.high_speed_red_light_distance += max(0.0, self.high_speed_red_light_last_v) * dt
+      self.high_speed_red_light_last_time = now
+      self.high_speed_red_light_last_v = float(v_ego)
+    else:
+      self.high_speed_red_light_since = None
+      self.high_speed_red_light_start_model_length = 0.0
+      self.high_speed_red_light_distance = 0.0
+      self.high_speed_red_light_last_time = None
+      self.high_speed_red_light_last_v = 0.0
+
+    stop_distance_for_decel = max(model_length + force_stop_distance_bias_m - force_stop_handoff_m, 1.0)
+    required_stop_decel = (float(v_ego) * float(v_ego)) / (2.0 * stop_distance_for_decel)
+    red_light_approach_elapsed = (
+      0.0 if self.high_speed_red_light_since is None
+      else self._elapsed_seconds(now, self.high_speed_red_light_since)
+    )
+    red_light_model_drop = max(0.0, self.high_speed_red_light_start_model_length - model_length)
+    red_light_approach_ratio = (
+      red_light_model_drop / self.high_speed_red_light_distance
+      if self.high_speed_red_light_distance > 1.0 else 0.0
+    )
+    plausible_high_speed_red_light_approach = (
+      high_speed_lone_red_light_candidate and
+      red_light_approach_elapsed >= HIGH_SPEED_RED_LIGHT_CONFIRM_TIME and
+      self.high_speed_red_light_distance >= HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DISTANCE_M and
+      model_length <= HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_MODEL_LENGTH_M and
+      red_light_approach_ratio >= HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DROP_RATIO and
+      HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DECEL <= required_stop_decel <= HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_DECEL
+    )
     close_red_light_stop_evidence = (
       stop_light_detected and
       v_ego <= LONE_HIGH_SPEED_RED_LIGHT_RELEASE_SPEED_MS and
-      self.starpilot_planner.model_length <= LONE_HIGH_SPEED_RED_LIGHT_RELEASE_MODEL_LENGTH_M
+      model_length <= LONE_HIGH_SPEED_RED_LIGHT_RELEASE_MODEL_LENGTH_M
     )
     lone_high_speed_red_light = (
       carnival_lone_red_light_latch_allowed and
@@ -401,13 +456,15 @@ class StarPilotVCruise:
       v_ego >= FORCE_STOP_HIGH_SPEED_EVIDENCE_MS and
       not raw_model_stopped and
       not dash_active and
-      not lead_present
+      not lead_present and
+      not plausible_high_speed_red_light_approach
     )
     if not carnival_lone_red_light_latch_allowed:
       self.lone_high_speed_red_light_suppressed = False
     elif lone_high_speed_red_light:
       self.lone_high_speed_red_light_suppressed = True
-    elif not stop_light_detected or raw_model_stopped or dash_active or lead_present or close_red_light_stop_evidence:
+    elif (not stop_light_detected or raw_model_stopped or dash_active or lead_present or
+          close_red_light_stop_evidence or plausible_high_speed_red_light_approach):
       self.lone_high_speed_red_light_suppressed = False
 
     high_speed_force_stop_evidence = (
@@ -417,12 +474,13 @@ class StarPilotVCruise:
         or dash_active
         or lead_present
         or close_red_light_stop_evidence
+        or plausible_high_speed_red_light_approach
       )
     )
 
     cem_path = (stop_light_detected
                 and controls_enabled and starpilot_toggles.force_stops
-                and model_length_active
+                and (model_length_active or plausible_high_speed_red_light_approach)
                 and high_speed_force_stop_evidence
                 and self.override_force_stop_timer <= 0
                 and not self.starpilot_planner.driving_in_curve

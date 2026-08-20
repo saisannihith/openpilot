@@ -72,6 +72,7 @@ LONE_HIGH_SPEED_RED_LIGHT_EVIDENCE_MIN_SPEED = 17.88
 LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE = 0.45
 LONE_HIGH_SPEED_RED_LIGHT_RELEASE_SPEED_MS = 13.41
 LONE_HIGH_SPEED_RED_LIGHT_RELEASE_MODEL_LENGTH_M = 35.0
+HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_MODEL_LENGTH_M = 160.0
 RAW_LEAD_SAFETY_MIN_CLOSING_SPEED = 0.5
 RAW_LEAD_SAFETY_TTC = 7.0
 RAW_LEAD_SAFETY_DISTANCE = 40.0
@@ -533,12 +534,17 @@ def update_carnival_lone_high_speed_red_light_suppression(CP, v_ego, red_light,
     float(v_ego) <= LONE_HIGH_SPEED_RED_LIGHT_RELEASE_SPEED_MS and
     float(model_length) <= LONE_HIGH_SPEED_RED_LIGHT_RELEASE_MODEL_LENGTH_M
   )
+  committed_plausible_stop_evidence = (
+    forcing_stop and
+    float(model_length) <= HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_MODEL_LENGTH_M
+  )
   return bool(
     str(getattr(CP, "carFingerprint", "")) == "KIA_CARNIVAL_4TH_GEN" and
     red_light and
     not model_should_stop and
     not lead_control_active and
     not close_red_light_stop_evidence and
+    not committed_plausible_stop_evidence and
     (currently_suppressed or not forcing_stop) and
     (currently_suppressed or float(v_ego) >= LONE_HIGH_SPEED_RED_LIGHT_EVIDENCE_MIN_SPEED)
   )
