@@ -308,6 +308,46 @@ def test_starting_accel_keeps_start_accel_shove_below_profile_ceiling():
   assert output_accel == pytest.approx(1.5)
 
 
+def test_starting_accel_handoff_keeps_positive_departure_target_after_launch_shove():
+  CP = car.CarParams.new_message(startingState=True, vEgoStarting=0.1)
+  CP.longitudinalTuning.kpBP = [0.0]
+  CP.longitudinalTuning.kpV = [0.0]
+  CP.longitudinalTuning.kiBP = [0.0]
+  CP.longitudinalTuning.kiV = [0.0]
+  CP.longitudinalTuning.kfDEPRECATED = 1.0
+
+  lc = LongControl(CP)
+  toggles = make_toggles(startAccel=1.0, vEgoStarting=0.1)
+
+  CS = car.CarState.new_message(vEgo=0.0, aEgo=0.0, brakePressed=False)
+  CS.cruiseState.standstill = False
+  launch_output = lc.update(
+    active=True,
+    CS=CS,
+    a_target=0.75,
+    should_stop=False,
+    accel_limits=(-3.0, 2.0),
+    starpilot_toggles=toggles,
+    has_lead=True,
+  )
+
+  CS = car.CarState.new_message(vEgo=0.12, aEgo=0.8, brakePressed=False)
+  CS.cruiseState.standstill = False
+  handoff_output = lc.update(
+    active=True,
+    CS=CS,
+    a_target=0.75,
+    should_stop=False,
+    accel_limits=(-3.0, 2.0),
+    starpilot_toggles=toggles,
+    has_lead=True,
+  )
+
+  assert launch_output == pytest.approx(1.0)
+  assert lc.long_control_state == LongCtrlState.pid
+  assert handoff_output == pytest.approx(0.75)
+
+
 def test_bolt_acc_pedal_starting_handoff_keeps_small_positive_command():
   CP = make_longcontrol_cp(
     brand="gm",
