@@ -2650,6 +2650,125 @@ def test_route_251682_rav4_confirmed_depart_adds_bounded_accel_assist():
   assert floor <= longitudinal_planner_module.LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL
 
 
+def test_carnival_confirmed_departing_lead_gets_stronger_accel_floor():
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+
+  lead = make_lead(
+    status=True,
+    d_rel=7.7,
+    v_lead=2.0,
+    a_lead=1.79,
+    radar=False,
+    model_prob=1.0,
+  )
+
+  floor = planner.get_lead_depart_accel_floor(lead, v_ego=0.0, model_desired_accel=0.44)
+
+  assert floor >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MIN_ACCEL
+  assert floor > longitudinal_planner_module.LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL
+  assert floor <= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL
+
+
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+def test_carnival_experimental_standstill_lead_depart_uses_stronger_launch(model_version):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+
+  sm = make_sm(
+    0.0,
+    desired_accel=0.0,
+    min_accel=-0.5,
+    experimental_mode=True,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=4.10, v_lead=1.05, a_lead=1.20, radar=False, model_prob=1.0),
+  )
+  sm["carState"].standstill = True
+  sm["controlsState"].longControlState = LongCtrlState.stopping
+  sm["modelV2"].action.shouldStop = False
+  sm["starpilotPlan"].vCruise = 10.0
+
+  for _ in range(6):
+    planner.update(sm, make_toggles(model_version))
+    assert planner.output_should_stop
+
+  planner.update(sm, make_toggles(model_version))
+
+  assert not planner.output_should_stop
+  assert planner.output_a_target >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_MIN_ACCEL
+
+
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+def test_carnival_depart_accel_hold_continues_after_initial_pullaway(model_version):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+  toggles = make_toggles(model_version)
+
+  sm_release = make_sm(
+    0.0,
+    desired_accel=0.0,
+    min_accel=-0.5,
+    experimental_mode=True,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=4.1, v_lead=1.05, a_lead=1.2, radar=False, model_prob=1.0),
+  )
+  sm_release["carState"].standstill = True
+  sm_release["controlsState"].longControlState = LongCtrlState.stopping
+  sm_release["modelV2"].action.shouldStop = False
+  sm_release["starpilotPlan"].vCruise = 10.0
+
+  for _ in range(7):
+    planner.update(sm_release, toggles)
+
+  sm_hold = make_sm(
+    3.2,
+    desired_accel=0.0,
+    min_accel=-0.5,
+    experimental_mode=True,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=18.0, v_lead=4.0, a_lead=0.05, radar=False, model_prob=1.0),
+  )
+  sm_hold["controlsState"].longControlState = LongCtrlState.pid
+  sm_hold["modelV2"].action.shouldStop = False
+  sm_hold["starpilotPlan"].vCruise = 10.0
+
+  planner.update(sm_hold, toggles)
+
+  assert not planner.output_should_stop
+  assert planner.output_a_target >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MIN_ACCEL
+
+
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+def test_carnival_stronger_depart_launch_is_blocked_by_red_light(model_version):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+
+  sm = make_sm(
+    0.0,
+    desired_accel=0.8,
+    min_accel=-0.5,
+    experimental_mode=True,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=7.0, v_lead=1.5, a_lead=1.2, radar=False, model_prob=1.0),
+  )
+  sm["carState"].standstill = True
+  sm["controlsState"].longControlState = LongCtrlState.stopping
+  sm["modelV2"].action.shouldStop = False
+  sm["starpilotPlan"].redLight = True
+  sm["starpilotPlan"].vCruise = 10.0
+
+  for _ in range(10):
+    planner.update(sm, make_toggles(model_version))
+
+  assert planner.confident_lead_depart_elapsed == 0.0
+  assert planner.lead_depart_accel_hold_floor is None
+  assert planner.output_a_target < longitudinal_planner_module.CARNIVAL_LEAD_DEPART_MIN_ACCEL
+
+
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
 def test_standstill_depart_accel_hold_reuses_floor_through_softening_lead_delta(model_version):
   CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
