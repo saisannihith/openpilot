@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from openpilot.tools.lib.logreader import LogReader, ReadMode
+from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+  LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE,
+  update_carnival_lone_high_speed_red_light_suppression,
+)
 
 
 def safe_attr(obj: Any, name: str, default: Any = None) -> Any:
@@ -60,6 +64,7 @@ class Sample:
   red_light: bool
   forcing_stop: bool
   forcing_stop_length: float
+  tracking_lead: bool
   should_stop: bool
   model_should_stop: bool
   lead_status: bool
@@ -107,6 +112,7 @@ def make_sample(path: Path, start_ns: int, mono_time: int, latest: dict[str, Any
     red_light=bool(safe_attr(starpilot_plan, "redLight", False)),
     forcing_stop=bool(safe_attr(starpilot_plan, "forcingStop", False)),
     forcing_stop_length=safe_float(safe_attr(starpilot_plan, "forcingStopLength", 0.0)),
+    tracking_lead=bool(safe_attr(starpilot_plan, "trackingLead", False)),
     should_stop=bool(safe_attr(long_plan, "shouldStop", False)),
     model_should_stop=bool(safe_attr(model_action, "shouldStop", False)),
     lead_status=lead_status,
@@ -279,6 +285,92 @@ def summarize_accel_jumps(samples: list[Sample]) -> list[dict[str, Any]]:
   return jumps[:80]
 
 
+def summarize_current_red_light_gate(samples: list[Sample]) -> dict[str, Any]:
+  class CP:
+    carFingerprint = "KIA_CARNIVAL_4TH_GEN"
+
+  cap = -LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE
+  suppressed = False
+  previous_route: str | None = None
+  previous_segment: int | None = None
+  summary: dict[str, Any] = {
+    "capAccel": round(cap, 3),
+    "redNoLeadNoModelStopFrames": 0,
+    "currentSuppressedFrames": 0,
+    "loggedBelowCurrentCapFrames": 0,
+    "allowedStrongBrakeFrames": 0,
+    "allowedStrongBrakeLongActiveFrames": 0,
+    "suppressedExamples": [],
+    "allowedStrongBrakeExamples": [],
+  }
+
+  for sample in sorted(samples, key=lambda s: (s.route, s.segment, s.t)):
+    if previous_route != sample.route or previous_segment != sample.segment:
+      suppressed = False
+      previous_route = sample.route
+      previous_segment = sample.segment
+
+    lead_control_active = bool(sample.tracking_lead or sample.lead_status)
+    suppressed = update_carnival_lone_high_speed_red_light_suppression(
+      CP,
+      sample.v_ego,
+      sample.red_light,
+      sample.model_should_stop,
+      lead_control_active,
+      sample.forcing_stop,
+      suppressed,
+      sample.forcing_stop_length,
+    )
+
+    risk_context = (
+      sample.red_light and
+      not lead_control_active and
+      not sample.model_should_stop and
+      sample.v_ego >= 8.0
+    )
+    if not risk_context:
+      continue
+
+    summary["redNoLeadNoModelStopFrames"] += 1
+    if suppressed:
+      summary["currentSuppressedFrames"] += 1
+      if sample.plan_accel < cap:
+        summary["loggedBelowCurrentCapFrames"] += 1
+        if len(summary["suppressedExamples"]) < 12:
+          summary["suppressedExamples"].append({
+            "route": sample.route,
+            "segment": sample.segment,
+            "t": round(sample.t, 2),
+            "vEgo": round(sample.v_ego, 2),
+            "forcingStop": sample.forcing_stop,
+            "forcingStopLength": round(sample.forcing_stop_length, 1),
+            "loggedPlanAccel": round(sample.plan_accel, 3),
+            "loggedCmdAccel": round(sample.cmd_accel, 3),
+            "currentCapAccel": round(cap, 3),
+            "longActive": sample.long_active,
+            "enabled": sample.enabled,
+          })
+    elif sample.plan_accel <= -1.2:
+      summary["allowedStrongBrakeFrames"] += 1
+      if sample.long_active and sample.cmd_accel <= -1.2:
+        summary["allowedStrongBrakeLongActiveFrames"] += 1
+      if len(summary["allowedStrongBrakeExamples"]) < 12:
+        summary["allowedStrongBrakeExamples"].append({
+          "route": sample.route,
+          "segment": sample.segment,
+          "t": round(sample.t, 2),
+          "vEgo": round(sample.v_ego, 2),
+          "forcingStop": sample.forcing_stop,
+          "forcingStopLength": round(sample.forcing_stop_length, 1),
+          "loggedPlanAccel": round(sample.plan_accel, 3),
+          "loggedCmdAccel": round(sample.cmd_accel, 3),
+          "longActive": sample.long_active,
+          "enabled": sample.enabled,
+        })
+
+  return summary
+
+
 def analyze(samples: list[Sample]) -> dict[str, Any]:
   stop_groups = group_by_gap(samples, lambda s: s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop, max_gap=1.5)
   no_context_brakes = [
@@ -300,6 +392,7 @@ def analyze(samples: list[Sample]) -> dict[str, Any]:
     "stopContextHighwayHardBrakes": stop_context_brakes,
     "stopEpisodes": [summarize_stop(group) for group in stop_groups],
     "accelJumps": summarize_accel_jumps(samples),
+    "currentRedLightGateAudit": summarize_current_red_light_gate(samples),
   }
 
 
