@@ -128,21 +128,40 @@ def make_sample(path: Path, start_ns: int, mono_time: int, latest: dict[str, Any
   )
 
 
-def read_samples(path: Path, mode: ReadMode) -> list[Sample]:
+def snapshot_software(init_data: Any) -> dict[str, Any]:
+  return {
+    "version": str(safe_attr(init_data, "version", "unknown")),
+    "gitCommit": str(safe_attr(init_data, "gitCommit", "unknown")),
+    "gitSrcCommit": str(safe_attr(init_data, "gitSrcCommit", "")),
+    "gitBranch": str(safe_attr(init_data, "gitBranch", "unknown")),
+    "gitRemote": str(safe_attr(init_data, "gitRemote", "unknown")),
+    "dirty": bool(safe_attr(init_data, "dirty", False)),
+  }
+
+
+def read_samples_and_metadata(path: Path, mode: ReadMode) -> tuple[list[Sample], dict[str, Any] | None]:
   latest: dict[str, Any] = {}
   samples: list[Sample] = []
   start_ns: int | None = None
+  software: dict[str, Any] | None = None
   for msg in LogReader(str(path), default_mode=mode, sort_by_time=True):
     which = msg.which()
     mono_time = int(msg.logMonoTime)
     if start_ns is None and which in ("carState", "longitudinalPlan", "controlsState"):
       start_ns = mono_time
+    if which == "initData" and software is None:
+      software = snapshot_software(msg.initData)
     if which in ("carState", "carControl", "carOutput", "controlsState", "longitudinalPlan", "starpilotPlan", "radarState", "modelV2"):
       latest[which] = getattr(msg, which)
     if which == "longitudinalPlan" and start_ns is not None:
       sample = make_sample(path, start_ns, mono_time, latest)
       if sample is not None:
         samples.append(sample)
+  return samples, software
+
+
+def read_samples(path: Path, mode: ReadMode) -> list[Sample]:
+  samples, _software = read_samples_and_metadata(path, mode)
   return samples
 
 
@@ -374,7 +393,32 @@ def summarize_current_red_light_gate(samples: list[Sample]) -> dict[str, Any]:
   return summary
 
 
-def analyze(samples: list[Sample]) -> dict[str, Any]:
+def summarize_software_metadata(metadata: list[dict[str, Any]]) -> list[dict[str, Any]]:
+  seen: dict[tuple[Any, ...], dict[str, Any]] = {}
+  for item in metadata:
+    key = (
+      item.get("gitCommit"),
+      item.get("gitSrcCommit"),
+      item.get("gitBranch"),
+      item.get("gitRemote"),
+      item.get("version"),
+      item.get("dirty"),
+    )
+    if key not in seen:
+      seen[key] = {
+        "gitCommit": item.get("gitCommit"),
+        "gitSrcCommit": item.get("gitSrcCommit"),
+        "gitBranch": item.get("gitBranch"),
+        "gitRemote": item.get("gitRemote"),
+        "version": item.get("version"),
+        "dirty": item.get("dirty"),
+        "files": 0,
+      }
+    seen[key]["files"] += 1
+  return sorted(seen.values(), key=lambda item: (-int(item["files"]), str(item.get("gitCommit"))))
+
+
+def analyze(samples: list[Sample], software_metadata: list[dict[str, Any]] | None = None) -> dict[str, Any]:
   stop_groups = group_by_gap(samples, lambda s: s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop, max_gap=1.5)
   no_context_brakes = [
     event_dict(s) for s in samples
@@ -390,6 +434,7 @@ def analyze(samples: list[Sample]) -> dict[str, Any]:
     "samples": len(samples),
     "routes": sorted(set(s.route for s in samples)),
     "segments": len(set((s.route, s.segment) for s in samples)),
+    "software": summarize_software_metadata(software_metadata or []),
     "leadDepartureOpportunities": summarize_lead_departures(samples),
     "noContextHighwayHardBrakes": no_context_brakes,
     "stopContextHighwayHardBrakes": stop_context_brakes,
@@ -416,10 +461,14 @@ def main() -> None:
 
   mode = ReadMode.QLOG if args.mode == "qlog" else ReadMode.RLOG
   samples: list[Sample] = []
+  software_metadata: list[dict[str, Any]] = []
   for path in expand_logs(args.logs):
-    samples.extend(read_samples(path, mode))
+    path_samples, software = read_samples_and_metadata(path, mode)
+    samples.extend(path_samples)
+    if software is not None:
+      software_metadata.append(software)
 
-  payload = analyze(samples)
+  payload = analyze(samples, software_metadata)
   text = json.dumps(payload, indent=2, sort_keys=True)
   print(text)
   if args.out is not None:

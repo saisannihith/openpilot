@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 from openpilot.tools.lib.logreader import ReadMode
 
-from scan_longitudinal_quality import analyze, expand_logs, read_samples
+from scan_longitudinal_quality import analyze, expand_logs, read_samples_and_metadata
 
 
 DEFAULT_REALDATA = Path("/data/media/0/realdata")
@@ -55,10 +56,37 @@ def add_request(requests: list[dict[str, str]], scenario: str, reason: str, targ
   })
 
 
+def current_git_commit() -> str:
+  try:
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+  except Exception:
+    return "unknown"
+
+
+def commit_matches(current: str, logged: str | None) -> bool:
+  if not current or current == "unknown" or not logged or logged == "unknown":
+    return False
+  return current.startswith(logged) or logged.startswith(current)
+
+
 def build_report(scan: dict[str, Any], patterns: list[str], files: int) -> dict[str, Any]:
   checks: list[dict[str, Any]] = []
   coverage_gaps: list[str] = []
   next_drive_requests: list[dict[str, str]] = []
+  current_commit = current_git_commit()
+  software = scan.get("software", [])
+  matching_commits = [
+    item for item in software
+    if commit_matches(current_commit, item.get("gitCommit")) or commit_matches(current_commit, item.get("gitSrcCommit"))
+  ]
+  dirty_logs = [item for item in software if item.get("dirty")]
+
+  if not software:
+    coverage_gaps.append("Scanned logs did not contain initData software metadata.")
+  elif not matching_commits:
+    coverage_gaps.append("No scanned log software commit matches the current checkout commit.")
+  if dirty_logs:
+    coverage_gaps.append("At least one scanned log was recorded from a dirty checkout.")
 
   no_context = scan.get("noContextHighwayHardBrakes", [])
   add_check(
@@ -181,10 +209,13 @@ def build_report(scan: dict[str, Any], patterns: list[str], files: int) -> dict[
 
   return {
     "status": overall,
+    "currentCommit": current_commit,
     "filesScanned": files,
     "patterns": patterns,
     "routes": scan.get("routes", []),
     "samples": scan.get("samples", 0),
+    "logSoftware": software,
+    "matchingLogCommits": matching_commits,
     "coverageGaps": coverage_gaps,
     "nextDriveRequests": next_drive_requests,
     "checks": checks,
@@ -209,10 +240,14 @@ def main() -> int:
 
   paths = expand_logs(patterns)
   samples = []
+  software_metadata = []
   for path in paths:
-    samples.extend(read_samples(path, ReadMode.QLOG))
+    path_samples, software = read_samples_and_metadata(path, ReadMode.QLOG)
+    samples.extend(path_samples)
+    if software is not None:
+      software_metadata.append(software)
 
-  report = build_report(analyze(samples), patterns, len(paths))
+  report = build_report(analyze(samples, software_metadata), patterns, len(paths))
   text = json.dumps(report, indent=2, sort_keys=True)
   print(text)
   if args.out is not None:
