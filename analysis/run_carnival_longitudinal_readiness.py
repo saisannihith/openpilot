@@ -79,12 +79,16 @@ def build_report(scan: dict[str, Any], patterns: list[str], files: int) -> dict[
     item for item in software
     if commit_matches(current_commit, item.get("gitCommit")) or commit_matches(current_commit, item.get("gitSrcCommit"))
   ]
+  matching_log_files = sum(int(item.get("files", 0)) for item in matching_commits)
+  stale_log_files = max(0, files - matching_log_files)
   dirty_logs = [item for item in software if item.get("dirty")]
 
   if not software:
     coverage_gaps.append("Scanned logs did not contain initData software metadata.")
   elif not matching_commits:
     coverage_gaps.append("No scanned log software commit matches the current checkout commit.")
+  elif stale_log_files:
+    coverage_gaps.append(f"{stale_log_files} scanned log files were recorded on older software commits.")
   if dirty_logs:
     coverage_gaps.append("At least one scanned log was recorded from a dirty checkout.")
 
@@ -216,6 +220,8 @@ def build_report(scan: dict[str, Any], patterns: list[str], files: int) -> dict[
     "samples": scan.get("samples", 0),
     "logSoftware": software,
     "matchingLogCommits": matching_commits,
+    "matchingLogFiles": matching_log_files,
+    "staleLogFiles": stale_log_files,
     "coverageGaps": coverage_gaps,
     "nextDriveRequests": next_drive_requests,
     "checks": checks,
