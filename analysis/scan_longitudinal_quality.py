@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+from openpilot.tools.lib.logreader import LogReader, ReadMode
+
+
+def safe_attr(obj: Any, name: str, default: Any = None) -> Any:
+  try:
+    return getattr(obj, name)
+  except Exception:
+    return default
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+  try:
+    result = float(value)
+  except Exception:
+    return default
+  return result if math.isfinite(result) else default
+
+
+def route_name(path: Path) -> str:
+  for name in (path.parent.name, path.name):
+    parts = name.split("--")
+    if len(parts) >= 2:
+      return "--".join(parts[:2])
+  return path.parent.name
+
+
+def segment_number(path: Path) -> int:
+  for name in (path.parent.name, path.name):
+    parts = name.split("--")
+    if len(parts) >= 3:
+      try:
+        return int(parts[2].split(".", 1)[0])
+      except Exception:
+        pass
+  return -1
+
+
+@dataclass
+class Sample:
+  route: str
+  segment: int
+  t: float
+  long_active: bool
+  enabled: bool
+  v_ego: float
+  a_ego: float
+  gas_pressed: bool
+  brake_pressed: bool
+  standstill: bool
+  red_light: bool
+  forcing_stop: bool
+  forcing_stop_length: float
+  should_stop: bool
+  model_should_stop: bool
+  lead_status: bool
+  lead_d_rel: float
+  lead_v_rel: float
+  lead_v_lead: float
+  lead_a_lead: float
+  lead_y_rel: float
+  plan_accel: float
+  cmd_accel: float
+  out_accel: float
+  source: str
+
+
+def make_sample(path: Path, start_ns: int, mono_time: int, latest: dict[str, Any]) -> Sample | None:
+  required = ("carState", "carControl", "controlsState", "longitudinalPlan", "starpilotPlan", "radarState")
+  if not all(k in latest for k in required):
+    return None
+
+  car_state = latest["carState"]
+  car_control = latest["carControl"]
+  controls_state = latest["controlsState"]
+  long_plan = latest["longitudinalPlan"]
+  starpilot_plan = latest["starpilotPlan"]
+  radar_state = latest["radarState"]
+  car_output = latest.get("carOutput")
+  model = latest.get("modelV2")
+  model_action = safe_attr(model, "action")
+  lead = radar_state.leadOne
+  actuators = safe_attr(car_control, "actuators")
+  out_actuators = safe_attr(car_output, "actuatorsOutput") if car_output is not None else None
+  lead_status = bool(safe_attr(lead, "status", False))
+
+  return Sample(
+    route=route_name(path),
+    segment=segment_number(path),
+    t=(mono_time - start_ns) / 1e9,
+    long_active=bool(safe_attr(car_control, "longActive", False)),
+    enabled=bool(safe_attr(controls_state, "enabled", False)),
+    v_ego=safe_float(safe_attr(car_state, "vEgo", 0.0)),
+    a_ego=safe_float(safe_attr(car_state, "aEgo", 0.0)),
+    gas_pressed=bool(safe_attr(car_state, "gasPressed", False)),
+    brake_pressed=bool(safe_attr(car_state, "brakePressed", False)),
+    standstill=bool(safe_attr(car_state, "standstill", False)),
+    red_light=bool(safe_attr(starpilot_plan, "redLight", False)),
+    forcing_stop=bool(safe_attr(starpilot_plan, "forcingStop", False)),
+    forcing_stop_length=safe_float(safe_attr(starpilot_plan, "forcingStopLength", 0.0)),
+    should_stop=bool(safe_attr(long_plan, "shouldStop", False)),
+    model_should_stop=bool(safe_attr(model_action, "shouldStop", False)),
+    lead_status=lead_status,
+    lead_d_rel=safe_float(safe_attr(lead, "dRel", 0.0)) if lead_status else 0.0,
+    lead_v_rel=safe_float(safe_attr(lead, "vRel", 0.0)) if lead_status else 0.0,
+    lead_v_lead=safe_float(safe_attr(lead, "vLead", 0.0)) if lead_status else 0.0,
+    lead_a_lead=safe_float(safe_attr(lead, "aLeadK", 0.0)) if lead_status else 0.0,
+    lead_y_rel=safe_float(safe_attr(lead, "yRel", 0.0)) if lead_status else 0.0,
+    plan_accel=safe_float(safe_attr(long_plan, "aTarget", 0.0)),
+    cmd_accel=safe_float(safe_attr(actuators, "accel", 0.0)),
+    out_accel=safe_float(safe_attr(out_actuators, "accel", safe_attr(actuators, "accel", 0.0))),
+    source=str(safe_attr(long_plan, "longitudinalPlanSource", "unknown")),
+  )
+
+
+def read_samples(path: Path, mode: ReadMode) -> list[Sample]:
+  latest: dict[str, Any] = {}
+  samples: list[Sample] = []
+  start_ns: int | None = None
+  for msg in LogReader(str(path), default_mode=mode, sort_by_time=True):
+    which = msg.which()
+    mono_time = int(msg.logMonoTime)
+    if start_ns is None and which in ("carState", "longitudinalPlan", "controlsState"):
+      start_ns = mono_time
+    if which in ("carState", "carControl", "carOutput", "controlsState", "longitudinalPlan", "starpilotPlan", "radarState", "modelV2"):
+      latest[which] = getattr(msg, which)
+    if which == "longitudinalPlan" and start_ns is not None:
+      sample = make_sample(path, start_ns, mono_time, latest)
+      if sample is not None:
+        samples.append(sample)
+  return samples
+
+
+def event_dict(sample: Sample) -> dict[str, Any]:
+  data = asdict(sample)
+  for key, value in list(data.items()):
+    if isinstance(value, float):
+      data[key] = round(value, 3)
+  return data
+
+
+def group_by_gap(samples: list[Sample], predicate, max_gap: float = 1.0) -> list[list[Sample]]:
+  groups: list[list[Sample]] = []
+  current: list[Sample] = []
+  for sample in samples:
+    if predicate(sample):
+      current.append(sample)
+    elif current:
+      if sample.t - current[-1].t <= max_gap:
+        current.append(sample)
+      else:
+        groups.append(current)
+        current = []
+  if current:
+    groups.append(current)
+  return [group for group in groups if len(group) >= 3]
+
+
+def summarize_stop(group: list[Sample]) -> dict[str, Any]:
+  use = [s for s in group if s.long_active] or group
+  first = use[0]
+  final = use[-1]
+  standstill = next((s for s in use if s.standstill or abs(s.v_ego) < 0.05), None)
+  return {
+    "route": first.route,
+    "segment": first.segment,
+    "startT": round(first.t, 2),
+    "endT": round(final.t, 2),
+    "duration": round(final.t - first.t, 2),
+    "maxSpeedMps": round(max(s.v_ego for s in use), 3),
+    "minSpeedMps": round(min(s.v_ego for s in use), 3),
+    "minCmdAccel": round(min(s.cmd_accel for s in use), 3),
+    "minPlanAccel": round(min(s.plan_accel for s in use), 3),
+    "maxForceStopLength": round(max(s.forcing_stop_length for s in use), 3),
+    "finalForceStopLength": round(final.forcing_stop_length, 3),
+    "standstillT": None if standstill is None else round(standstill.t, 2),
+    "standstillForceStopLength": None if standstill is None else round(standstill.forcing_stop_length, 3),
+    "manualBrake": any(s.brake_pressed for s in use),
+    "manualGas": any(s.gas_pressed for s in use),
+    "leadSeen": any(s.lead_status for s in use),
+    "minLeadDRel": None if not any(s.lead_status for s in use) else round(min(s.lead_d_rel for s in use if s.lead_status), 3),
+    "modelShouldStopFrames": sum(s.model_should_stop for s in use),
+    "shouldStopFrames": sum(s.should_stop for s in use),
+    "redLightFrames": sum(s.red_light for s in use),
+    "forcingStopFrames": sum(s.forcing_stop for s in use),
+    "sources": sorted(set(s.source for s in use)),
+  }
+
+
+def summarize_lead_departures(samples: list[Sample]) -> list[dict[str, Any]]:
+  opportunities: list[dict[str, Any]] = []
+  i = 0
+  while i < len(samples):
+    sample = samples[i]
+    ready = (
+      sample.long_active and
+      sample.v_ego < 0.35 and
+      sample.lead_status and
+      2.0 <= sample.lead_d_rel <= 20.0 and
+      sample.lead_v_lead >= 0.55 and
+      sample.lead_v_rel >= 0.25 and
+      not sample.red_light and
+      not sample.forcing_stop and
+      not sample.should_stop and
+      not sample.brake_pressed
+    )
+    if not ready:
+      i += 1
+      continue
+
+    start = sample
+    window: list[Sample] = []
+    j = i
+    while j < len(samples) and samples[j].t - start.t <= 6.0:
+      window.append(samples[j])
+      j += 1
+
+    ego_move = next((s for s in window if s.v_ego >= 0.75), None)
+    accel_floor = max((s.plan_accel for s in window[:25]), default=0.0)
+    move_time = None if ego_move is None else ego_move.t
+    manual = next((
+      s for s in window
+      if (s.brake_pressed or s.gas_pressed) and (move_time is None or s.t < move_time)
+    ), None)
+    manual_any = next((s for s in window if s.brake_pressed or s.gas_pressed), None)
+    opportunities.append({
+      "route": start.route,
+      "segment": start.segment,
+      "startT": round(start.t, 2),
+      "startLeadDRel": round(start.lead_d_rel, 3),
+      "startLeadVLead": round(start.lead_v_lead, 3),
+      "startLeadVRel": round(start.lead_v_rel, 3),
+      "maxEarlyPlanAccel": round(accel_floor, 3),
+      "egoMoveDelay": None if ego_move is None else round(ego_move.t - start.t, 2),
+      "manualOverrideBeforeMoveDelay": None if manual is None else round(manual.t - start.t, 2),
+      "manualOverrideAnyDelay": None if manual_any is None else round(manual_any.t - start.t, 2),
+    })
+    i = max(j, i + 1)
+  return opportunities
+
+
+def summarize_accel_jumps(samples: list[Sample]) -> list[dict[str, Any]]:
+  jumps: list[dict[str, Any]] = []
+  previous: Sample | None = None
+  for sample in samples:
+    if previous is not None and sample.route == previous.route and sample.segment == previous.segment and sample.long_active and previous.long_active:
+      dt = sample.t - previous.t
+      if 0.015 <= dt <= 0.35:
+        step = sample.plan_accel - previous.plan_accel
+        jerk = step / dt
+        if abs(step) >= 0.75 or abs(jerk) >= 4.0:
+          jumps.append({
+            "route": sample.route,
+            "segment": sample.segment,
+            "t": round(sample.t, 2),
+            "dt": round(dt, 3),
+            "planAccelBefore": round(previous.plan_accel, 3),
+            "planAccelAfter": round(sample.plan_accel, 3),
+            "step": round(step, 3),
+            "jerk": round(jerk, 3),
+            "vEgo": round(sample.v_ego, 3),
+            "lead": sample.lead_status,
+            "redLight": sample.red_light,
+            "forcingStop": sample.forcing_stop,
+            "shouldStop": sample.should_stop,
+            "source": sample.source,
+          })
+    previous = sample
+  jumps.sort(key=lambda event: abs(event["jerk"]), reverse=True)
+  return jumps[:80]
+
+
+def analyze(samples: list[Sample]) -> dict[str, Any]:
+  stop_groups = group_by_gap(samples, lambda s: s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop, max_gap=1.5)
+  no_context_brakes = [
+    event_dict(s) for s in samples
+    if s.long_active and s.v_ego >= 12.0 and s.cmd_accel <= -1.8 and
+    not s.lead_status and not s.red_light and not s.forcing_stop and not s.should_stop and not s.model_should_stop
+  ][:80]
+  stop_context_brakes = [
+    event_dict(s) for s in samples
+    if s.long_active and s.v_ego >= 12.0 and s.cmd_accel <= -1.8 and
+    not s.lead_status and (s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop)
+  ][:80]
+  return {
+    "samples": len(samples),
+    "routes": sorted(set(s.route for s in samples)),
+    "segments": len(set((s.route, s.segment) for s in samples)),
+    "leadDepartureOpportunities": summarize_lead_departures(samples),
+    "noContextHighwayHardBrakes": no_context_brakes,
+    "stopContextHighwayHardBrakes": stop_context_brakes,
+    "stopEpisodes": [summarize_stop(group) for group in stop_groups],
+    "accelJumps": summarize_accel_jumps(samples),
+  }
+
+
+def expand_logs(patterns: list[str]) -> list[Path]:
+  paths: list[Path] = []
+  for pattern in patterns:
+    root = Path("/") if pattern.startswith("/") else Path()
+    paths.extend(path for path in root.glob(pattern.lstrip("/")) if path.is_file())
+  return sorted(set(paths))
+
+
+def main() -> None:
+  parser = argparse.ArgumentParser()
+  parser.add_argument("logs", nargs="+")
+  parser.add_argument("--mode", choices=("qlog", "rlog"), default="qlog")
+  parser.add_argument("--out", type=Path)
+  args = parser.parse_args()
+
+  mode = ReadMode.QLOG if args.mode == "qlog" else ReadMode.RLOG
+  samples: list[Sample] = []
+  for path in expand_logs(args.logs):
+    samples.extend(read_samples(path, mode))
+
+  payload = analyze(samples)
+  text = json.dumps(payload, indent=2, sort_keys=True)
+  print(text)
+  if args.out is not None:
+    args.out.write_text(text + "\n")
+
+
+if __name__ == "__main__":
+  main()
