@@ -2379,6 +2379,66 @@ def test_carnival_radar_confirmed_stop_hold_latches_confirmation_track():
   assert cap is None
 
 
+def test_carnival_radar_confirmed_stop_hold_rejects_false_contexts():
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+
+  def confirmation_lead(**kwargs):
+    lead = make_lead(status=True, d_rel=7.4, v_lead=0.08, a_lead=-0.04, radar=True, model_prob=1.0, y_rel=-0.12)
+    lead.radarTrackId = 0xC4101
+    for key, value in kwargs.items():
+      setattr(lead, key, value)
+    return lead
+
+  reject_cases = (
+    dict(v_ego=12.0),
+    dict(lead=confirmation_lead(dRel=14.0)),
+    dict(lead=confirmation_lead(vLead=2.5)),
+    dict(lead=confirmation_lead(yRel=2.2)),
+    dict(lead=confirmation_lead(radarTrackId=0x401)),
+  )
+
+  for case in reject_cases:
+    lead = case.get("lead", confirmation_lead())
+    cap = planner.get_carnival_radar_stop_hold_cap(
+      (lead, make_lead(status=False)),
+      v_ego=case.get("v_ego", 1.9),
+      accel_min=-2.0,
+      driver_gas=False,
+      release_ready=False,
+    )
+    assert cap is None
+    assert not planner.carnival_radar_stop_hold_active
+
+
+def test_carnival_radar_confirmed_stop_hold_clears_on_departure():
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
+  planner = LongitudinalPlanner(CP, init_v=1.9)
+
+  confirmation_lead = make_lead(status=True, d_rel=7.4, v_lead=0.08, a_lead=-0.04, radar=True, model_prob=1.0, y_rel=-0.12)
+  confirmation_lead.radarTrackId = 0xC4101
+  assert planner.get_carnival_radar_stop_hold_cap(
+    (confirmation_lead, make_lead(status=False)),
+    v_ego=1.9,
+    accel_min=-2.0,
+    driver_gas=False,
+    release_ready=False,
+  ) is not None
+
+  departing_lead = make_lead(status=True, d_rel=11.5, v_lead=2.2, a_lead=0.4, radar=False, model_prob=0.99, y_rel=-0.1)
+  cap = planner.get_carnival_radar_stop_hold_cap(
+    (departing_lead, make_lead(status=False)),
+    v_ego=2.0,
+    accel_min=-2.0,
+    driver_gas=False,
+    release_ready=False,
+  )
+  assert cap is None
+  assert not planner.carnival_radar_stop_hold_active
+
+
 def test_toyota_sienna_post_departure_restop_blocks_lead_that_stops_again():
   CP = ToyotaCarInterface.get_non_essential_params(TOYOTA_CAR.TOYOTA_SIENNA_4TH_GEN)
   now_t = time.monotonic()
