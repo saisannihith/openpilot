@@ -61,6 +61,8 @@ class Sample:
   gas_pressed: bool
   brake_pressed: bool
   standstill: bool
+  cruise_standstill: bool
+  long_control_state: int
   red_light: bool
   forcing_stop: bool
   forcing_stop_length: float
@@ -109,6 +111,8 @@ def make_sample(path: Path, start_ns: int, mono_time: int, latest: dict[str, Any
     gas_pressed=bool(safe_attr(car_state, "gasPressed", False)),
     brake_pressed=bool(safe_attr(car_state, "brakePressed", False)),
     standstill=bool(safe_attr(car_state, "standstill", False)),
+    cruise_standstill=bool(safe_attr(safe_attr(car_state, "cruiseState"), "standstill", False)),
+    long_control_state=int(safe_attr(safe_attr(controls_state, "longControlState"), "raw", -1)),
     red_light=bool(safe_attr(starpilot_plan, "redLight", False)),
     forcing_stop=bool(safe_attr(starpilot_plan, "forcingStop", False)),
     forcing_stop_length=safe_float(safe_attr(starpilot_plan, "forcingStopLength", 0.0)),
@@ -261,11 +265,17 @@ def summarize_lead_departures(samples: list[Sample]) -> list[dict[str, Any]]:
       "route": start.route,
       "segment": start.segment,
       "startT": round(start.t, 2),
+      "startStandstill": start.standstill,
+      "startCruiseStandstill": start.cruise_standstill,
+      "startLongControlState": start.long_control_state,
       "startLeadDRel": round(start.lead_d_rel, 3),
       "startLeadVLead": round(start.lead_v_lead, 3),
       "startLeadVRel": round(start.lead_v_rel, 3),
+      "startPlanAccel": round(start.plan_accel, 3),
+      "startCmdAccel": round(start.cmd_accel, 3),
       "maxEarlyPlanAccel": round(accel_floor, 3),
       "egoMoveDelay": None if ego_move is None else round(ego_move.t - start.t, 2),
+      "egoMoveLongControlState": None if ego_move is None else ego_move.long_control_state,
       "manualOverrideBeforeMoveDelay": None if manual is None else round(manual.t - start.t, 2),
       "manualOverrideAnyDelay": None if manual_any is None else round(manual_any.t - start.t, 2),
     })
