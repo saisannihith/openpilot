@@ -300,6 +300,7 @@ def summarize_current_red_light_gate(samples: list[Sample]) -> dict[str, Any]:
     "loggedBelowCurrentCapFrames": 0,
     "allowedStrongBrakeFrames": 0,
     "allowedStrongBrakeLongActiveFrames": 0,
+    "allowedStrongBrakeLongActiveEnabledFrames": 0,
     "suppressedExamples": [],
     "allowedStrongBrakeExamples": [],
   }
@@ -354,6 +355,8 @@ def summarize_current_red_light_gate(samples: list[Sample]) -> dict[str, Any]:
       summary["allowedStrongBrakeFrames"] += 1
       if sample.long_active and sample.cmd_accel <= -1.2:
         summary["allowedStrongBrakeLongActiveFrames"] += 1
+        if sample.enabled:
+          summary["allowedStrongBrakeLongActiveEnabledFrames"] += 1
       if len(summary["allowedStrongBrakeExamples"]) < 12:
         summary["allowedStrongBrakeExamples"].append({
           "route": sample.route,
