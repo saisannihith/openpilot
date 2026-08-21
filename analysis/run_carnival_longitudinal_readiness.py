@@ -47,8 +47,18 @@ def add_check(checks: list[dict[str, Any]], name: str, status: str, detail: str,
   checks.append(check)
 
 
+def add_request(requests: list[dict[str, str]], scenario: str, reason: str, target: str) -> None:
+  requests.append({
+    "scenario": scenario,
+    "reason": reason,
+    "target": target,
+  })
+
+
 def build_report(scan: dict[str, Any], patterns: list[str], files: int) -> dict[str, Any]:
   checks: list[dict[str, Any]] = []
+  coverage_gaps: list[str] = []
+  next_drive_requests: list[dict[str, str]] = []
 
   no_context = scan.get("noContextHighwayHardBrakes", [])
   add_check(
@@ -107,6 +117,13 @@ def build_report(scan: dict[str, Any], patterns: list[str], files: int) -> dict[
     lead_status = "fail"
   elif not lead_departures:
     lead_status = "warn"
+    coverage_gaps.append("No current-log lead-departure opportunity was found.")
+    add_request(
+      next_drive_requests,
+      "stop_and_go_lead_departure",
+      "Validate that the car resumes without gas after a stopped lead begins moving.",
+      "Stop behind a lead vehicle, keep longitudinal alpha active, and let the lead move first without pressing gas unless intervention is needed.",
+    )
   else:
     lead_status = "pass"
   add_check(
@@ -131,6 +148,18 @@ def build_report(scan: dict[str, Any], patterns: list[str], files: int) -> dict[
   )
 
   stop_episodes = scan.get("stopEpisodes", [])
+  completed_stops = [
+    episode for episode in stop_episodes
+    if episode.get("standstillT") is not None
+  ]
+  if stop_episodes and not completed_stops:
+    coverage_gaps.append("Stop-context episodes were present, but none reached logged standstill.")
+    add_request(
+      next_drive_requests,
+      "complete_red_light_or_stopped_lead_stop",
+      "Validate full stop distance and smooth final braking, not just initial slowdown.",
+      "Let longitudinal alpha handle one clear red-light or stopped-lead approach to a complete stop, with hands/feet ready.",
+    )
   add_check(
     checks,
     "stop_episode_coverage",
@@ -144,12 +173,20 @@ def build_report(scan: dict[str, Any], patterns: list[str], files: int) -> dict[
     if severity_rank(check["status"]) > severity_rank(overall):
       overall = check["status"]
 
+  if not scan.get("routes"):
+    coverage_gaps.append("No readable qlog samples were found.")
+
+  if overall == "pass" and coverage_gaps:
+    overall = "warn"
+
   return {
     "status": overall,
     "filesScanned": files,
     "patterns": patterns,
     "routes": scan.get("routes", []),
     "samples": scan.get("samples", 0),
+    "coverageGaps": coverage_gaps,
+    "nextDriveRequests": next_drive_requests,
     "checks": checks,
   }
 
