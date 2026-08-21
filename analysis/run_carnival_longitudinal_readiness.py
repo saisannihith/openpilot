@@ -190,6 +190,36 @@ def build_report(scan: dict[str, Any], patterns: list[str], files: int, *, inclu
     lead_departures[:8],
   )
 
+  stop_releases = scan.get("stopReleaseOpportunities", [])
+  stop_release_manual_before_move = [event for event in stop_releases if event.get("manualOverrideBeforeMoveDelay") is not None]
+  stop_release_slow_or_missing = [
+    event for event in stop_releases
+    if event.get("egoMoveDelay") is None or float(event.get("egoMoveDelay", 99.0)) > 2.5
+  ]
+  if stop_release_manual_before_move or stop_release_slow_or_missing:
+    stop_release_status = "fail"
+  elif not stop_releases:
+    stop_release_status = "warn"
+    coverage_gaps.append("No current-log stop-release opportunity was found.")
+    add_request(
+      next_drive_requests,
+      "stop_release_auto_resume",
+      "Validate that the car resumes without gas after a held stop clears.",
+      "Let longitudinal alpha stop for a clear red light, stop sign, or stopped lead; when it is safe and the stop condition clears, do not press gas unless intervention is needed.",
+    )
+  else:
+    stop_release_status = "pass"
+  add_check(
+    checks,
+    "stop_release_auto_resume",
+    stop_release_status,
+    (
+      f"{len(stop_releases)} opportunities; {len(stop_release_manual_before_move)} manual overrides before movement; "
+      f"{len(stop_release_slow_or_missing)} slow/missing ego launches."
+    ),
+    stop_releases[:8],
+  )
+
   stop_context = scan.get("stopContextHighwayHardBrakes", [])
   enabled_stop_context = [sample for sample in stop_context if sample.get("enabled")]
   add_check(

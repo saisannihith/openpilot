@@ -283,6 +283,76 @@ def summarize_lead_departures(samples: list[Sample]) -> list[dict[str, Any]]:
   return opportunities
 
 
+def summarize_stop_releases(samples: list[Sample]) -> list[dict[str, Any]]:
+  opportunities: list[dict[str, Any]] = []
+  seen_stop_context = False
+  previous_route: str | None = None
+  previous_segment: int | None = None
+  i = 0
+  ordered = sorted(samples, key=lambda s: (s.route, s.segment, s.t))
+  while i < len(ordered):
+    sample = ordered[i]
+    if sample.route != previous_route or sample.segment != previous_segment:
+      seen_stop_context = False
+      previous_route = sample.route
+      previous_segment = sample.segment
+
+    stop_context = sample.red_light or sample.forcing_stop or sample.should_stop or sample.model_should_stop
+    if stop_context:
+      seen_stop_context = True
+      i += 1
+      continue
+
+    ready = (
+      seen_stop_context and
+      sample.long_active and
+      sample.v_ego < 0.35 and
+      not sample.brake_pressed and
+      not sample.gas_pressed
+    )
+    if not ready:
+      i += 1
+      continue
+
+    start = sample
+    window: list[Sample] = []
+    j = i
+    while j < len(ordered):
+      candidate = ordered[j]
+      if candidate.route != start.route or candidate.segment != start.segment or candidate.t - start.t > 6.0:
+        break
+      window.append(candidate)
+      j += 1
+
+    ego_move = next((s for s in window if s.v_ego >= 0.75), None)
+    move_time = None if ego_move is None else ego_move.t
+    manual = next((
+      s for s in window
+      if (s.brake_pressed or s.gas_pressed) and (move_time is None or s.t < move_time)
+    ), None)
+    manual_any = next((s for s in window if s.brake_pressed or s.gas_pressed), None)
+    opportunities.append({
+      "route": start.route,
+      "segment": start.segment,
+      "startT": round(start.t, 2),
+      "startStandstill": start.standstill,
+      "startCruiseStandstill": start.cruise_standstill,
+      "startLongControlState": start.long_control_state,
+      "startLeadStatus": start.lead_status,
+      "startLeadDRel": None if not start.lead_status else round(start.lead_d_rel, 3),
+      "startPlanAccel": round(start.plan_accel, 3),
+      "startCmdAccel": round(start.cmd_accel, 3),
+      "maxEarlyPlanAccel": round(max((s.plan_accel for s in window[:25]), default=0.0), 3),
+      "egoMoveDelay": None if ego_move is None else round(ego_move.t - start.t, 2),
+      "egoMoveLongControlState": None if ego_move is None else ego_move.long_control_state,
+      "manualOverrideBeforeMoveDelay": None if manual is None else round(manual.t - start.t, 2),
+      "manualOverrideAnyDelay": None if manual_any is None else round(manual_any.t - start.t, 2),
+    })
+    seen_stop_context = False
+    i = max(j, i + 1)
+  return opportunities
+
+
 def summarize_accel_jumps(samples: list[Sample]) -> list[dict[str, Any]]:
   jumps: list[dict[str, Any]] = []
   previous: Sample | None = None
@@ -446,6 +516,7 @@ def analyze(samples: list[Sample], software_metadata: list[dict[str, Any]] | Non
     "segments": len(set((s.route, s.segment) for s in samples)),
     "software": summarize_software_metadata(software_metadata or []),
     "leadDepartureOpportunities": summarize_lead_departures(samples),
+    "stopReleaseOpportunities": summarize_stop_releases(samples),
     "noContextHighwayHardBrakes": no_context_brakes,
     "stopContextHighwayHardBrakes": stop_context_brakes,
     "stopEpisodes": [summarize_stop(group) for group in stop_groups],
