@@ -110,6 +110,16 @@ CARNIVAL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED = 2.0
 CARNIVAL_STOPPED_LEAD_GUARD_DISTANCE_MARGIN = 4.0
 CARNIVAL_STOPPED_LEAD_GUARD_MIN_BRAKE = 0.45
 CARNIVAL_STOPPED_LEAD_GUARD_MAX_BRAKE = 0.85
+CARNIVAL_CONFIRMATION_TRACK_ID_MIN = 0xC4100
+CARNIVAL_CONFIRMATION_TRACK_ID_MAX = 0xC41FF
+CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_EGO_SPEED = 3.2
+CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_EGO_SPEED = 3.8
+CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_DISTANCE = 9.5
+CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_DISTANCE = 10.5
+CARNIVAL_RADAR_STOP_HOLD_MAX_LEAD_SPEED = 1.0
+CARNIVAL_RADAR_STOP_HOLD_MAX_LATERAL_OFFSET = 1.75
+CARNIVAL_RADAR_STOP_HOLD_MIN_BRAKE = 0.55
+CARNIVAL_RADAR_STOP_HOLD_MAX_BRAKE = 0.95
 LEAD_DEPART_ACCEL_HOLD_TIME = 1.2
 LEAD_DEPART_ACCEL_HOLD_MAX_EGO_SPEED = 2.0
 CLOSE_LEAD_BRAKE_CAP_MAX_TTC = 25.0
@@ -637,6 +647,7 @@ class LongitudinalPlanner:
     self.prev_experimental_mode = None
     self.experimental_release_accel_until = 0.0
     self.carnival_lone_high_speed_red_light_suppressed = False
+    self.carnival_radar_stop_hold_active = False
 
     if self.is_preap:
       try:
@@ -1703,6 +1714,75 @@ class LongitudinalPlanner:
     brake_floor = -hold_brake
     return brake_floor if accel_min >= 0.0 else max(accel_min, brake_floor)
 
+  @staticmethod
+  def is_carnival_confirmation_lead(lead):
+    if lead is None or not bool(getattr(lead, "status", False)):
+      return False
+    if not bool(getattr(lead, "radar", False)):
+      return False
+    track_id = int(getattr(lead, "radarTrackId", -1))
+    return CARNIVAL_CONFIRMATION_TRACK_ID_MIN <= track_id <= CARNIVAL_CONFIRMATION_TRACK_ID_MAX
+
+  def get_carnival_radar_stop_hold_cap(self, leads, v_ego, accel_min, driver_gas, release_ready):
+    """Latch close stopped-lead evidence from the Carnival SCC/radar confirmation stream.
+
+    The 0xC4101 track gives reliable distance/lateral association, while velocity remains
+    model-led. Treat it as hard object-presence evidence for close stop holding, then
+    release only on explicit driver gas or a confirmed lead departure.
+    """
+    if str(getattr(self.CP, "carFingerprint", "")) != "KIA_CARNIVAL_4TH_GEN":
+      self.carnival_radar_stop_hold_active = False
+      return None
+
+    if driver_gas or release_ready:
+      self.carnival_radar_stop_hold_active = False
+      return None
+
+    centered_leads = [
+      lead for lead in leads
+      if lead is not None and bool(getattr(lead, "status", False)) and
+      abs(float(getattr(lead, "yRel", 0.0))) <= CARNIVAL_RADAR_STOP_HOLD_MAX_LATERAL_OFFSET
+    ]
+    confirmation_leads = [lead for lead in centered_leads if self.is_carnival_confirmation_lead(lead)]
+
+    def stopped_close(lead, max_distance, max_ego_speed):
+      lead_speed = max(float(getattr(lead, "vLead", 0.0)), 0.0)
+      return (
+        float(v_ego) <= max_ego_speed and
+        float(getattr(lead, "dRel", float("inf"))) <= max_distance and
+        lead_speed <= CARNIVAL_RADAR_STOP_HOLD_MAX_LEAD_SPEED
+      )
+
+    enter_leads = [
+      lead for lead in confirmation_leads
+      if stopped_close(lead, CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_DISTANCE, CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_EGO_SPEED)
+    ]
+    if enter_leads:
+      self.carnival_radar_stop_hold_active = True
+
+    if not self.carnival_radar_stop_hold_active:
+      return None
+
+    hold_leads = [
+      lead for lead in centered_leads
+      if stopped_close(lead, CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_DISTANCE, CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_EGO_SPEED)
+    ]
+    if not hold_leads:
+      self.carnival_radar_stop_hold_active = False
+      return None
+
+    lead = min(hold_leads, key=lambda l: float(getattr(l, "dRel", float("inf"))))
+    distance_factor = float(np.clip(
+      (CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_DISTANCE - float(lead.dRel)) /
+      max(CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_DISTANCE - 2.0, 0.1),
+      0.0, 1.0,
+    ))
+    speed_factor = float(np.clip(float(v_ego) / max(CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_EGO_SPEED, 0.1), 0.0, 1.0))
+    hold_brake = CARNIVAL_RADAR_STOP_HOLD_MIN_BRAKE + 0.25 * distance_factor + 0.15 * speed_factor
+    hold_brake = float(np.clip(hold_brake, CARNIVAL_RADAR_STOP_HOLD_MIN_BRAKE, CARNIVAL_RADAR_STOP_HOLD_MAX_BRAKE))
+    brake_floor = -hold_brake
+    return brake_floor if accel_min >= 0.0 else max(accel_min, brake_floor)
+
   def post_departure_follow_settle_active(self, lead, v_ego, t_follow):
     if lead is None or not lead.status:
       return False
@@ -2583,6 +2663,16 @@ class LongitudinalPlanner:
         standstill_stopped_lead_guard_cap = min(standstill_stopped_lead_guard_caps)
         output_should_stop = True
 
+    carnival_radar_stop_hold_cap = self.get_carnival_radar_stop_hold_cap(
+      (self.lead_one, self.lead_two),
+      float(sm['carState'].vEgo),
+      output_accel_min,
+      bool(getattr(sm['carState'], 'gasPressed', False)) or bool(getattr(sm['starpilotCarState'], 'accelPressed', False)),
+      bool(lead_depart_ready or confident_depart_ready or slow_creep_depart_ready or radar_gap_settle_active or depart_release_hold_active),
+    )
+    if carnival_radar_stop_hold_cap is not None:
+      output_should_stop = True
+
     if lead_control_active and sm['carState'].standstill and moving_leads and not depart_safety_veto:
       output_a_target = max(output_a_target, STANDSTILL_LEAD_NUDGE_ACCEL)
 
@@ -2819,6 +2909,10 @@ class LongitudinalPlanner:
     if standstill_stopped_lead_guard_cap is not None:
       self.a_desired = min(self.a_desired, standstill_stopped_lead_guard_cap)
       output_a_target = min(output_a_target, standstill_stopped_lead_guard_cap)
+
+    if carnival_radar_stop_hold_cap is not None:
+      self.a_desired = min(self.a_desired, carnival_radar_stop_hold_cap)
+      output_a_target = min(output_a_target, carnival_radar_stop_hold_cap)
 
     if close_settle_cap is not None:
       self.a_desired = min(self.a_desired, close_settle_cap)
