@@ -54,6 +54,31 @@ class Raises:
 
 
 class Mark:
+  @staticmethod
+  def _argnames(argnames) -> tuple[str, ...]:
+    if isinstance(argnames, str):
+      return tuple(name.strip() for name in argnames.split(",") if name.strip())
+    return tuple(argnames)
+
+  @staticmethod
+  def _case(names: tuple[str, ...], values) -> dict[str, object]:
+    if len(names) == 1:
+      return {names[0]: values}
+    if not isinstance(values, (tuple, list)):
+      raise TypeError(f"parametrize values for {names} must be tuple/list, got {values!r}")
+    return dict(zip(names, values, strict=True))
+
+  def parametrize(self, argnames, argvalues, **_kwargs):
+    names = self._argnames(argnames)
+    cases = [self._case(names, values) for values in argvalues]
+
+    def decorator(fn):
+      existing = list(getattr(fn, "_sweep_parametrize", []))
+      existing.append(cases)
+      setattr(fn, "_sweep_parametrize", existing)
+      return fn
+    return decorator
+
   def __getattr__(self, _name):
     def decorator(*_args, **_kwargs):
       if _args and callable(_args[0]) and len(_args) == 1 and not _kwargs:
@@ -155,7 +180,12 @@ MODEL_VERSIONS = ("v11", "v12", "v13", "v14", "v15")
 def call_variants(fn) -> list[dict[str, object]]:
   signature = inspect.signature(fn)
   variants: list[dict[str, object]] = [{}]
+  for cases in getattr(fn, "_sweep_parametrize", []):
+    variants = [dict(variant, **case) for variant in variants for case in cases]
+
   for name, param in signature.parameters.items():
+    if any(name in variant for variant in variants):
+      continue
     if param.default is not inspect.Parameter.empty or param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
       continue
     if name == "monkeypatch":
@@ -244,23 +274,14 @@ def main() -> None:
     "selfdrive.controls.tests.test_longcontrol": (
       lambda name: any(token in name for token in ("stop", "lead", "brake", "state", "stopping", "accel"))
     ),
+    "selfdrive.controls.tests.test_longitudinal_planner": (
+      lambda name: any(token in name for token in (
+        "accel", "brake", "carnival", "force_stop", "green_light", "lead", "launch",
+        "radar", "red_light", "stop",
+      ))
+    ),
   }
-  named = {
-    "selfdrive.controls.tests.test_longitudinal_planner": [
-      "test_carnival_lone_high_speed_red_light_guard_requires_no_other_stop_evidence",
-      "test_carnival_lone_high_speed_red_light_guard_latches_until_evidence_or_clear",
-      "test_carnival_lone_high_speed_red_light_latch_ignores_forcing_stop_only_after_latched",
-      "test_carnival_radar_confirmed_stop_hold_latches_confirmation_track",
-      "test_carnival_radar_confirmed_stop_hold_rejects_false_contexts",
-      "test_carnival_radar_confirmed_stop_hold_clears_on_departure",
-      "test_carnival_radar_confirmed_stop_hold_releases_for_confirmed_departure_without_gas",
-      "test_green_light_model_launch_boosts_no_lead_experimental_takeoff",
-      "test_green_light_model_launch_survives_cem_switch_back_to_chill",
-      "test_model_launch_does_not_override_stationary_lead_guard",
-      "test_model_launch_boosts_only_after_lead_departure_is_confirmed",
-      "test_model_launch_is_cancelled_when_departing_lead_stops_again",
-    ],
-  }
+  named: dict[str, list[str]] = {}
 
   total = 0
   failures: list[str] = []
