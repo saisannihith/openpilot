@@ -2673,6 +2673,61 @@ def test_carnival_confirmed_departing_lead_gets_stronger_accel_floor():
   assert floor <= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL
 
 
+def test_carnival_logged_lead_departure_geometry_gets_responsive_floor():
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+
+  # From route 00000013--69e0a3742d segment 15: the lead was clearly pulling
+  # away while the historical planner still asked for only about 0.44 m/s^2.
+  lead = make_lead(
+    status=True,
+    d_rel=4.408,
+    v_lead=1.081,
+    a_lead=0.70,
+    radar=False,
+    model_prob=1.0,
+  )
+
+  floor = planner.get_lead_depart_accel_floor(lead, v_ego=0.0, model_desired_accel=0.44)
+
+  assert floor >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MIN_ACCEL
+  assert floor <= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL
+
+
+def test_carnival_lead_departure_floor_is_still_blocked_for_weak_vision_lead():
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+
+  lead = make_lead(
+    status=True,
+    d_rel=4.408,
+    v_lead=1.081,
+    a_lead=0.70,
+    radar=False,
+    model_prob=0.5,
+  )
+
+  assert planner.get_lead_depart_accel_floor(lead, v_ego=0.0, model_desired_accel=0.44) is None
+
+
+def test_carnival_lead_departure_floor_caps_high_model_accel():
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+
+  lead = make_lead(
+    status=True,
+    d_rel=8.0,
+    v_lead=3.0,
+    a_lead=1.0,
+    radar=False,
+    model_prob=1.0,
+  )
+
+  floor = planner.get_lead_depart_accel_floor(lead, v_ego=0.0, model_desired_accel=1.4)
+
+  assert floor == pytest.approx(longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL)
+
+
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
 def test_carnival_experimental_standstill_lead_depart_uses_stronger_launch(model_version):
   CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
