@@ -2310,6 +2310,31 @@ def test_standstill_stopped_lead_guard_blocks_false_release_during_creep_frame(m
   assert planner.output_a_target <= 0.0
 
 
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+def test_carnival_stopped_lead_guard_engages_before_close_crawl(model_version):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
+  planner = LongitudinalPlanner(CP, init_v=1.9)
+
+  sm = make_sm(
+    1.9,
+    desired_accel=0.25,
+    min_accel=-2.0,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=7.4, v_lead=0.08, a_lead=-0.04, radar=True, model_prob=1.0, y_rel=-0.12),
+  )
+  sm["carState"].standstill = False
+  sm["controlsState"].longControlState = LongCtrlState.pid
+  sm["starpilotPlan"].vCruise = 10.0
+  sm["modelV2"].action.shouldStop = False
+
+  planner.update(sm, make_toggles(model_version))
+
+  assert planner.output_should_stop
+  assert planner.output_a_target <= -0.45
+
+
 def test_toyota_sienna_post_departure_restop_blocks_lead_that_stops_again():
   CP = ToyotaCarInterface.get_non_essential_params(TOYOTA_CAR.TOYOTA_SIENNA_4TH_GEN)
   now_t = time.monotonic()

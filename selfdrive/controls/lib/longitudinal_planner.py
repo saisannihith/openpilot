@@ -106,6 +106,10 @@ STANDSTILL_STOPPED_LEAD_GUARD_MIN_DISTANCE = 3.0
 STANDSTILL_STOPPED_LEAD_GUARD_DISTANCE_MARGIN = 3.0
 STANDSTILL_STOPPED_LEAD_GUARD_MIN_BRAKE = 0.16
 STANDSTILL_STOPPED_LEAD_GUARD_MAX_BRAKE = 0.26
+CARNIVAL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED = 2.0
+CARNIVAL_STOPPED_LEAD_GUARD_DISTANCE_MARGIN = 4.0
+CARNIVAL_STOPPED_LEAD_GUARD_MIN_BRAKE = 0.45
+CARNIVAL_STOPPED_LEAD_GUARD_MAX_BRAKE = 0.85
 LEAD_DEPART_ACCEL_HOLD_TIME = 1.2
 LEAD_DEPART_ACCEL_HOLD_MAX_EGO_SPEED = 2.0
 CLOSE_LEAD_BRAKE_CAP_MAX_TTC = 25.0
@@ -1638,7 +1642,13 @@ class LongitudinalPlanner:
                                             release_ready, confident_depart_ready):
     if lead is None or not lead.status or release_ready or confident_depart_ready:
       return None
-    if float(v_ego) > STANDSTILL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED:
+
+    carnival_4th_gen = str(getattr(self.CP, "carFingerprint", "")) == "KIA_CARNIVAL_4TH_GEN"
+    max_ego_speed = (
+      CARNIVAL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED
+      if carnival_4th_gen else STANDSTILL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED
+    )
+    if float(v_ego) > max_ego_speed:
       return None
 
     lead_radar = bool(getattr(lead, "radar", False))
@@ -1651,9 +1661,13 @@ class LongitudinalPlanner:
 
     lead_speed = max(float(getattr(lead, "vLead", 0.0)), 0.0)
     lead_delta = lead_speed - float(v_ego)
+    distance_margin = (
+      CARNIVAL_STOPPED_LEAD_GUARD_DISTANCE_MARGIN
+      if carnival_4th_gen else STANDSTILL_STOPPED_LEAD_GUARD_DISTANCE_MARGIN
+    )
     max_distance = max(
       STANDSTILL_STOPPED_LEAD_GUARD_MIN_DISTANCE,
-      float(stop_distance) + STANDSTILL_STOPPED_LEAD_GUARD_DISTANCE_MARGIN,
+      float(stop_distance) + distance_margin,
     )
     if (
       float(getattr(lead, "dRel", float("inf"))) > max_distance or
@@ -1669,11 +1683,22 @@ class LongitudinalPlanner:
     delta_factor = float(np.clip((STANDSTILL_STOPPED_LEAD_GUARD_MAX_LEAD_DELTA - lead_delta) /
                                  max(STANDSTILL_STOPPED_LEAD_GUARD_MAX_LEAD_DELTA, 0.1),
                                  0.0, 1.0))
-    hold_brake = STANDSTILL_STOPPED_LEAD_GUARD_MIN_BRAKE + 0.06 * distance_factor + 0.02 * speed_factor + 0.02 * delta_factor
+    min_brake = (
+      CARNIVAL_STOPPED_LEAD_GUARD_MIN_BRAKE
+      if carnival_4th_gen else STANDSTILL_STOPPED_LEAD_GUARD_MIN_BRAKE
+    )
+    max_brake = (
+      CARNIVAL_STOPPED_LEAD_GUARD_MAX_BRAKE
+      if carnival_4th_gen else STANDSTILL_STOPPED_LEAD_GUARD_MAX_BRAKE
+    )
+    if carnival_4th_gen:
+      hold_brake = min_brake + 0.22 * distance_factor + 0.12 * speed_factor + 0.10 * delta_factor
+    else:
+      hold_brake = min_brake + 0.06 * distance_factor + 0.02 * speed_factor + 0.02 * delta_factor
     hold_brake = float(np.clip(
       hold_brake,
-      STANDSTILL_STOPPED_LEAD_GUARD_MIN_BRAKE,
-      STANDSTILL_STOPPED_LEAD_GUARD_MAX_BRAKE,
+      min_brake,
+      max_brake,
     ))
     brake_floor = -hold_brake
     return brake_floor if accel_min >= 0.0 else max(accel_min, brake_floor)
@@ -2524,7 +2549,12 @@ class LongitudinalPlanner:
 
     standstill_stopped_lead_guard_cap = None
     standstill_guard_lead_present = any(bool(getattr(lead, "status", False)) for lead in (self.lead_one, self.lead_two))
-    if standstill_guard_lead_present and (bool(sm['carState'].standstill) or float(sm['carState'].vEgo) <= STANDSTILL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED):
+    standstill_guard_max_ego_speed = (
+      CARNIVAL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED
+      if str(getattr(self.CP, "carFingerprint", "")) == "KIA_CARNIVAL_4TH_GEN"
+      else STANDSTILL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED
+    )
+    if standstill_guard_lead_present and (bool(sm['carState'].standstill) or float(sm['carState'].vEgo) <= standstill_guard_max_ego_speed):
       release_ready = bool(
         lead_depart_ready or confident_depart_ready or slow_creep_depart_ready or
         radar_gap_settle_active or depart_release_hold_active
