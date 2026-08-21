@@ -93,6 +93,26 @@ def build_report(scan: dict[str, Any], patterns: list[str], files: int, *, inclu
   if dirty_logs:
     coverage_gaps.append("At least one scanned log was recorded from a dirty checkout.")
 
+  if not include_stale and included_files == 0:
+    add_check(
+      checks,
+      "current_commit_log_coverage",
+      "fail",
+      f"0 current-commit qlog files included; {excluded_stale_files} stale files excluded.",
+      {
+        "currentCommit": current_commit,
+        "filesScanned": files,
+        "excludedStaleFiles": excluded_stale_files,
+        "logSoftware": software,
+      },
+    )
+    add_request(
+      next_drive_requests,
+      "current_commit_longitudinal_drive",
+      "Validate the code currently installed on the comma instead of older commits.",
+      "Drive with SNITHPilot on the current commit, longitudinal alpha active, then rerun this readiness report.",
+    )
+
   no_context = scan.get("noContextHighwayHardBrakes", [])
   add_check(
     checks,
