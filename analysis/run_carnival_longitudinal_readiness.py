@@ -69,7 +69,8 @@ def commit_matches(current: str, logged: str | None) -> bool:
   return current.startswith(logged) or logged.startswith(current)
 
 
-def build_report(scan: dict[str, Any], patterns: list[str], files: int) -> dict[str, Any]:
+def build_report(scan: dict[str, Any], patterns: list[str], files: int, *, included_files: int, excluded_stale_files: int,
+                 include_stale: bool) -> dict[str, Any]:
   checks: list[dict[str, Any]] = []
   coverage_gaps: list[str] = []
   next_drive_requests: list[dict[str, str]] = []
@@ -207,6 +208,8 @@ def build_report(scan: dict[str, Any], patterns: list[str], files: int) -> dict[
 
   if not scan.get("routes"):
     coverage_gaps.append("No readable qlog samples were found.")
+  if excluded_stale_files:
+    coverage_gaps.append(f"{excluded_stale_files} stale log files were excluded from current-code scoring.")
 
   if overall == "pass" and coverage_gaps:
     overall = "warn"
@@ -215,6 +218,9 @@ def build_report(scan: dict[str, Any], patterns: list[str], files: int) -> dict[
     "status": overall,
     "currentCommit": current_commit,
     "filesScanned": files,
+    "filesIncluded": included_files,
+    "includeStaleLogs": include_stale,
+    "excludedStaleFiles": excluded_stale_files,
     "patterns": patterns,
     "routes": scan.get("routes", []),
     "samples": scan.get("samples", 0),
@@ -232,6 +238,7 @@ def main() -> int:
   parser = argparse.ArgumentParser(description="Produce a PASS/WARN/FAIL longitudinal readiness report for Carnival logs.")
   parser.add_argument("logs", nargs="*", help="qlog paths/globs. If omitted on-device, scans the newest routes.")
   parser.add_argument("--recent-routes", type=int, default=4, help="Number of newest route ids to scan when logs are omitted.")
+  parser.add_argument("--include-stale", action="store_true", help="Include logs recorded on older commits in scoring.")
   parser.add_argument("--out", type=Path)
   parser.add_argument("--strict-warn", action="store_true", help="Return nonzero for WARN as well as FAIL.")
   args = parser.parse_args()
@@ -245,15 +252,32 @@ def main() -> int:
     return 1
 
   paths = expand_logs(patterns)
+  current_commit = current_git_commit()
   samples = []
   software_metadata = []
+  included_files = 0
+  excluded_stale_files = 0
   for path in paths:
     path_samples, software = read_samples_and_metadata(path, ReadMode.QLOG)
-    samples.extend(path_samples)
     if software is not None:
       software_metadata.append(software)
+    software_matches = (
+      software is not None and (
+        commit_matches(current_commit, software.get("gitCommit")) or
+        commit_matches(current_commit, software.get("gitSrcCommit"))
+      )
+    )
+    if args.include_stale or software_matches:
+      samples.extend(path_samples)
+      included_files += 1
+    else:
+      excluded_stale_files += 1
 
-  report = build_report(analyze(samples, software_metadata), patterns, len(paths))
+  report = build_report(
+    analyze(samples, software_metadata), patterns, len(paths),
+    included_files=included_files, excluded_stale_files=excluded_stale_files,
+    include_stale=args.include_stale,
+  )
   text = json.dumps(report, indent=2, sort_keys=True)
   print(text)
   if args.out is not None:
