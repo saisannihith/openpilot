@@ -6,14 +6,16 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from cereal import log
+from cereal import car, log
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.values import CAR
 from opendbc.car.gm.values import CAR as GM_CAR, GMFlags
+from opendbc.car.hyundai.interface import CarInterface as HyundaiCarInterface
+from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR
 from opendbc.car.toyota.interface import CarInterface as ToyotaCarInterface
 from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 import openpilot.selfdrive.controls.lib.longitudinal_planner as longitudinal_planner_module
-from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
+from openpilot.selfdrive.controls.lib.longcontrol import LongControl, LongCtrlState
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, get_coast_accel, get_vehicle_min_accel, should_publish_planner_fcw, should_guard_carnival_lone_high_speed_red_light, update_carnival_lone_high_speed_red_light_suppression
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
@@ -2739,6 +2741,69 @@ def test_carnival_depart_accel_hold_continues_after_initial_pullaway(model_versi
 
   assert not planner.output_should_stop
   assert planner.output_a_target >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MIN_ACCEL
+
+
+def test_carnival_planner_lead_depart_accel_reaches_longcontrol_handoff():
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+  toggles = make_toggles("v15")
+
+  sm = make_sm(
+    0.0,
+    desired_accel=0.0,
+    min_accel=-0.5,
+    experimental_mode=True,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=4.1, v_lead=1.05, a_lead=1.2, radar=False, model_prob=1.0),
+  )
+  sm["carState"].standstill = True
+  sm["controlsState"].longControlState = LongCtrlState.stopping
+  sm["modelV2"].action.shouldStop = False
+  sm["starpilotPlan"].vCruise = 10.0
+
+  for _ in range(7):
+    planner.update(sm, toggles)
+
+  assert not planner.output_should_stop
+  assert planner.output_a_target >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_MIN_ACCEL
+
+  long_control = LongControl(CP)
+  longcontrol_toggles = SimpleNamespace(
+    custom_accel_profile=False,
+    startAccel=float(CP.startAccel),
+    stopAccel=float(CP.stopAccel),
+    stoppingDecelRate=float(CP.stoppingDecelRate),
+    vEgoStarting=float(CP.vEgoStarting),
+    vEgoStopping=float(CP.vEgoStopping),
+  )
+
+  cs_launch = car.CarState.new_message(vEgo=0.0, aEgo=0.0, brakePressed=False)
+  cs_launch.cruiseState.standstill = False
+  launch_output = long_control.update(
+    active=True,
+    CS=cs_launch,
+    a_target=planner.output_a_target,
+    should_stop=planner.output_should_stop,
+    accel_limits=(-3.0, 2.0),
+    starpilot_toggles=longcontrol_toggles,
+    has_lead=True,
+  )
+
+  cs_handoff = car.CarState.new_message(vEgo=float(CP.vEgoStarting) + 0.02, aEgo=float(launch_output), brakePressed=False)
+  cs_handoff.cruiseState.standstill = False
+  handoff_output = long_control.update(
+    active=True,
+    CS=cs_handoff,
+    a_target=planner.output_a_target,
+    should_stop=planner.output_should_stop,
+    accel_limits=(-3.0, 2.0),
+    starpilot_toggles=longcontrol_toggles,
+    has_lead=True,
+  )
+
+  assert launch_output == pytest.approx(CP.startAccel)
+  assert long_control.long_control_state == LongCtrlState.pid
+  assert handoff_output >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_MIN_ACCEL
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
