@@ -41,6 +41,8 @@ class GovernorSample:
   requested_torque_units: int
   output_torque_units: int
   desired_curvature: float
+  raw_model_curvature: float
+  final_curvature_extra: float
   actual_curvature: float
   desired_lat_accel: float
   actual_lat_accel: float
@@ -201,6 +203,10 @@ def read_governor_samples(path: Path, mode: ReadMode) -> tuple[list[GovernorSamp
     model_frames += 1
 
     v, a, j = parsed
+    model_yaw_rate = np.interp(T_IDXS_MPC, ModelConstants.T_IDXS, model_msg.orientationRate.z)
+    curvature = model_yaw_rate / np.clip(v, 0.3, 100.0)
+    raw_model_curvature = float(curvature[0])
+
     car_control = latest.get("carControl")
     controls_state = latest.get("controlsState")
     lat_active = safe_bool(safe_attr(car_control, "latActive", False))
@@ -214,8 +220,6 @@ def read_governor_samples(path: Path, mode: ReadMode) -> tuple[list[GovernorSamp
 
     target_idx = int(np.argmax(reductions))
     min_idx = int(np.argmin(capped_v))
-    model_yaw_rate = np.interp(T_IDXS_MPC, ModelConstants.T_IDXS, model_msg.orientationRate.z)
-    curvature = model_yaw_rate / np.clip(v, 0.3, 100.0)
 
     car_output = latest.get("carOutput")
     actuators = safe_attr(car_control, "actuators")
@@ -232,6 +236,7 @@ def read_governor_samples(path: Path, mode: ReadMode) -> tuple[list[GovernorSamp
     requested_torque = safe_float(safe_attr(lateral_log, "output", output_torque))
     desired_curvature = safe_float(safe_attr(controls_state, "desiredCurvature", safe_attr(actuators, "curvature", 0.0)))
     actual_curvature = safe_float(safe_attr(controls_state, "curvature", 0.0))
+    final_curvature_extra = max(abs(desired_curvature) - abs(raw_model_curvature), 0.0)
 
     samples.append(GovernorSample(
       route=route_name(path),
@@ -247,6 +252,8 @@ def read_governor_samples(path: Path, mode: ReadMode) -> tuple[list[GovernorSamp
       requested_torque_units=int(round(requested_torque * CARNIVAL_STEER_MAX)),
       output_torque_units=int(round(output_torque * CARNIVAL_STEER_MAX)),
       desired_curvature=desired_curvature,
+      raw_model_curvature=raw_model_curvature,
+      final_curvature_extra=final_curvature_extra,
       actual_curvature=actual_curvature,
       desired_lat_accel=desired_curvature * v_ego * v_ego,
       actual_lat_accel=actual_curvature * v_ego * v_ego,
@@ -292,6 +299,7 @@ def summarize(samples: list[GovernorSample], model_frames: int, commits: list[st
   reductions = [s.speed_reduction_mps for s in samples]
   targets = [s.target_speed_mps for s in samples]
   min_targets = [s.min_target_speed_mps for s in samples]
+  final_demand_extra = [s.final_curvature_extra for s in samples if s.final_curvature_extra > 1e-5]
   matching_commits = [commit for commit in commits if commit == expected_commit]
   status = "pass"
   if temp_fault:
@@ -311,7 +319,12 @@ def summarize(samples: list[GovernorSample], model_frames: int, commits: list[st
     "longActiveGovernorFrames": len(long_active),
     "tempFaultGovernorFrames": len(temp_fault),
     "saturatedUndertrackNearGovernorFrames": len(saturated_near_governor),
+    "finalDemandExtraGovernorFrames": len(final_demand_extra),
     "nearGovernorWindowS": NEAR_GOVERNOR_WINDOW_S,
+    "finalDemandExtra": {
+      "maxCurvature": 0.0 if not final_demand_extra else round(max(final_demand_extra), 6),
+      "p95Curvature": None if not final_demand_extra else round(percentile(final_demand_extra, 95.0), 6),
+    },
     "speedReduction": {
       "maxMps": 0.0 if not reductions else round(max(reductions), 3),
       "maxMph": 0.0 if not reductions else round(max(reductions) * MS_TO_MPH, 1),
@@ -327,6 +340,7 @@ def summarize(samples: list[GovernorSample], model_frames: int, commits: list[st
     "examples": {
       "governorActive": [event_dict(s) for s in samples[:16]],
       "largestSpeedReduction": [event_dict(s) for s in sorted(samples, key=lambda s: -s.speed_reduction_mps)[:16]],
+      "largestFinalDemandExtra": [event_dict(s) for s in sorted(samples, key=lambda s: -s.final_curvature_extra)[:16] if s.final_curvature_extra > 1e-5],
       "saturatedUndertrackNearGovernor": [event_dict(s) for s in saturated_near_governor[:16]],
       "tempFaultNearGovernor": [event_dict(s) for s in temp_fault[:16]],
     },
@@ -346,6 +360,8 @@ def console_summary(report: dict[str, Any]) -> dict[str, Any]:
     "longActiveGovernorFrames": report["longActiveGovernorFrames"],
     "tempFaultGovernorFrames": report["tempFaultGovernorFrames"],
     "saturatedUndertrackNearGovernorFrames": report["saturatedUndertrackNearGovernorFrames"],
+    "finalDemandExtraGovernorFrames": report["finalDemandExtraGovernorFrames"],
+    "finalDemandExtra": report["finalDemandExtra"],
     "speedReduction": report["speedReduction"],
     "targetSpeed": report["targetSpeed"],
   }
