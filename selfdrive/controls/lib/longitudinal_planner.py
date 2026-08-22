@@ -108,6 +108,7 @@ STANDSTILL_LEAD_DEPART_MIN_MODEL_ACCEL = 0.08
 STANDSTILL_LEAD_CREEP_RELEASE_MIN_ACCEL = 0.18
 STANDSTILL_LEAD_CREEP_RELEASE_CONFIRM_TIME = 0.30
 RADAR_STANDSTILL_GAP_SETTLE_ACCEL = 0.18
+CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL = 0.30
 LEAD_DEPART_CONFIDENT_CONFIRM_TIME = 0.35
 LEAD_DEPART_RELEASE_HOLD_TIME = 1.5
 LEAD_DEPART_RELEASE_HOLD_CONFIRM_TIME = 0.15
@@ -769,6 +770,9 @@ class LongitudinalPlanner:
     if self.is_carnival_4th_gen():
       return CARNIVAL_LEAD_DEPART_CREEP_RELEASE_MIN_ACCEL if slow_creep_only else CARNIVAL_LEAD_DEPART_MIN_ACCEL
     return STANDSTILL_LEAD_CREEP_RELEASE_MIN_ACCEL if slow_creep_only else STANDSTILL_LEAD_DEPART_MIN_ACCEL
+
+  def get_radar_standstill_gap_settle_accel(self):
+    return CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL if self.is_carnival_4th_gen() else RADAR_STANDSTILL_GAP_SETTLE_ACCEL
 
   def get_lead_depart_accel_hold_time(self):
     return CARNIVAL_LEAD_DEPART_ACCEL_HOLD_TIME if self.is_carnival_4th_gen() else LEAD_DEPART_ACCEL_HOLD_TIME
@@ -2837,7 +2841,7 @@ class LongitudinalPlanner:
     if radar_gap_settle_active:
       vision_low_speed_stop_active = False
       output_should_stop = False
-      output_a_target = RADAR_STANDSTILL_GAP_SETTLE_ACCEL
+      output_a_target = self.get_radar_standstill_gap_settle_accel()
 
     lead_present = any(bool(getattr(lead, "status", False)) for lead in (self.lead_one, self.lead_two))
     confirmed_lead_release = bool(confident_depart_ready or lead_depart_ready or slow_creep_depart_ready)
@@ -3138,7 +3142,7 @@ class LongitudinalPlanner:
     )
 
     if radar_gap_settle_active:
-      output_a_target = RADAR_STANDSTILL_GAP_SETTLE_ACCEL
+      output_a_target = self.get_radar_standstill_gap_settle_accel()
       output_should_stop = False
 
     sienna_restop_caps = [

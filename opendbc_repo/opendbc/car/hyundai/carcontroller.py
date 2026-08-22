@@ -34,6 +34,12 @@ CARNIVAL_4TH_GEN_EPS_GUARD_HOLD_FRAMES = 120
 CARNIVAL_4TH_GEN_EPS_GUARD_RELEASE_FRAMES = 8
 CARNIVAL_4TH_GEN_EPS_GUARD_CAP_LOW = 0.94
 CARNIVAL_4TH_GEN_EPS_GUARD_CAP_HIGH = 0.88
+CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED = 8.8
+CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE = 70.0
+CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_FULL_ANGLE = 125.0
+CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE = 120.0
+CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_SCALE = 0.10
+CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_RELEASE_FRAMES = 12
 # Some Hyundai/Kia cancel buttons are pause/resume toggles. Give a brake press
 # time to disengage stock SCC before sending the fallback button message.
 CANCEL_BUTTON_DELAY_FRAMES = 10
@@ -467,6 +473,35 @@ def apply_carnival_4th_gen_high_angle_torque_guard(car_fingerprint, apply_torque
   return int(round(apply_torque * scale))
 
 
+def apply_carnival_4th_gen_manual_turn_torque_guard(car_fingerprint, apply_torque: int, steer_max: int,
+                                                    v_ego: float, steering_angle_deg: float,
+                                                    steering_torque: float, steering_pressed: bool,
+                                                    apply_torque_last: int) -> tuple[int, bool]:
+  if car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN or not steering_pressed:
+    return apply_torque, False
+
+  angle = abs(steering_angle_deg)
+  if (
+    v_ego > CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED or
+    angle < CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE or
+    abs(steering_torque) < CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE
+  ):
+    return apply_torque, False
+
+  cap_fraction = np.interp(
+    angle,
+    [CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE, CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_FULL_ANGLE],
+    [1.0, CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_SCALE],
+  )
+  cap_fraction = float(np.clip(cap_fraction, CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_SCALE, 1.0))
+  cap = int(round(steer_max * cap_fraction))
+  limited_torque = int(np.clip(apply_torque, -cap, cap))
+  if abs(limited_torque) < abs(apply_torque):
+    release_delta = CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_RELEASE_FRAMES
+    limited_torque = int(rate_limit(limited_torque, apply_torque_last, -release_delta, release_delta))
+  return limited_torque, limited_torque != apply_torque
+
+
 def apply_carnival_4th_gen_eps_fault_guard(car_fingerprint, apply_torque: int, steer_max: int,
                                            v_ego: float, steering_angle_deg: float, lat_active: bool,
                                            steering_pressed: bool, apply_torque_last: int, high_torque_frames: int,
@@ -696,6 +731,14 @@ class CarController(CarControllerBase):
                                                                          MAX_ANGLE_CONSECUTIVE_FRAMES)
       apply_torque = apply_carnival_4th_gen_high_angle_torque_guard(self.CP.carFingerprint, apply_torque,
                                                                     CS.out.steeringAngleDeg, apply_steer_req)
+      apply_torque, carnival_manual_turn_guard_active = apply_carnival_4th_gen_manual_turn_torque_guard(
+        self.CP.carFingerprint, apply_torque, self.params.STEER_MAX, CS.out.vEgoRaw, CS.out.steeringAngleDeg,
+        CS.out.steeringTorque, CS.out.steeringPressed, self.apply_torque_last)
+      if carnival_manual_turn_guard_active:
+        cloudlog.warning(
+          "Carnival 4th gen manual-turn EPS guard vEgo=%.2f angle=%.2f steerTorque=%.2f applyTorque=%d",
+          CS.out.vEgoRaw, CS.out.steeringAngleDeg, CS.out.steeringTorque, apply_torque,
+        )
       requested_torque_before_eps_guard = apply_torque
       apply_torque, self._carnival_4th_gen_high_torque_frames, self._carnival_4th_gen_eps_guard_frames, \
         carnival_eps_guard_active, carnival_eps_near_limit = apply_carnival_4th_gen_eps_fault_guard(

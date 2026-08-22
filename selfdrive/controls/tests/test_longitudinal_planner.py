@@ -2201,6 +2201,30 @@ def test_stationary_radar_lead_settles_excess_stop_gap_after_confirmation(model_
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+def test_carnival_stationary_radar_gap_settle_uses_stronger_launch_floor(model_version):
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+  sm = make_sm(
+    0.0,
+    desired_accel=-0.12,
+    min_accel=-0.5,
+    experimental_mode=True,
+    tracking_lead=False,
+    lead_one=make_lead(status=True, d_rel=6.4, v_lead=0.0, a_lead=0.0, radar=True, model_prob=1.0),
+  )
+  sm["carState"].standstill = True
+  sm["controlsState"].longControlState = LongCtrlState.stopping
+  sm["modelV2"].action.shouldStop = True
+
+  frames = int(round(longitudinal_planner_module.RADAR_STANDSTILL_GAP_SETTLE_CONFIRM_TIME / planner.dt))
+  for _ in range(max(frames, 1)):
+    planner.update(sm, make_toggles(model_version))
+
+  assert not planner.output_should_stop
+  assert planner.output_a_target == pytest.approx(longitudinal_planner_module.CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL)
+
+
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
 def test_stationary_radar_gap_settle_reholds_at_target_gap(model_version):
   CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
   planner = LongitudinalPlanner(CP, init_v=0.0)

@@ -22,6 +22,7 @@ from opendbc.car.hyundai.carcontroller import CarController, Ioniq6LongitudinalT
                                              update_cancel_counter, cancel_button_ready, \
                                              preserve_stock_canfd_lfa_status, preserve_stock_canfd_lkas_status, \
                                              apply_carnival_4th_gen_high_angle_torque_guard, \
+                                             apply_carnival_4th_gen_manual_turn_torque_guard, \
                                              suppress_redundant_gv70_brake_cancel
 from opendbc.car.hyundai.carstate import CarState, decode_canfd_camera_lead, decode_ioniq_6_blindspot_radar_state, \
                                              get_canfd_cruise_available
@@ -168,6 +169,16 @@ class TestHyundaiFingerprint:
     assert apply_carnival_4th_gen_high_angle_torque_guard(CAR.KIA_CARNIVAL_4TH_GEN, 409, 60.0, True) == 409
     assert apply_carnival_4th_gen_high_angle_torque_guard(CAR.KIA_CARNIVAL_4TH_GEN, 409, 220.0, True) == 143
     assert apply_carnival_4th_gen_high_angle_torque_guard(CAR.KIA_CARNIVAL_4TH_GEN, 409, 220.0, False) == 0
+
+    assert apply_carnival_4th_gen_manual_turn_torque_guard(
+      CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 7.7, 101.0, 637.0, True, 409
+    ) == (397, True)
+    assert apply_carnival_4th_gen_manual_turn_torque_guard(
+      CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 15.0, 101.0, 637.0, True, 409
+    ) == (409, False)
+    assert apply_carnival_4th_gen_manual_turn_torque_guard(
+      CAR.KIA_CARNIVAL_2025, 409, 409, 7.7, 101.0, 637.0, True, 409
+    ) == (409, False)
 
     carnival_2025_cp = CarInterface.get_non_essential_params(CAR.KIA_CARNIVAL_2025)
     carnival_2025_limits = CarControllerParams(carnival_2025_cp, vEgoRaw=15.0)
