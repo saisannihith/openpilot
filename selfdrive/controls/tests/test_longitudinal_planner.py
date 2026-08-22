@@ -28,6 +28,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDX
 from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   allow_radar_standstill_gap_settle,
   get_follow_prebrake_min_headway,
+  get_kia_carnival_4th_gen_radar_far_follow_cap,
   get_toyota_rav4_tss2_early_lead_cap,
   get_toyota_sienna_post_departure_restop_cap,
   is_toyota_rav4_tss2_radar_follow_lead,
@@ -2973,6 +2974,48 @@ def test_carnival_planner_lead_depart_accel_reaches_longcontrol_handoff():
   assert launch_output == pytest.approx(CP.startAccel)
   assert long_control.long_control_state == LongCtrlState.pid
   assert handoff_output >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_MIN_ACCEL
+
+
+def test_carnival_radar_far_follow_caps_logged_highway_accel():
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
+  lead = make_lead(
+    status=True,
+    d_rel=70.8,
+    v_lead=30.459,
+    a_lead=0.0,
+    radar=True,
+    model_prob=0.951,
+    y_rel=0.0,
+  )
+
+  cap = get_kia_carnival_4th_gen_radar_far_follow_cap(CP, lead, v_ego=31.26, accel_min=-3.5)
+
+  assert cap is not None
+  assert -0.08 <= cap <= 0.03
+
+
+def test_carnival_radar_far_follow_keeps_weak_or_unconfirmed_leads_unchanged():
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
+
+  assert get_kia_carnival_4th_gen_radar_far_follow_cap(
+    CP,
+    make_lead(status=True, d_rel=70.0, v_lead=30.0, radar=False, model_prob=0.98),
+    v_ego=31.0,
+    accel_min=-3.5,
+  ) is None
+  assert get_kia_carnival_4th_gen_radar_far_follow_cap(
+    CP,
+    make_lead(status=True, d_rel=70.0, v_lead=30.0, radar=True, model_prob=0.65),
+    v_ego=31.0,
+    accel_min=-3.5,
+  ) is None
+
+
+def test_carnival_radar_far_follow_does_not_change_other_vehicles():
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  lead = make_lead(status=True, d_rel=70.8, v_lead=30.459, radar=True, model_prob=0.951)
+
+  assert get_kia_carnival_4th_gen_radar_far_follow_cap(CP, lead, v_ego=31.26, accel_min=-3.5) is None
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])

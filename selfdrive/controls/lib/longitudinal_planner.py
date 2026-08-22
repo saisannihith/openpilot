@@ -28,6 +28,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   is_toyota_rav4_tss2_post_departure_tune,
   get_toyota_rav4_tss2_early_lead_cap,
   is_toyota_rav4_tss2_radar_follow_lead,
+  get_kia_carnival_4th_gen_radar_far_follow_cap,
   get_toyota_sienna_post_departure_restop_cap,
   get_untracked_slow_lead_decel_scale,
 )
@@ -3055,6 +3056,17 @@ class LongitudinalPlanner:
       rav4_early_lead_cap = min(rav4_early_lead_caps)
       self.a_desired = min(self.a_desired, rav4_early_lead_cap)
       output_a_target = min(output_a_target, rav4_early_lead_cap)
+
+    carnival_radar_far_follow_caps = [
+      cap for cap in (
+        get_kia_carnival_4th_gen_radar_far_follow_cap(self.CP, self.lead_one, scene_v_ego, output_accel_min),
+        get_kia_carnival_4th_gen_radar_far_follow_cap(self.CP, self.lead_two, scene_v_ego, output_accel_min),
+      ) if cap is not None
+    ]
+    if carnival_radar_far_follow_caps:
+      carnival_radar_far_follow_cap = min(carnival_radar_far_follow_caps)
+      self.a_desired = min(self.a_desired, carnival_radar_far_follow_cap)
+      output_a_target = min(output_a_target, carnival_radar_far_follow_cap)
 
     if close_release_hold_cap is not None:
       self.a_desired = min(self.a_desired, close_release_hold_cap)

@@ -36,6 +36,15 @@ TOYOTA_RAV4_TSS2_RADAR_FOLLOW_DISTANCE_OFFSET = 32.0
 TOYOTA_RAV4_TSS2_RADAR_FOLLOW_MAX_LATERAL_OFFSET = 1.75
 TOYOTA_CAMRY_TSS2_FORCE_STOP_HANDOFF_M = 4.5
 KIA_CARNIVAL_4TH_GEN_FORCE_STOP_HANDOFF_M = 5.5
+KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MIN_SPEED = 22.0
+KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MIN_DISTANCE = 60.0
+KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_DISTANCE = 115.0
+KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MIN_MODEL_PROB = 0.90
+KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_LATERAL_OFFSET = 1.2
+KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MIN_CLOSING_SPEED = -0.25
+KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_CLOSING_SPEED = 2.5
+KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_LEAD_BRAKE = 0.45
+KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_DECEL = 0.12
 # The Camry's force-stop path otherwise consumes the model endpoint before the
 # normal MPC stop-distance margin can be applied. Keep it within the forward
 # offset range exposed by the Force Stop setting.
@@ -118,6 +127,54 @@ def is_toyota_rav4_tss2_radar_follow_lead(CP, lead, v_ego):
     float(getattr(lead, "dRel", float("inf"))) <= distance_limit and
     closing_speed >= TOYOTA_RAV4_TSS2_RADAR_FOLLOW_MIN_CLOSING_SPEED
   )
+
+
+def get_kia_carnival_4th_gen_radar_far_follow_cap(CP, lead, v_ego, accel_min):
+  """Gently stop accelerating into a radar-confirmed highway lead.
+
+  This is a comfort cap, not radar-only braking. It requires the model and the
+  hidden Carnival radar confirmation track to agree on a centered far lead.
+  """
+  if (
+    str(getattr(CP, "carFingerprint", "")) != "KIA_CARNIVAL_4TH_GEN" or
+    lead is None or not bool(getattr(lead, "status", False)) or
+    not bool(getattr(lead, "radar", False)) or
+    float(v_ego) < KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MIN_SPEED or
+    float(getattr(lead, "modelProb", 0.0)) < KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MIN_MODEL_PROB or
+    abs(float(getattr(lead, "yRel", 0.0))) > KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_LATERAL_OFFSET
+  ):
+    return None
+
+  distance = float(getattr(lead, "dRel", float("inf")))
+  lead_speed = max(float(getattr(lead, "vLead", 0.0)), 0.0)
+  closing_speed = float(v_ego) - lead_speed
+  lead_brake = max(0.0, -float(getattr(lead, "aLeadK", 0.0)))
+  if (
+    not KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MIN_DISTANCE <= distance <= KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_DISTANCE or
+    closing_speed < KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MIN_CLOSING_SPEED or
+    closing_speed > KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_CLOSING_SPEED or
+    lead_brake > KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_LEAD_BRAKE
+  ):
+    return None
+
+  distance_factor = float(np.clip(
+    (KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_DISTANCE - distance) /
+    (KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_DISTANCE - KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MIN_DISTANCE),
+    0.0,
+    1.0,
+  ))
+  closing_cap = float(np.interp(
+    closing_speed,
+    [
+      KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MIN_CLOSING_SPEED,
+      0.0,
+      0.75,
+      KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_CLOSING_SPEED,
+    ],
+    [0.18, 0.12, 0.02, -KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MAX_DECEL],
+  ))
+  cap = closing_cap - 0.06 * distance_factor
+  return max(float(accel_min), cap)
 
 
 def allow_radar_standstill_gap_settle(CP):
