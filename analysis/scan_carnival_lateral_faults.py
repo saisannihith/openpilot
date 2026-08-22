@@ -19,7 +19,9 @@ from opendbc.car.hyundai.carcontroller import (
   CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED,
   CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE,
   CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE,
+  apply_carnival_4th_gen_eps_fault_guard,
 )
+from opendbc.car.hyundai.values import CAR
 
 
 CARNIVAL_STEER_MAX = 409
@@ -93,7 +95,7 @@ def expand_log_paths(paths: list[Path]) -> list[Path]:
       logs.extend(sorted(path.glob("qlog")))
     else:
       logs.extend(sorted(path.parent.glob(path.name)))
-  return [path for path in logs if path.exists()]
+  return sorted((path for path in logs if path.exists()), key=lambda p: (route_name(p), segment_number(p), str(p)))
 
 
 def current_commit() -> str:
@@ -208,6 +210,18 @@ def event_dict(sample: LateralSample) -> dict[str, Any]:
   return data
 
 
+def eps_guard_event_dict(sample: LateralSample, guarded_torque: int, high_torque_frames: int,
+                         guard_frames: int) -> dict[str, Any]:
+  data = event_dict(sample)
+  data["guardedOutputTorqueUnits"] = guarded_torque
+  data["guardedTorqueReductionUnits"] = abs(sample.output_torque_units) - abs(guarded_torque)
+  data["guardedTorqueFraction"] = round(abs(guarded_torque) / CARNIVAL_STEER_MAX, 3)
+  data["rawTorqueFraction"] = round(abs(sample.output_torque_units) / CARNIVAL_STEER_MAX, 3)
+  data["simHighTorqueFrames"] = high_torque_frames
+  data["simGuardFrames"] = guard_frames
+  return data
+
+
 def sample_key(sample: LateralSample) -> tuple[str, int]:
   return sample.route, sample.segment
 
@@ -233,7 +247,12 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
   eps_near = [s for s in samples if s.eps_guard_near_limit]
 
   eps_risk_bursts: list[dict[str, Any]] = []
+  eps_guard_sim_events: list[dict[str, Any]] = []
+  eps_guard_sim_active_frames = 0
+  eps_guard_sim_below_threshold_frames = 0
+  max_eps_guard_sim_high_torque_frames = 0
   active_count: dict[tuple[str, int], int] = {}
+  sim_state: dict[tuple[str, int], tuple[int, int]] = {}
   for sample in samples:
     key = sample_key(sample)
     if sample.eps_guard_near_limit:
@@ -242,6 +261,21 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
         eps_risk_bursts.append(event_dict(sample))
     else:
       active_count[key] = max(active_count.get(key, 0) - 2, 0)
+
+    high_torque_frames, guard_frames = sim_state.get(key, (0, 0))
+    guarded_torque, high_torque_frames, guard_frames, guard_active, near_limit = apply_carnival_4th_gen_eps_fault_guard(
+      CAR.KIA_CARNIVAL_4TH_GEN, sample.output_torque_units, CARNIVAL_STEER_MAX, sample.v_ego,
+      sample.steering_angle_deg, sample.lat_active, sample.steering_pressed, sample.output_torque_units,
+      high_torque_frames, guard_frames,
+    )
+    sim_state[key] = (high_torque_frames, guard_frames)
+    max_eps_guard_sim_high_torque_frames = max(max_eps_guard_sim_high_torque_frames, high_torque_frames)
+    if guard_active:
+      eps_guard_sim_active_frames += 1
+      if abs(guarded_torque) / CARNIVAL_STEER_MAX < CARNIVAL_4TH_GEN_EPS_GUARD_TORQUE_FRACTION:
+        eps_guard_sim_below_threshold_frames += 1
+      if near_limit and len(eps_guard_sim_events) < 12:
+        eps_guard_sim_events.append(eps_guard_event_dict(sample, guarded_torque, high_torque_frames, guard_frames))
 
   near_fault_precursors = []
   for fault in temp_lat:
@@ -280,6 +314,13 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
     "manualTurnGuardCandidateFrames": len(manual_candidates),
     "epsNearLimitFrames": len(eps_near),
     "epsRiskBursts": eps_risk_bursts[:12],
+    "epsGuardSimulation": {
+      "activeFrames": eps_guard_sim_active_frames,
+      "belowNearLimitThresholdFrames": eps_guard_sim_below_threshold_frames,
+      "maxHighTorqueFrames": max_eps_guard_sim_high_torque_frames,
+      "triggerFrames": CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES,
+      "events": eps_guard_sim_events[:12],
+    },
     "highSpeedFaultExamples": [event_dict(s) for s in high_speed_temp_lat[:12]],
     "uncoveredExamples": [event_dict(s) for s in uncovered[:12]],
     "coveredExamples": [event_dict(s) for s in covered_override[:12]],
@@ -308,6 +349,11 @@ def console_summary(report: dict[str, Any]) -> dict[str, Any]:
   )
   summary = {key: report.get(key) for key in keys if key in report}
   summary["epsRiskBurstCount"] = len(report.get("epsRiskBursts", []))
+  eps_guard_sim = report.get("epsGuardSimulation", {})
+  summary["epsGuardSimActiveFrames"] = eps_guard_sim.get("activeFrames")
+  summary["epsGuardSimBelowThresholdFrames"] = eps_guard_sim.get("belowNearLimitThresholdFrames")
+  summary["epsGuardSimMaxHighTorqueFrames"] = eps_guard_sim.get("maxHighTorqueFrames")
+  summary["epsGuardSimTriggerFrames"] = eps_guard_sim.get("triggerFrames")
   summary["highSpeedFaultExampleCount"] = len(report.get("highSpeedFaultExamples", []))
   summary["uncoveredExampleCount"] = len(report.get("uncoveredExamples", []))
   return summary

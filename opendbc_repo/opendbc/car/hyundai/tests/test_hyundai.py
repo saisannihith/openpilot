@@ -182,7 +182,10 @@ class TestHyundaiFingerprint:
     ) == (409, False)
     assert apply_carnival_4th_gen_eps_fault_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 27.0, 12.0, True, False, 409, 49, 0
-    ) == (401, 50, 120, True, True)
+    ) == (385, 50, 120, True, True)
+    assert apply_carnival_4th_gen_eps_fault_guard(
+      CAR.KIA_CARNIVAL_4TH_GEN, -384, 409, 23.6, -16.3, True, False, -384, 49, 0
+    ) == (-360, 50, 120, True, True)
     assert apply_carnival_4th_gen_eps_fault_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 10.0, 12.0, True, False, 409, 49, 0
     ) == (409, 47, 0, False, False)
