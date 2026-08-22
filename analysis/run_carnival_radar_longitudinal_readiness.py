@@ -110,9 +110,12 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
   confirmation_point_samples = 0
   live_track_frames = 0
   confirmation_track_frames = 0
+  centered_confirmation_track_frames = 0
+  cut_in_candidate_frames = 0
   radar_state_frames = 0
   confirmation_lead_frames = 0
   confirmation_lead_with_live_track_frames = 0
+  confirmation_track_without_state_lead_frames = 0
   low_speed_confirmation_stop_frames = 0
   raw_vs_state_vrel_errors: list[float] = []
   raw_vs_state_vlead_errors: list[float] = []
@@ -121,6 +124,8 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
   low_speed_stop_examples: list[dict[str, Any]] = []
   raw_velocity_error_examples: list[dict[str, Any]] = []
   previous_points: dict[tuple[str, int], tuple[int, float]] = {}
+  previous_lateral: dict[tuple[str, int], tuple[int, float]] = {}
+  confirmation_track_ids: set[int] = set()
   metadata: list[dict[str, Any]] = []
 
   for path in paths:
@@ -151,14 +156,30 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
           live_track_frames += 1
         latest_live_tracks = {}
         has_confirmation = False
+        has_centered_confirmation = False
+        has_cut_in_candidate = False
         for point in points:
           track_id = safe_int(safe_attr(point, "trackId", -1))
           latest_live_tracks[track_id] = point
           if is_confirmation_track(track_id):
+            confirmation_track_ids.add(track_id)
             has_confirmation = True
             confirmation_point_samples += 1
             key = (route_name(path), segment_number(path), track_id)
             d_rel = safe_float(safe_attr(point, "dRel", 0.0))
+            y_rel = safe_float(safe_attr(point, "yRel", 0.0))
+            if d_rel <= 100.0 and abs(y_rel) <= 1.15:
+              has_centered_confirmation = True
+
+            previous_y = previous_lateral.get(key)
+            if previous_y is not None:
+              prev_mono_time, prev_y_rel = previous_y
+              dt = (mono_time - prev_mono_time) / 1e9
+              lateral_closing = abs(y_rel) < abs(prev_y_rel) - 0.08
+              if 0.02 <= dt <= 0.25 and 4.0 <= d_rel <= 90.0 and 0.45 <= abs(y_rel) <= 2.8 and lateral_closing:
+                has_cut_in_candidate = True
+            previous_lateral[key] = (mono_time, y_rel)
+
             previous = previous_points.get(key)
             if previous is not None:
               prev_mono_time, prev_d_rel = previous
@@ -170,8 +191,14 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
             previous_points[key] = (mono_time, d_rel)
         if has_confirmation:
           confirmation_track_frames += 1
+        if has_centered_confirmation:
+          centered_confirmation_track_frames += 1
+        if has_cut_in_candidate:
+          cut_in_candidate_frames += 1
       elif which == "radarState" and start_ns is not None:
         radar_state_frames += 1
+        has_live_confirmation = any(is_confirmation_track(track_id) for track_id in latest_live_tracks)
+        has_state_confirmation = False
         for lead_name in ("leadOne", "leadTwo"):
           lead = safe_attr(msg.radarState, lead_name)
           if lead is None or not bool(safe_attr(lead, "status", False)):
@@ -180,6 +207,7 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
           if not (bool(safe_attr(lead, "radar", False)) and is_confirmation_track(track_id)):
             continue
 
+          has_state_confirmation = True
           confirmation_lead_frames += 1
           live_track = latest_live_tracks.get(track_id)
           if live_track is not None:
@@ -215,6 +243,8 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
               example["lead"] = lead_name
               example["vEgo"] = round(latest_v_ego, 3)
               low_speed_stop_examples.append(example)
+        if has_live_confirmation and not has_state_confirmation:
+          confirmation_track_without_state_lead_frames += 1
 
   software: dict[tuple[str, str, bool], int] = defaultdict(int)
   for item in metadata:
@@ -232,6 +262,9 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
     confirmation_lead_with_live_track_frames > 0 and
     low_speed_confirmation_stop_frames > 0
   )
+  visual_radar_track_ready = live_track_frames > 0 and confirmation_point_samples > 0
+  phantom_brake_guard_ready = confirmation_track_without_state_lead_frames > 0
+  cut_in_tracking_evidence = cut_in_candidate_frames > 0
 
   return {
     "filesScanned": len(paths),
@@ -242,10 +275,14 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
     ],
     "liveTrackFrames": live_track_frames,
     "confirmationTrackFrames": confirmation_track_frames,
+    "centeredConfirmationTrackFrames": centered_confirmation_track_frames,
+    "cutInCandidateFrames": cut_in_candidate_frames,
     "confirmationPointSamples": confirmation_point_samples,
+    "confirmationTrackIds": sorted(confirmation_track_ids),
     "radarStateFrames": radar_state_frames,
     "confirmationLeadFrames": confirmation_lead_frames,
     "confirmationLeadWithLiveTrackFrames": confirmation_lead_with_live_track_frames,
+    "confirmationTrackWithoutStateLeadFrames": confirmation_track_without_state_lead_frames,
     "lowSpeedConfirmationStopFrames": low_speed_confirmation_stop_frames,
     "rawVsStateVRelError": summarize_values(raw_vs_state_vrel_errors),
     "rawVsStateVLeadError": summarize_values(raw_vs_state_vlead_errors),
@@ -257,6 +294,9 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
     "liveTrackVelocityEvidenceAvailable": live_track_velocity_evidence_available,
     "publishReady": distance_association_ready,
     "tandemReady": tandem_ready,
+    "visualRadarTrackReady": visual_radar_track_ready,
+    "phantomBrakeGuardReady": phantom_brake_guard_ready,
+    "cutInTrackingEvidence": cut_in_tracking_evidence,
     "velocityControlReady": velocity_control_ready,
     "velocityPromotionReady": velocity_control_ready,
     "readinessConclusion": (
