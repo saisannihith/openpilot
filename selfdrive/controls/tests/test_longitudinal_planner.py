@@ -185,6 +185,56 @@ def test_carnival_red_light_stop_line_decel_requires_carnival_and_no_lead():
   ) is None
 
 
+def test_carnival_lateral_feasibility_speed_cap_leaves_non_carnival_unchanged():
+  CP = SimpleNamespace(carFingerprint="HONDA_CIVIC")
+  model = SimpleNamespace(orientationRate=SimpleNamespace(z=[0.20] * ModelConstants.IDX_N))
+  v = np.full(len(T_IDXS_MPC), 8.8)
+  a = np.linspace(-0.2, 0.2, len(T_IDXS_MPC))
+  j = np.linspace(0.1, -0.1, len(T_IDXS_MPC))
+
+  capped_v, capped_a, capped_j = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
+    CP, model, 8.8, v, a, j)
+
+  assert np.allclose(capped_v, v)
+  assert np.allclose(capped_a, a)
+  assert np.allclose(capped_j, j)
+
+
+def test_carnival_lateral_feasibility_speed_cap_updates_accel_and_zero_jerk_reference():
+  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
+  model = SimpleNamespace(orientationRate=SimpleNamespace(z=[0.22] * ModelConstants.IDX_N))
+  v = np.full(len(T_IDXS_MPC), 8.8)
+  a = np.full(len(T_IDXS_MPC), 0.4)
+  j = np.full(len(T_IDXS_MPC), 0.2)
+
+  capped_v, capped_a, capped_j = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
+    CP, model, 8.8, v, a, j)
+
+  assert np.all(capped_v <= v + 1e-6)
+  assert np.min(capped_v) < np.min(v)
+  assert not np.allclose(capped_a, a)
+  assert np.all(capped_a >= longitudinal_planner_module.ACCEL_MIN - 1e-6)
+  assert np.all(capped_a <= longitudinal_planner_module.ACCEL_MAX + 1e-6)
+  assert np.allclose(capped_j, 0.0)
+
+
+def test_carnival_lateral_feasibility_speed_cap_smooths_before_curve():
+  v = np.full(len(T_IDXS_MPC), 8.8)
+  point_cap = np.array(v, copy=True)
+  curve_slice = slice(7, 10)
+  point_cap[curve_slice] = 5.8
+
+  smoothed = longitudinal_planner_module.smooth_carnival_lateral_feasibility_speed(v, point_cap)
+  dt = np.diff(T_IDXS_MPC)
+  decel_steps = (smoothed[:-1] - smoothed[1:]) / dt
+  accel_steps = (smoothed[1:] - smoothed[:-1]) / dt
+
+  assert np.all(smoothed <= v + 1e-6)
+  assert np.any(smoothed[:curve_slice.start] < v[:curve_slice.start])
+  assert np.max(decel_steps) <= longitudinal_planner_module.CARNIVAL_LATERAL_FEASIBILITY_PRE_DECEL + 1e-6
+  assert np.max(accel_steps) <= longitudinal_planner_module.CARNIVAL_LATERAL_FEASIBILITY_RELEASE_ACCEL + 1e-6
+
+
 def test_carnival_pre_red_stop_evidence_confirms_yellow_light_approach():
   CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN", brand="hyundai")
   planner = LongitudinalPlanner(CP)
