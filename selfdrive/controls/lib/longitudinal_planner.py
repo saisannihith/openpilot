@@ -121,6 +121,8 @@ CARNIVAL_LATERAL_FEASIBILITY_MAX_EGO_SPEED = 13.5
 CARNIVAL_LATERAL_FEASIBILITY_MIN_CURVATURE = 0.008
 CARNIVAL_LATERAL_FEASIBILITY_MIN_SPEED = 4.5
 CARNIVAL_LATERAL_FEASIBILITY_SPEED_MARGIN = 0.35
+CARNIVAL_LATERAL_FEASIBILITY_PRE_DECEL = 1.20
+CARNIVAL_LATERAL_FEASIBILITY_RELEASE_ACCEL = 0.80
 CARNIVAL_LATERAL_FEASIBILITY_LAT_ACCEL_BP = [0.0, 5.0, 8.8, 13.5]
 CARNIVAL_LATERAL_FEASIBILITY_LAT_ACCEL_VALS = [0.55, 0.70, 0.82, 1.05]
 STANDSTILL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED = 0.5
@@ -393,6 +395,20 @@ def differentiate_speed_profile(v):
   return a, j
 
 
+def smooth_carnival_lateral_feasibility_speed(v, capped_v):
+  smoothed_v = np.minimum(np.array(capped_v, copy=True), v)
+
+  for i in range(len(smoothed_v) - 2, -1, -1):
+    dt = max(float(T_IDXS_MPC[i + 1] - T_IDXS_MPC[i]), 1e-3)
+    smoothed_v[i] = min(smoothed_v[i], smoothed_v[i + 1] + CARNIVAL_LATERAL_FEASIBILITY_PRE_DECEL * dt)
+
+  for i in range(1, len(smoothed_v)):
+    dt = max(float(T_IDXS_MPC[i] - T_IDXS_MPC[i - 1]), 1e-3)
+    smoothed_v[i] = min(smoothed_v[i], smoothed_v[i - 1] + CARNIVAL_LATERAL_FEASIBILITY_RELEASE_ACCEL * dt, v[i])
+
+  return smoothed_v
+
+
 def apply_carnival_lateral_feasibility_speed_cap(CP, model_msg, v_ego, v, a, j):
   if str(getattr(CP, "carFingerprint", "")) != "KIA_CARNIVAL_4TH_GEN":
     return v, a, j
@@ -411,6 +427,7 @@ def apply_carnival_lateral_feasibility_speed_cap(CP, model_msg, v_ego, v, a, j):
   max_v = np.sqrt(max_lat_accel / (np.abs(curvature) + 1e-4)) - CARNIVAL_LATERAL_FEASIBILITY_SPEED_MARGIN
   capped_v = np.maximum(max_v, CARNIVAL_LATERAL_FEASIBILITY_MIN_SPEED)
   capped_v = np.where(high_curvature, np.minimum(v, capped_v), v)
+  capped_v = smooth_carnival_lateral_feasibility_speed(v, capped_v)
   if np.allclose(capped_v, v):
     return v, a, j
 
