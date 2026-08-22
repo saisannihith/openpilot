@@ -574,6 +574,8 @@ KIA_CARNIVAL_UNWIND_FF_OVERSHOOT = 0.20
 KIA_CARNIVAL_UNWIND_FF_OVERSHOOT_WIDTH = 0.12
 KIA_CARNIVAL_UNWIND_FF_JERK = 0.65
 KIA_CARNIVAL_UNWIND_FF_JERK_WIDTH = 0.25
+KIA_CARNIVAL_DRIVER_OVERRIDE_RELEASE_BP = [2.5, 4.0]
+KIA_CARNIVAL_DRIVER_OVERRIDE_RELEASE_V = [0.0, 1.0]
 
 TUCSON_4TH_GEN_CENTER_TAPER_MAX = 0.44
 TUCSON_4TH_GEN_CENTER_TAPER_LAT = 0.28
@@ -2669,6 +2671,12 @@ def get_kia_carnival_unwind_ff_scale(setpoint: float, measured_lateral_accel: fl
   jerk_weight = _sigmoid((abs(desired_lateral_jerk) - KIA_CARNIVAL_UNWIND_FF_JERK) /
                          KIA_CARNIVAL_UNWIND_FF_JERK_WIDTH)
   return 1.0 - (KIA_CARNIVAL_UNWIND_FF_REDUCTION_MAX * speed_weight * overshoot_weight * jerk_weight)
+
+
+def get_kia_carnival_driver_override_output_scale(v_ego: float) -> float:
+  """Release torque while the driver is steering at neighborhood crawl speeds."""
+  return float(np.interp(max(v_ego, 0.0), KIA_CARNIVAL_DRIVER_OVERRIDE_RELEASE_BP,
+                         KIA_CARNIVAL_DRIVER_OVERRIDE_RELEASE_V))
 
 
 def _tucson_4th_gen_center_weights(desired_lateral_accel: float, v_ego: float) -> tuple[float, float]:

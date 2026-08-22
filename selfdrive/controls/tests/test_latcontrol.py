@@ -143,6 +143,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   get_kia_carnival_friction_center_fade_scale,
   get_kia_carnival_friction_jerk_deadzone,
   get_kia_carnival_friction_threshold,
+  get_kia_carnival_driver_override_output_scale,
   get_kia_carnival_highway_transition_output_scale,
   get_kia_carnival_unwind_ff_scale,
   get_kia_stinger_2022_center_taper_scale,
@@ -680,6 +681,11 @@ class TestLatControl:
     assert smooth_curve > 0.96
     assert low_speed_abrupt > 0.99
     assert large_curve_abrupt > 0.96
+
+  def test_kia_carnival_driver_override_releases_crawl_speed_torque(self):
+    assert get_kia_carnival_driver_override_output_scale(2.0) == pytest.approx(0.0)
+    assert 0.0 < get_kia_carnival_driver_override_output_scale(3.0) < 1.0
+    assert get_kia_carnival_driver_override_output_scale(4.5) == pytest.approx(1.0)
 
   def test_kia_carnival_unwind_friction_jerk_deadzone_is_mid_speed_and_center_gated(self):
     low_speed = get_kia_carnival_friction_jerk_deadzone(8.5, 0.0, 1.5)
