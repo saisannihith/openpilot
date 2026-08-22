@@ -97,6 +97,9 @@ class Sample:
   lead_v_rel: float
   lead_v_lead: float
   lead_y_rel: float
+  lead_model_prob: float
+  lead_radar: bool
+  lead_radar_track_id: int
   source: str
 
 
@@ -157,6 +160,9 @@ def make_sample(path: Path, start_ns: int, mono_time: int, latest: dict[str, Any
     lead_v_rel=safe_float(safe_attr(lead, "vRel", 0.0)) if lead_status else 0.0,
     lead_v_lead=safe_float(safe_attr(lead, "vLead", 0.0)) if lead_status else 0.0,
     lead_y_rel=safe_float(safe_attr(lead, "yRel", 0.0)) if lead_status else 0.0,
+    lead_model_prob=safe_float(safe_attr(lead, "modelProb", 0.0)) if lead_status else 0.0,
+    lead_radar=bool(safe_attr(lead, "radar", False)) if lead_status else False,
+    lead_radar_track_id=int(safe_attr(lead, "radarTrackId", -1)) if lead_status else -1,
     source=str(safe_attr(long_plan, "longitudinalPlanSource", "unknown")),
   )
 
