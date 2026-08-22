@@ -218,6 +218,27 @@ def test_carnival_lateral_feasibility_speed_cap_updates_accel_and_zero_jerk_refe
   assert np.allclose(capped_j, 0.0)
 
 
+def test_carnival_lateral_feasibility_speed_cap_includes_lane_centered_curvature():
+  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
+  model = SimpleNamespace(orientationRate=SimpleNamespace(z=[0.0] * ModelConstants.IDX_N))
+  v = np.full(len(T_IDXS_MPC), 8.8)
+  a = np.full(len(T_IDXS_MPC), 0.2)
+  j = np.full(len(T_IDXS_MPC), 0.1)
+
+  raw_v, raw_a, raw_j = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
+    CP, model, 8.8, v, a, j)
+  centered_v, centered_a, centered_j = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
+    CP, model, 8.8, v, a, j, current_desired_curvature=0.025)
+
+  assert np.allclose(raw_v, v)
+  assert np.allclose(raw_a, a)
+  assert np.allclose(raw_j, j)
+  assert centered_v[0] < v[0]
+  assert np.all(centered_v <= v + 1e-6)
+  assert not np.allclose(centered_a, a)
+  assert np.allclose(centered_j, 0.0)
+
+
 def test_carnival_lateral_feasibility_speed_cap_smooths_before_curve():
   v = np.full(len(T_IDXS_MPC), 8.8)
   point_cap = np.array(v, copy=True)

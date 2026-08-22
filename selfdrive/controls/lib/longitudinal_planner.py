@@ -409,7 +409,7 @@ def smooth_carnival_lateral_feasibility_speed(v, capped_v):
   return smoothed_v
 
 
-def apply_carnival_lateral_feasibility_speed_cap(CP, model_msg, v_ego, v, a, j):
+def apply_carnival_lateral_feasibility_speed_cap(CP, model_msg, v_ego, v, a, j, current_desired_curvature=None):
   if str(getattr(CP, "carFingerprint", "")) != "KIA_CARNIVAL_4TH_GEN":
     return v, a, j
   if float(v_ego) > CARNIVAL_LATERAL_FEASIBILITY_MAX_EGO_SPEED:
@@ -419,6 +419,13 @@ def apply_carnival_lateral_feasibility_speed_cap(CP, model_msg, v_ego, v, a, j):
 
   model_yaw_rate = np.interp(T_IDXS_MPC, ModelConstants.T_IDXS, model_msg.orientationRate.z)
   curvature = model_yaw_rate / np.clip(v, 0.3, 100.0)
+  if current_desired_curvature is not None:
+    try:
+      current_curvature = float(current_desired_curvature)
+    except (TypeError, ValueError):
+      current_curvature = 0.0
+    if np.isfinite(current_curvature) and abs(current_curvature) > abs(curvature[0]):
+      curvature[0] = current_curvature
   high_curvature = np.abs(curvature) >= CARNIVAL_LATERAL_FEASIBILITY_MIN_CURVATURE
   if not np.any(high_curvature):
     return v, a, j
@@ -2259,7 +2266,8 @@ class LongitudinalPlanner:
     # Compute model v_ego error
     self.v_model_error = self.get_model_speed_error(sm['modelV2'], v_ego)
     x, v, a, j, throttle_prob = self.parse_model(sm['modelV2'], self.v_model_error, v_ego, starpilot_toggles)
-    v, a, j = apply_carnival_lateral_feasibility_speed_cap(self.CP, sm['modelV2'], scene_v_ego, v, a, j)
+    current_desired_curvature = sm['controlsState'].desiredCurvature if bool(sm['carControl'].latActive) else None
+    v, a, j = apply_carnival_lateral_feasibility_speed_cap(self.CP, sm['modelV2'], scene_v_ego, v, a, j, current_desired_curvature)
     if bool(sm['carState'].standstill):
       self.model_launch_armed = True
       self.model_launch_stop_seen |= bool(

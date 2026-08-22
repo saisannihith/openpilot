@@ -201,7 +201,12 @@ def read_governor_samples(path: Path, mode: ReadMode) -> tuple[list[GovernorSamp
     model_frames += 1
 
     v, a, j = parsed
-    capped_v, _, _ = apply_carnival_lateral_feasibility_speed_cap(cp, model_msg, v_ego, v, a, j)
+    car_control = latest.get("carControl")
+    controls_state = latest.get("controlsState")
+    lat_active = safe_bool(safe_attr(car_control, "latActive", False))
+    current_desired_curvature = safe_attr(controls_state, "desiredCurvature") if lat_active else None
+    capped_v, _, _ = apply_carnival_lateral_feasibility_speed_cap(
+      cp, model_msg, v_ego, v, a, j, current_desired_curvature)
     reductions = np.maximum(v - capped_v, 0.0)
     max_reduction = float(np.max(reductions))
     if max_reduction <= 1e-3:
@@ -212,9 +217,7 @@ def read_governor_samples(path: Path, mode: ReadMode) -> tuple[list[GovernorSamp
     model_yaw_rate = np.interp(T_IDXS_MPC, ModelConstants.T_IDXS, model_msg.orientationRate.z)
     curvature = model_yaw_rate / np.clip(v, 0.3, 100.0)
 
-    car_control = latest.get("carControl")
     car_output = latest.get("carOutput")
-    controls_state = latest.get("controlsState")
     actuators = safe_attr(car_control, "actuators")
     out_actuators = safe_attr(car_output, "actuatorsOutput") if car_output is not None else None
     lateral_state = safe_attr(controls_state, "lateralControlState") if controls_state is not None else None
