@@ -27,6 +27,8 @@ CURVATURE_ERROR_WARN = 0.0015
 LAT_ACCEL_ERROR_WARN = 0.35
 SATURATED_UNDERTRACK_LAT_ACCEL_ERROR = 0.35
 SATURATION_BURST_MIN_FRAMES = 20
+CARNIVAL_LATERAL_FEASIBILITY_MIN_SPEED = 4.5
+CARNIVAL_LATERAL_FEASIBILITY_SPEED_MARGIN = 0.35
 MS_TO_MPH = 2.2369362920544
 
 
@@ -155,9 +157,26 @@ def lateral_feasibility_dict(sample: QualitySample) -> dict[str, Any]:
   }
 
 
+def lateral_governor_target_dict(sample: QualitySample) -> dict[str, Any]:
+  feasibility = lateral_feasibility_dict(sample)
+  feasible_speed = feasibility.get("feasibleSpeedMps")
+  if feasible_speed is None:
+    return {}
+  target_speed = max(float(feasible_speed) - CARNIVAL_LATERAL_FEASIBILITY_SPEED_MARGIN,
+                     CARNIVAL_LATERAL_FEASIBILITY_MIN_SPEED)
+  speed_cap_reduction = max(sample.v_ego - target_speed, 0.0)
+  return {
+    "governorTargetSpeedMps": round(target_speed, 3),
+    "governorTargetSpeedMph": round(target_speed * MS_TO_MPH, 1),
+    "governorSpeedReductionMps": round(speed_cap_reduction, 3),
+    "governorSpeedReductionMph": round(speed_cap_reduction * MS_TO_MPH, 1),
+  }
+
+
 def feasibility_event_dict(sample: QualitySample) -> dict[str, Any]:
   data = event_dict(sample)
   data.update(lateral_feasibility_dict(sample))
+  data.update(lateral_governor_target_dict(sample))
   return data
 
 
@@ -360,6 +379,10 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
     lateral_feasibility_dict(s).get("speedReductionMps", 0.0)
     for s in saturated_undertrack
   ]
+  governor_reductions = [
+    lateral_governor_target_dict(s).get("governorSpeedReductionMps", 0.0)
+    for s in saturated_undertrack
+  ]
   curvature_errors = [abs(s.curvature_error) for s in lat if s.v_ego >= 3.0]
   highway_curvature_errors = [abs(s.curvature_error) for s in highway_lat]
   lat_accel_errors = [abs(s.lat_accel_error) for s in lat if s.v_ego >= 3.0]
@@ -397,6 +420,18 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
     "highwaySaturatedUndertrackFrames": len(highway_saturated_undertrack),
     "maxFeasibilitySpeedReductionMps": 0.0 if not speed_reductions else round(max(speed_reductions), 3),
     "maxFeasibilitySpeedReductionMph": 0.0 if not speed_reductions else round(max(speed_reductions) * MS_TO_MPH, 1),
+    "feasibilityGovernor": {
+      "activeFrames": sum(1 for value in governor_reductions if value > 0.0),
+      "maxTargetSpeedMph": None if not saturated_undertrack else round(max(
+        lateral_governor_target_dict(s).get("governorTargetSpeedMps", 0.0)
+        for s in saturated_undertrack
+      ) * MS_TO_MPH, 1),
+      "minTargetSpeedMph": None if not saturated_undertrack else round(min(
+        lateral_governor_target_dict(s).get("governorTargetSpeedMps", 0.0)
+        for s in saturated_undertrack
+      ) * MS_TO_MPH, 1),
+      "maxSpeedReductionMph": 0.0 if not governor_reductions else round(max(governor_reductions) * MS_TO_MPH, 1),
+    },
     "curvatureError": {
       "mean": None if not curvature_errors else round(mean(curvature_errors), 6),
       "p95": None if not curvature_errors else round(percentile(curvature_errors, 95.0), 6),
@@ -441,6 +476,7 @@ def console_summary(report: dict[str, Any]) -> dict[str, Any]:
     "lowSpeedSaturatedUndertrackFrames": report["lowSpeedSaturatedUndertrackFrames"],
     "highwaySaturatedUndertrackFrames": report["highwaySaturatedUndertrackFrames"],
     "maxFeasibilitySpeedReductionMph": report["maxFeasibilitySpeedReductionMph"],
+    "feasibilityGovernor": report["feasibilityGovernor"],
     "saturationBursts": report["saturationBursts"]["totalBursts"],
     "maxSaturationBurstFrames": report["saturationBursts"]["maxFrames"],
     "curvatureErrorP95": report["curvatureError"]["p95"],

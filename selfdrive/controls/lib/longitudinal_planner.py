@@ -117,6 +117,12 @@ CARNIVAL_LEAD_DEPART_MIN_ACCEL = 1.00
 CARNIVAL_LEAD_DEPART_CREEP_RELEASE_MIN_ACCEL = 0.30
 CARNIVAL_LEAD_DEPART_ACCEL_HOLD_TIME = 2.5
 CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MAX_EGO_SPEED = 5.5
+CARNIVAL_LATERAL_FEASIBILITY_MAX_EGO_SPEED = 13.5
+CARNIVAL_LATERAL_FEASIBILITY_MIN_CURVATURE = 0.008
+CARNIVAL_LATERAL_FEASIBILITY_MIN_SPEED = 4.5
+CARNIVAL_LATERAL_FEASIBILITY_SPEED_MARGIN = 0.35
+CARNIVAL_LATERAL_FEASIBILITY_LAT_ACCEL_BP = [0.0, 5.0, 8.8, 13.5]
+CARNIVAL_LATERAL_FEASIBILITY_LAT_ACCEL_VALS = [0.55, 0.70, 0.82, 1.05]
 STANDSTILL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED = 0.5
 STANDSTILL_STOPPED_LEAD_GUARD_MAX_LEAD_SPEED = 0.45
 STANDSTILL_STOPPED_LEAD_GUARD_MAX_LEAD_DELTA = 0.50
@@ -376,6 +382,26 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   a_x_allowed = math.sqrt(max(a_total_max ** 2 - a_y ** 2, 0.))
 
   return [a_target[0], min(a_target[1], a_x_allowed)]
+
+
+def apply_carnival_lateral_feasibility_speed_cap(CP, model_msg, v_ego, v):
+  if str(getattr(CP, "carFingerprint", "")) != "KIA_CARNIVAL_4TH_GEN":
+    return v
+  if float(v_ego) > CARNIVAL_LATERAL_FEASIBILITY_MAX_EGO_SPEED:
+    return v
+  if len(model_msg.orientationRate.z) != ModelConstants.IDX_N or len(v) != len(T_IDXS_MPC):
+    return v
+
+  model_yaw_rate = np.interp(T_IDXS_MPC, ModelConstants.T_IDXS, model_msg.orientationRate.z)
+  curvature = model_yaw_rate / np.clip(v, 0.3, 100.0)
+  high_curvature = np.abs(curvature) >= CARNIVAL_LATERAL_FEASIBILITY_MIN_CURVATURE
+  if not np.any(high_curvature):
+    return v
+
+  max_lat_accel = np.interp(v, CARNIVAL_LATERAL_FEASIBILITY_LAT_ACCEL_BP, CARNIVAL_LATERAL_FEASIBILITY_LAT_ACCEL_VALS)
+  max_v = np.sqrt(max_lat_accel / (np.abs(curvature) + 1e-4)) - CARNIVAL_LATERAL_FEASIBILITY_SPEED_MARGIN
+  capped_v = np.maximum(max_v, CARNIVAL_LATERAL_FEASIBILITY_MIN_SPEED)
+  return np.where(high_curvature, np.minimum(v, capped_v), v)
 
 
 def should_publish_planner_fcw(crash_cnt: int, car_state, radar_state) -> bool:
@@ -2202,6 +2228,7 @@ class LongitudinalPlanner:
     # Compute model v_ego error
     self.v_model_error = self.get_model_speed_error(sm['modelV2'], v_ego)
     x, v, a, j, throttle_prob = self.parse_model(sm['modelV2'], self.v_model_error, v_ego, starpilot_toggles)
+    v = apply_carnival_lateral_feasibility_speed_cap(self.CP, sm['modelV2'], scene_v_ego, v)
     if bool(sm['carState'].standstill):
       self.model_launch_armed = True
       self.model_launch_stop_seen |= bool(
