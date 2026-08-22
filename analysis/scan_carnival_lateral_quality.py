@@ -47,6 +47,7 @@ class QualitySample:
   steering_torque: float
   steering_angle_deg: float
   steering_rate_deg: float
+  requested_torque_units: int
   output_torque_units: int
   desired_curvature: float
   actual_curvature: float
@@ -180,6 +181,16 @@ def feasibility_event_dict(sample: QualitySample) -> dict[str, Any]:
   return data
 
 
+def is_undertracking(sample: QualitySample) -> bool:
+  desired = sample.desired_lat_accel
+  actual = sample.actual_lat_accel
+  if abs(desired) < SATURATED_UNDERTRACK_LAT_ACCEL_ERROR:
+    return False
+  wrong_direction = desired * actual <= 0.0
+  weak_same_direction = abs(actual) < abs(desired) and desired * actual > 0.0
+  return (wrong_direction or weak_same_direction) and abs(desired - actual) >= SATURATED_UNDERTRACK_LAT_ACCEL_ERROR
+
+
 def read_quality_samples(path: Path, mode: ReadMode) -> tuple[list[QualitySample], str]:
   latest: dict[str, Any] = {}
   samples: list[QualitySample] = []
@@ -208,6 +219,13 @@ def read_quality_samples(path: Path, mode: ReadMode) -> tuple[list[QualitySample
     controls_state = latest.get("controlsState")
     actuators = safe_attr(car_control, "actuators")
     out_actuators = safe_attr(car_output, "actuatorsOutput") if car_output is not None else None
+    lateral_state = safe_attr(controls_state, "lateralControlState") if controls_state is not None else None
+    lateral_log = None
+    if lateral_state is not None:
+      try:
+        lateral_log = getattr(lateral_state, lateral_state.which())
+      except Exception:
+        lateral_log = None
 
     lat_active = safe_bool(safe_attr(car_control, "latActive", False))
     steer_fault_temporary = safe_bool(safe_attr(car_state, "steerFaultTemporary", False))
@@ -215,6 +233,7 @@ def read_quality_samples(path: Path, mode: ReadMode) -> tuple[list[QualitySample
     steering_pressed = safe_bool(safe_attr(car_state, "steeringPressed", False))
     v_ego = safe_float(safe_attr(car_state, "vEgo", 0.0))
     output_torque = safe_float(safe_attr(out_actuators, "torque", safe_attr(actuators, "torque", 0.0)))
+    requested_torque = safe_float(safe_attr(lateral_log, "output", output_torque))
     desired_curvature = safe_float(safe_attr(controls_state, "desiredCurvature", safe_attr(actuators, "curvature", 0.0)))
     actual_curvature = safe_float(safe_attr(controls_state, "curvature", 0.0))
     curvature_error = desired_curvature - actual_curvature
@@ -242,6 +261,7 @@ def read_quality_samples(path: Path, mode: ReadMode) -> tuple[list[QualitySample
       steering_torque=safe_float(safe_attr(car_state, "steeringTorque", 0.0)),
       steering_angle_deg=safe_float(safe_attr(car_state, "steeringAngleDeg", 0.0)),
       steering_rate_deg=safe_float(safe_attr(car_state, "steeringRateDeg", 0.0)),
+      requested_torque_units=int(round(requested_torque * CARNIVAL_STEER_MAX)),
       output_torque_units=int(round(output_torque * CARNIVAL_STEER_MAX)),
       desired_curvature=desired_curvature,
       actual_curvature=actual_curvature,
@@ -369,9 +389,48 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
   ]
   near_limit = [s for s in lat if abs(s.output_torque_units) >= round(CARNIVAL_STEER_MAX * NEAR_LIMIT_TORQUE_FRAC)]
   saturated = [s for s in lat if abs(s.output_torque_units) >= round(CARNIVAL_STEER_MAX * SATURATED_TORQUE_FRAC)]
+  requested_near_limit = [
+    s for s in lat if abs(s.requested_torque_units) >= round(CARNIVAL_STEER_MAX * NEAR_LIMIT_TORQUE_FRAC)
+  ]
+  requested_saturated = [
+    s for s in lat if abs(s.requested_torque_units) >= round(CARNIVAL_STEER_MAX * SATURATED_TORQUE_FRAC)
+  ]
+  guard_clipped = [
+    s for s in lat
+    if abs(s.requested_torque_units) - abs(s.output_torque_units) >= 12
+  ]
+  guard_clipped_ids = {id(s) for s in guard_clipped}
   saturated_undertrack = [
     s for s in saturated
-    if s.v_ego >= 3.0 and abs(s.lat_accel_error) >= SATURATED_UNDERTRACK_LAT_ACCEL_ERROR
+    if s.v_ego >= 3.0 and is_undertracking(s)
+  ]
+  requested_saturated_undertrack = [
+    s for s in requested_saturated
+    if s.v_ego >= 3.0 and not s.steering_pressed and is_undertracking(s)
+  ]
+  guard_clipped_undertrack = [
+    s for s in guard_clipped
+    if s.v_ego >= 3.0 and not s.steering_pressed and is_undertracking(s)
+  ]
+  unsaturated_undertrack = [
+    s for s in lat
+    if (
+      s.v_ego >= 3.0 and
+      not s.steering_pressed and
+      id(s) not in guard_clipped_ids and
+      is_undertracking(s) and
+      abs(s.requested_torque_units) < round(CARNIVAL_STEER_MAX * NEAR_LIMIT_TORQUE_FRAC) and
+      abs(s.output_torque_units) < round(CARNIVAL_STEER_MAX * NEAR_LIMIT_TORQUE_FRAC)
+    )
+  ]
+  driver_intervention_undertrack = [
+    s for s in lat
+    if (
+      s.v_ego >= 3.0 and
+      s.steering_pressed and
+      abs(s.steering_torque) >= STRONG_DRIVER_TORQUE and
+      is_undertracking(s)
+    )
   ]
   low_speed_saturated_undertrack = [s for s in saturated_undertrack if s.v_ego <= LOW_SPEED_MPS]
   highway_saturated_undertrack = [s for s in saturated_undertrack if s.v_ego >= HIGHWAY_SPEED_MPS]
@@ -415,7 +474,14 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
     "strongDriverInterventionFrames": len(driver_interventions),
     "nearLimitTorqueFrames": len(near_limit),
     "saturatedTorqueFrames": len(saturated),
+    "requestedNearLimitTorqueFrames": len(requested_near_limit),
+    "requestedSaturatedTorqueFrames": len(requested_saturated),
+    "guardClippedTorqueFrames": len(guard_clipped),
     "saturatedUndertrackFrames": len(saturated_undertrack),
+    "requestedSaturatedUndertrackFrames": len(requested_saturated_undertrack),
+    "guardClippedUndertrackFrames": len(guard_clipped_undertrack),
+    "unsaturatedUndertrackFrames": len(unsaturated_undertrack),
+    "driverInterventionUndertrackFrames": len(driver_intervention_undertrack),
     "lowSpeedSaturatedUndertrackFrames": len(low_speed_saturated_undertrack),
     "highwaySaturatedUndertrackFrames": len(highway_saturated_undertrack),
     "maxFeasibilitySpeedReductionMps": 0.0 if not speed_reductions else round(max(speed_reductions), 3),
@@ -454,6 +520,9 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
       "strongDriverInterventions": [event_dict(s) for s in driver_interventions[:12]],
       "saturatedTorque": [event_dict(s) for s in saturated[:12]],
       "saturatedUndertrack": [feasibility_event_dict(s) for s in saturated_undertrack[:12]],
+      "guardClippedUndertrack": [feasibility_event_dict(s) for s in guard_clipped_undertrack[:12]],
+      "unsaturatedUndertrack": [event_dict(s) for s in unsaturated_undertrack[:12]],
+      "driverInterventionUndertrack": [event_dict(s) for s in driver_intervention_undertrack[:12]],
     },
   }
 
@@ -472,7 +541,14 @@ def console_summary(report: dict[str, Any]) -> dict[str, Any]:
     "strongDriverInterventionFrames": report["strongDriverInterventionFrames"],
     "nearLimitTorqueFrames": report["nearLimitTorqueFrames"],
     "saturatedTorqueFrames": report["saturatedTorqueFrames"],
+    "requestedNearLimitTorqueFrames": report["requestedNearLimitTorqueFrames"],
+    "requestedSaturatedTorqueFrames": report["requestedSaturatedTorqueFrames"],
+    "guardClippedTorqueFrames": report["guardClippedTorqueFrames"],
     "saturatedUndertrackFrames": report["saturatedUndertrackFrames"],
+    "requestedSaturatedUndertrackFrames": report["requestedSaturatedUndertrackFrames"],
+    "guardClippedUndertrackFrames": report["guardClippedUndertrackFrames"],
+    "unsaturatedUndertrackFrames": report["unsaturatedUndertrackFrames"],
+    "driverInterventionUndertrackFrames": report["driverInterventionUndertrackFrames"],
     "lowSpeedSaturatedUndertrackFrames": report["lowSpeedSaturatedUndertrackFrames"],
     "highwaySaturatedUndertrackFrames": report["highwaySaturatedUndertrackFrames"],
     "maxFeasibilitySpeedReductionMph": report["maxFeasibilitySpeedReductionMph"],
