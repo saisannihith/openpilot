@@ -73,6 +73,13 @@ LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE = 0.45
 LONE_HIGH_SPEED_RED_LIGHT_RELEASE_SPEED_MS = 13.41
 LONE_HIGH_SPEED_RED_LIGHT_RELEASE_MODEL_LENGTH_M = 35.0
 HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_MODEL_LENGTH_M = 160.0
+CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_SPEED = 12.0
+CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_LENGTH = 20.0
+CARNIVAL_PRE_RED_STOP_EVIDENCE_MAX_LENGTH = 200.0
+CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_BRAKE = 0.75
+CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_DROP = 15.0
+CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_RATIO = 0.35
+CARNIVAL_PRE_RED_STOP_EVIDENCE_HOLD_TIME = 3.0
 RAW_LEAD_SAFETY_MIN_CLOSING_SPEED = 0.5
 RAW_LEAD_SAFETY_TTC = 7.0
 RAW_LEAD_SAFETY_DISTANCE = 40.0
@@ -549,7 +556,8 @@ def update_carnival_lone_high_speed_red_light_suppression(CP, v_ego, red_light,
                                                           model_should_stop, lead_control_active,
                                                           forcing_stop=False,
                                                           currently_suppressed=False,
-                                                          model_length=float("inf")):
+                                                          model_length=float("inf"),
+                                                          pre_red_stop_evidence=False):
   close_red_light_stop_evidence = (
     red_light and
     float(v_ego) <= LONE_HIGH_SPEED_RED_LIGHT_RELEASE_SPEED_MS and
@@ -564,6 +572,7 @@ def update_carnival_lone_high_speed_red_light_suppression(CP, v_ego, red_light,
     red_light and
     not model_should_stop and
     not lead_control_active and
+    not pre_red_stop_evidence and
     not close_red_light_stop_evidence and
     not committed_plausible_stop_evidence and
     (currently_suppressed or not forcing_stop) and
@@ -654,6 +663,9 @@ class LongitudinalPlanner:
     self.prev_experimental_mode = None
     self.experimental_release_accel_until = 0.0
     self.carnival_lone_high_speed_red_light_suppressed = False
+    self.carnival_pre_red_stop_evidence_until = 0.0
+    self.carnival_pre_red_stop_start_length = None
+    self.carnival_pre_red_stop_start_t = 0.0
     self.carnival_radar_stop_hold_active = False
 
     if self.is_preap:
@@ -671,6 +683,48 @@ class LongitudinalPlanner:
 
   def is_carnival_4th_gen(self):
     return str(getattr(self.CP, "carFingerprint", "")) == "KIA_CARNIVAL_4TH_GEN"
+
+  def update_carnival_pre_red_stop_evidence(self, now_t, red_light, forcing_stop,
+                                            model_length, v_ego, output_a_target,
+                                            model_desired_accel):
+    if not self.is_carnival_4th_gen():
+      self.carnival_pre_red_stop_evidence_until = 0.0
+      self.carnival_pre_red_stop_start_length = None
+      return False
+
+    if red_light:
+      return now_t < self.carnival_pre_red_stop_evidence_until
+
+    valid_length = (
+      math.isfinite(model_length) and
+      CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_LENGTH <= model_length <= CARNIVAL_PRE_RED_STOP_EVIDENCE_MAX_LENGTH
+    )
+    if forcing_stop or not valid_length or v_ego < CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_SPEED:
+      self.carnival_pre_red_stop_start_length = None
+      self.carnival_pre_red_stop_start_t = now_t
+      return now_t < self.carnival_pre_red_stop_evidence_until
+
+    if (
+      self.carnival_pre_red_stop_start_length is None or
+      model_length > self.carnival_pre_red_stop_start_length + 10.0
+    ):
+      self.carnival_pre_red_stop_start_length = model_length
+      self.carnival_pre_red_stop_start_t = now_t
+
+    elapsed = max(0.0, now_t - self.carnival_pre_red_stop_start_t)
+    model_drop = max(0.0, self.carnival_pre_red_stop_start_length - model_length)
+    distance_travelled = max(1.0, v_ego * max(elapsed, self.dt))
+    drop_ratio = model_drop / distance_travelled
+    braking_evidence = min(output_a_target, self.a_desired, model_desired_accel) <= -CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_BRAKE
+    approaching_stop_line = (
+      model_drop >= CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_DROP and
+      drop_ratio >= CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_RATIO
+    )
+
+    if braking_evidence and approaching_stop_line:
+      self.carnival_pre_red_stop_evidence_until = now_t + CARNIVAL_PRE_RED_STOP_EVIDENCE_HOLD_TIME
+
+    return now_t < self.carnival_pre_red_stop_evidence_until
 
   def get_standstill_lead_depart_min_accel(self, slow_creep_only=False):
     if self.is_carnival_4th_gen():
@@ -3084,15 +3138,28 @@ class LongitudinalPlanner:
     if force_slow_decel and scene_v_ego > 0.1:
       output_a_target = min(output_a_target, FORCE_DECEL_MIN_ACCEL)
 
+    starpilot_red_light = bool(getattr(sm['starpilotPlan'], 'redLight', False))
+    starpilot_forcing_stop = bool(getattr(sm['starpilotPlan'], 'forcingStop', False))
+    starpilot_forcing_stop_length = float(getattr(sm['starpilotPlan'], 'forcingStopLength', float("inf")))
+    carnival_pre_red_stop_evidence = self.update_carnival_pre_red_stop_evidence(
+      now_t,
+      starpilot_red_light,
+      starpilot_forcing_stop,
+      starpilot_forcing_stop_length,
+      scene_v_ego,
+      output_a_target,
+      model_desired_accel,
+    )
     self.carnival_lone_high_speed_red_light_suppressed = update_carnival_lone_high_speed_red_light_suppression(
       self.CP,
       scene_v_ego,
-      bool(getattr(sm['starpilotPlan'], 'redLight', False)),
+      starpilot_red_light,
       bool(getattr(sm['modelV2'].action, 'shouldStop', False)),
       lead_control_active,
-      bool(getattr(sm['starpilotPlan'], 'forcingStop', False)),
+      starpilot_forcing_stop,
       self.carnival_lone_high_speed_red_light_suppressed,
-      float(getattr(sm['starpilotPlan'], 'forcingStopLength', float("inf"))),
+      starpilot_forcing_stop_length,
+      carnival_pre_red_stop_evidence,
     )
     if self.carnival_lone_high_speed_red_light_suppressed:
       red_light_floor = -LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE

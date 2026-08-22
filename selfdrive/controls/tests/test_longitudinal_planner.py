@@ -87,6 +87,9 @@ def test_carnival_lone_high_speed_red_light_guard_latches_until_evidence_or_clea
   CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
   suppressed = update_carnival_lone_high_speed_red_light_suppression(CP, 20.0, True, False, False)
   assert suppressed
+  assert not update_carnival_lone_high_speed_red_light_suppression(
+    CP, 18.0, True, False, False, currently_suppressed=suppressed,
+    model_length=52.0, pre_red_stop_evidence=True)
   assert update_carnival_lone_high_speed_red_light_suppression(
     CP, 14.0, True, False, False, currently_suppressed=suppressed, model_length=120.0)
   assert not update_carnival_lone_high_speed_red_light_suppression(
@@ -107,6 +110,21 @@ def test_carnival_lone_high_speed_red_light_latch_ignores_forcing_stop_only_afte
   suppressed = update_carnival_lone_high_speed_red_light_suppression(CP, 20.0, True, False, False, False, False)
   assert update_carnival_lone_high_speed_red_light_suppression(
     CP, 14.0, True, False, False, True, currently_suppressed=suppressed)
+
+
+def test_carnival_pre_red_stop_evidence_confirms_yellow_light_approach():
+  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN", brand="hyundai")
+  planner = LongitudinalPlanner(CP)
+
+  assert not planner.update_carnival_pre_red_stop_evidence(
+    100.0, False, False, 190.0, 20.0, -0.2, -0.1)
+  assert planner.update_carnival_pre_red_stop_evidence(
+    101.0, False, False, 133.0, 20.0, -1.1, -0.4)
+  assert planner.update_carnival_pre_red_stop_evidence(
+    102.0, True, False, 52.0, 17.0, -2.0, -0.4)
+  assert not update_carnival_lone_high_speed_red_light_suppression(
+    CP, 17.0, True, False, False, False, False, 52.0,
+    pre_red_stop_evidence=True)
 
 
 def test_mpc_duplicate_lead_filters_do_not_cross_contaminate_tracks():

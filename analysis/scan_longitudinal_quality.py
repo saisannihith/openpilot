@@ -10,6 +10,13 @@ from typing import Any
 
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+  CARNIVAL_PRE_RED_STOP_EVIDENCE_HOLD_TIME,
+  CARNIVAL_PRE_RED_STOP_EVIDENCE_MAX_LENGTH,
+  CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_BRAKE,
+  CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_DROP,
+  CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_LENGTH,
+  CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_RATIO,
+  CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_SPEED,
   LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE,
   update_carnival_lone_high_speed_red_light_suppression,
 )
@@ -473,6 +480,57 @@ def summarize_current_red_light_gate(samples: list[Sample]) -> dict[str, Any]:
   return summary
 
 
+def pre_red_stop_context_keys(samples: list[Sample]) -> set[tuple[str, int, float]]:
+  keys: set[tuple[str, int, float]] = set()
+  previous_route: str | None = None
+  previous_segment: int | None = None
+  start_length: float | None = None
+  start_t = 0.0
+  evidence_until = 0.0
+
+  for sample in sorted(samples, key=lambda s: (s.route, s.segment, s.t)):
+    if sample.route != previous_route or sample.segment != previous_segment:
+      previous_route = sample.route
+      previous_segment = sample.segment
+      start_length = None
+      start_t = sample.t
+      evidence_until = 0.0
+
+    valid_length = (
+      math.isfinite(sample.forcing_stop_length) and
+      CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_LENGTH <= sample.forcing_stop_length <= CARNIVAL_PRE_RED_STOP_EVIDENCE_MAX_LENGTH
+    )
+    if sample.red_light:
+      if sample.t < evidence_until:
+        keys.add((sample.route, sample.segment, sample.t))
+      continue
+    if sample.forcing_stop or not valid_length or sample.v_ego < CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_SPEED:
+      start_length = None
+      start_t = sample.t
+      continue
+
+    if start_length is None or sample.forcing_stop_length > start_length + 10.0:
+      start_length = sample.forcing_stop_length
+      start_t = sample.t
+
+    elapsed = max(0.0, sample.t - start_t)
+    model_drop = max(0.0, start_length - sample.forcing_stop_length)
+    distance_travelled = max(1.0, sample.v_ego * max(elapsed, 0.05))
+    drop_ratio = model_drop / distance_travelled
+    braking_evidence = sample.plan_accel <= -CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_BRAKE
+    if (
+      braking_evidence and
+      model_drop >= CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_DROP and
+      drop_ratio >= CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_RATIO
+    ):
+      evidence_until = sample.t + CARNIVAL_PRE_RED_STOP_EVIDENCE_HOLD_TIME
+
+    if sample.t < evidence_until:
+      keys.add((sample.route, sample.segment, sample.t))
+
+  return keys
+
+
 def summarize_software_metadata(metadata: list[dict[str, Any]]) -> list[dict[str, Any]]:
   seen: dict[tuple[Any, ...], dict[str, Any]] = {}
   for item in metadata:
@@ -500,15 +558,20 @@ def summarize_software_metadata(metadata: list[dict[str, Any]]) -> list[dict[str
 
 def analyze(samples: list[Sample], software_metadata: list[dict[str, Any]] | None = None) -> dict[str, Any]:
   stop_groups = group_by_gap(samples, lambda s: s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop, max_gap=1.5)
+  pre_red_context = pre_red_stop_context_keys(samples)
   no_context_brakes = [
     event_dict(s) for s in samples
     if s.long_active and s.v_ego >= 12.0 and s.cmd_accel <= -1.8 and
-    not s.lead_status and not s.red_light and not s.forcing_stop and not s.should_stop and not s.model_should_stop
+    not s.lead_status and not s.red_light and not s.forcing_stop and not s.should_stop and not s.model_should_stop and
+    (s.route, s.segment, s.t) not in pre_red_context
   ][:80]
   stop_context_brakes = [
     event_dict(s) for s in samples
     if s.long_active and s.v_ego >= 12.0 and s.cmd_accel <= -1.8 and
-    not s.lead_status and (s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop)
+    not s.lead_status and (
+      s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop or
+      (s.route, s.segment, s.t) in pre_red_context
+    )
   ][:80]
   return {
     "samples": len(samples),

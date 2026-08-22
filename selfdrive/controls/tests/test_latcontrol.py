@@ -27,6 +27,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import (
   clear_flm_runtime_overrides,
   get_flm_runtime_overrides,
   get_hkg_canfd_base_friction_threshold,
+  KIA_CARNIVAL_CARS,
   get_ioniq_6_2025_low_speed_center_error_scale,
   get_ioniq_6_2025_low_speed_center_friction_scale,
   get_kona_non_scc_center_taper_scale,
@@ -635,6 +636,8 @@ class TestLatControl:
     assert get_kia_forte_center_taper_scale(0.0, 30.0) < get_kia_forte_center_taper_scale(0.20, 30.0) <= 1.0
 
   def test_kia_carnival_near_center_stabilization(self):
+    assert HYUNDAI.KIA_CARNIVAL_4TH_GEN in KIA_CARNIVAL_CARS
+
     center_taper = get_kia_carnival_center_taper_scale(0.04, 8.5)
     turn_taper = get_kia_carnival_center_taper_scale(0.35, 8.5)
     low_speed_taper = get_kia_carnival_center_taper_scale(0.04, 2.0)
