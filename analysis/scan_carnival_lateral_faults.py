@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import subprocess
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+from openpilot.tools.lib.logreader import LogReader, ReadMode
+from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import get_kia_carnival_driver_override_output_scale
+from opendbc.car.hyundai.carcontroller import (
+  CARNIVAL_4TH_GEN_EPS_GUARD_MIN_ANGLE,
+  CARNIVAL_4TH_GEN_EPS_GUARD_MIN_SPEED,
+  CARNIVAL_4TH_GEN_EPS_GUARD_TORQUE_FRACTION,
+  CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES,
+  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED,
+  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE,
+  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE,
+)
+
+
+CARNIVAL_STEER_MAX = 409
+HIGH_SPEED_FAULT_MPS = 17.0
+NEAR_FAULT_WINDOW_S = 2.0
+
+
+@dataclass
+class LateralSample:
+  route: str
+  segment: int
+  t: float
+  git_commit: str
+  v_ego: float
+  lat_active: bool
+  enabled: bool
+  steer_fault_temporary: bool
+  low_speed_alert: bool
+  steering_pressed: bool
+  steering_torque: float
+  steering_torque_eps: float
+  steering_angle_deg: float
+  commanded_torque: float
+  output_torque: float
+  output_torque_units: int
+  override_release_scale: float
+  manual_turn_guard_candidate: bool
+  eps_guard_near_limit: bool
+
+
+def safe_attr(obj: Any, name: str, default: Any = None) -> Any:
+  try:
+    return getattr(obj, name)
+  except Exception:
+    return default
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+  try:
+    result = float(value)
+  except Exception:
+    return default
+  return result if math.isfinite(result) else default
+
+
+def route_name(path: Path) -> str:
+  for name in (path.parent.name, path.name):
+    parts = name.split("--")
+    if len(parts) >= 2:
+      return "--".join(parts[:2])
+  return path.parent.name
+
+
+def segment_number(path: Path) -> int:
+  for name in (path.parent.name, path.name):
+    parts = name.split("--")
+    if len(parts) >= 3:
+      try:
+        return int(parts[2].split(".", 1)[0])
+      except Exception:
+        pass
+  return -1
+
+
+def current_commit() -> str:
+  for rev in ("origin/snithpilot", "HEAD"):
+    try:
+      return subprocess.check_output(["git", "rev-parse", rev], text=True).strip()
+    except Exception:
+      pass
+  return "unknown"
+
+
+def get_git_commit(log_init: Any) -> str:
+  for name in ("gitCommit", "gitCommitDate"):
+    value = safe_attr(log_init, name)
+    if value and name == "gitCommit":
+      return str(value)
+  return "unknown"
+
+
+def read_lateral_samples(path: Path, mode: ReadMode) -> tuple[list[LateralSample], str]:
+  latest: dict[str, Any] = {}
+  samples: list[LateralSample] = []
+  start_ns: int | None = None
+  git_commit = "unknown"
+
+  for msg in LogReader(str(path), default_mode=mode, sort_by_time=True):
+    which = msg.which()
+    mono_time = int(msg.logMonoTime)
+
+    if which == "initData":
+      git_commit = get_git_commit(msg.initData)
+      continue
+
+    if which in ("carState", "carControl", "carOutput", "controlsState"):
+      latest[which] = getattr(msg, which)
+      if start_ns is None:
+        start_ns = mono_time
+
+    if start_ns is None or "carState" not in latest:
+      continue
+
+    car_state = latest["carState"]
+    car_control = latest.get("carControl")
+    car_output = latest.get("carOutput")
+    controls_state = latest.get("controlsState")
+    actuators = safe_attr(car_control, "actuators")
+    out_actuators = safe_attr(car_output, "actuatorsOutput") if car_output is not None else None
+
+    v_ego = safe_float(safe_attr(car_state, "vEgo", 0.0))
+    steering_torque = safe_float(safe_attr(car_state, "steeringTorque", 0.0))
+    steering_angle = safe_float(safe_attr(car_state, "steeringAngleDeg", 0.0))
+    steering_pressed = bool(safe_attr(car_state, "steeringPressed", False))
+    output_torque = safe_float(safe_attr(out_actuators, "torque", safe_attr(actuators, "torque", 0.0)))
+    output_units = int(round(output_torque * CARNIVAL_STEER_MAX))
+    torque_fraction = abs(output_units) / CARNIVAL_STEER_MAX
+    lat_active = bool(safe_attr(car_control, "latActive", False))
+
+    manual_candidate = (
+      steering_pressed and
+      v_ego <= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED and
+      abs(steering_angle) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE and
+      abs(steering_torque) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE
+    )
+    eps_near_limit = (
+      lat_active and
+      not steering_pressed and
+      v_ego >= CARNIVAL_4TH_GEN_EPS_GUARD_MIN_SPEED and
+      abs(steering_angle) >= CARNIVAL_4TH_GEN_EPS_GUARD_MIN_ANGLE and
+      torque_fraction >= CARNIVAL_4TH_GEN_EPS_GUARD_TORQUE_FRACTION
+    )
+
+    interesting = (
+      lat_active or
+      bool(safe_attr(car_state, "steerFaultTemporary", False)) or
+      bool(safe_attr(car_state, "lowSpeedAlert", False)) or
+      manual_candidate or
+      eps_near_limit
+    )
+    if not interesting:
+      continue
+
+    samples.append(LateralSample(
+      route=route_name(path),
+      segment=segment_number(path),
+      t=(mono_time - start_ns) / 1e9,
+      git_commit=git_commit,
+      v_ego=v_ego,
+      lat_active=lat_active,
+      enabled=bool(safe_attr(controls_state, "enabled", False)),
+      steer_fault_temporary=bool(safe_attr(car_state, "steerFaultTemporary", False)),
+      low_speed_alert=bool(safe_attr(car_state, "lowSpeedAlert", False)),
+      steering_pressed=steering_pressed,
+      steering_torque=steering_torque,
+      steering_torque_eps=safe_float(safe_attr(car_state, "steeringTorqueEps", 0.0)),
+      steering_angle_deg=steering_angle,
+      commanded_torque=safe_float(safe_attr(actuators, "torque", 0.0)),
+      output_torque=output_torque,
+      output_torque_units=output_units,
+      override_release_scale=get_kia_carnival_driver_override_output_scale(v_ego, steering_torque),
+      manual_turn_guard_candidate=manual_candidate,
+      eps_guard_near_limit=eps_near_limit,
+    ))
+
+  return samples, git_commit
+
+
+def event_dict(sample: LateralSample) -> dict[str, Any]:
+  data = asdict(sample)
+  for key, value in list(data.items()):
+    if isinstance(value, float):
+      data[key] = round(value, 3)
+  return data
+
+
+def sample_key(sample: LateralSample) -> tuple[str, int]:
+  return sample.route, sample.segment
+
+
+def summarize(samples: list[LateralSample], commits: list[str], expected_commit: str) -> dict[str, Any]:
+  temp = [s for s in samples if s.steer_fault_temporary]
+  temp_lat = [s for s in temp if s.lat_active]
+  high_speed_temp_lat = [s for s in temp_lat if s.v_ego >= HIGH_SPEED_FAULT_MPS]
+  low_speed_alerts = [s for s in samples if s.low_speed_alert]
+  covered_override = [
+    s for s in temp_lat
+    if s.steering_pressed and s.override_release_scale <= 0.05
+  ]
+  partial_override = [
+    s for s in temp_lat
+    if s.steering_pressed and 0.05 < s.override_release_scale < 1.0
+  ]
+  uncovered = [
+    s for s in temp_lat
+    if not s.steering_pressed or s.override_release_scale >= 1.0
+  ]
+  manual_candidates = [s for s in samples if s.manual_turn_guard_candidate]
+  eps_near = [s for s in samples if s.eps_guard_near_limit]
+
+  eps_risk_bursts: list[dict[str, Any]] = []
+  active_count: dict[tuple[str, int], int] = {}
+  for sample in samples:
+    key = sample_key(sample)
+    if sample.eps_guard_near_limit:
+      active_count[key] = active_count.get(key, 0) + 1
+      if active_count[key] == CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES:
+        eps_risk_bursts.append(event_dict(sample))
+    else:
+      active_count[key] = max(active_count.get(key, 0) - 2, 0)
+
+  near_fault_precursors = []
+  for fault in temp_lat:
+    window = [
+      s for s in samples
+      if sample_key(s) == sample_key(fault) and 0.0 <= fault.t - s.t <= NEAR_FAULT_WINDOW_S
+    ]
+    if window:
+      near_fault_precursors.append({
+        "fault": event_dict(fault),
+        "maxAbsOutputTorqueUnitsBeforeFault": max(abs(s.output_torque_units) for s in window),
+        "epsNearLimitFramesBeforeFault": sum(1 for s in window if s.eps_guard_near_limit),
+        "manualTurnGuardCandidatesBeforeFault": sum(1 for s in window if s.manual_turn_guard_candidate),
+      })
+
+  matching_commits = [commit for commit in commits if commit == expected_commit]
+  status = "pass"
+  if uncovered or high_speed_temp_lat:
+    status = "fail"
+  elif not matching_commits or low_speed_alerts or eps_risk_bursts:
+    status = "warn"
+
+  return {
+    "status": status,
+    "expectedCommit": expected_commit,
+    "logCommits": sorted(set(commits)),
+    "matchingCommitFiles": len(matching_commits),
+    "sampleFrames": len(samples),
+    "tempFaultFrames": len(temp),
+    "tempFaultLatActiveFrames": len(temp_lat),
+    "highSpeedTempFaultLatActiveFrames": len(high_speed_temp_lat),
+    "lowSpeedAlertFrames": len(low_speed_alerts),
+    "coveredByStrongDriverOverrideFrames": len(covered_override),
+    "partialDriverOverrideFrames": len(partial_override),
+    "uncoveredLatActiveTempFaultFrames": len(uncovered),
+    "manualTurnGuardCandidateFrames": len(manual_candidates),
+    "epsNearLimitFrames": len(eps_near),
+    "epsRiskBursts": eps_risk_bursts[:12],
+    "highSpeedFaultExamples": [event_dict(s) for s in high_speed_temp_lat[:12]],
+    "uncoveredExamples": [event_dict(s) for s in uncovered[:12]],
+    "coveredExamples": [event_dict(s) for s in covered_override[:12]],
+    "nearFaultPrecursors": near_fault_precursors[:20],
+  }
+
+
+def main() -> None:
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--out", type=Path)
+  parser.add_argument("logs", nargs="+", type=Path)
+  args = parser.parse_args()
+
+  all_samples: list[LateralSample] = []
+  commits: list[str] = []
+  for path in args.logs:
+    samples, commit = read_lateral_samples(path, ReadMode.AUTO_INTERACTIVE)
+    all_samples.extend(samples)
+    commits.append(commit)
+
+  report = summarize(all_samples, commits, current_commit())
+  text = json.dumps(report, indent=2, sort_keys=True)
+  if args.out:
+    args.out.write_text(text + "\n", encoding="utf-8")
+  print(text)
+
+
+if __name__ == "__main__":
+  main()

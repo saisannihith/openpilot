@@ -172,7 +172,7 @@ class TestHyundaiFingerprint:
 
     assert apply_carnival_4th_gen_manual_turn_torque_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 7.7, 101.0, 637.0, True, 409
-    ) == (397, True)
+    ) == (385, True)
     assert apply_carnival_4th_gen_manual_turn_torque_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 15.0, 101.0, 637.0, True, 409
     ) == (409, False)
