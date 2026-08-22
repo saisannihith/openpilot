@@ -222,10 +222,15 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
 
   distance_association_ready = confirmation_lead_frames > 0
   live_track_velocity_evidence_available = bool(raw_vs_state_vrel_errors or raw_vs_derived_vrel_errors)
-  velocity_ready = (
+  velocity_control_ready = (
     len(raw_vs_state_vrel_errors) >= 200 and
     (percentile(raw_vs_state_vrel_errors, 95.0) or 999.0) < 1.0 and
     (percentile(raw_vs_derived_vrel_errors, 95.0) or 999.0) < 1.0
+  )
+  tandem_ready = (
+    distance_association_ready and
+    confirmation_lead_with_live_track_frames > 0 and
+    low_speed_confirmation_stop_frames > 0
   )
 
   return {
@@ -251,13 +256,16 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
     "distanceAssociationReady": distance_association_ready,
     "liveTrackVelocityEvidenceAvailable": live_track_velocity_evidence_available,
     "publishReady": distance_association_ready,
-    "controlReady": velocity_ready,
-    "velocityPromotionReady": velocity_ready,
+    "tandemReady": tandem_ready,
+    "velocityControlReady": velocity_control_ready,
+    "velocityPromotionReady": velocity_control_ready,
     "readinessConclusion": (
+      "radar_confirmed_model_led_ready"
+      if tandem_ready else
+      "velocity_control_candidate"
+      if velocity_control_ready else
       "distance_only_confirmation"
-      if distance_association_ready and not velocity_ready else
-      "full_radar_candidate"
-      if velocity_ready else
+      if distance_association_ready else
       "insufficient_confirmation_data"
     ),
   }
@@ -284,7 +292,7 @@ def build_report(paths: list[Path], radar_only: bool = False) -> dict[str, Any]:
 
     long_summary = analyze_longitudinal(long_samples, long_metadata)
   radar_summary = scan_radar(paths)
-  status = "pass" if radar_summary["controlReady"] else "warn" if radar_summary["publishReady"] else "fail"
+  status = "pass" if radar_summary["tandemReady"] else "warn" if radar_summary["publishReady"] else "fail"
   return {
     "status": status,
     "currentCommit": current_commit(),
