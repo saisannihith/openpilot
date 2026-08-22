@@ -84,6 +84,18 @@ def segment_number(path: Path) -> int:
   return -1
 
 
+def expand_log_paths(paths: list[Path]) -> list[Path]:
+  logs: list[Path] = []
+  for path in paths:
+    if path.is_dir():
+      logs.extend(sorted(path.glob("qlog.zst")))
+      logs.extend(sorted(path.glob("qlog.bz2")))
+      logs.extend(sorted(path.glob("qlog")))
+    else:
+      logs.extend(sorted(path.parent.glob(path.name)))
+  return [path for path in logs if path.exists()]
+
+
 def current_commit() -> str:
   for rev in ("origin/snithpilot", "HEAD"):
     try:
@@ -101,7 +113,7 @@ def get_git_commit(log_init: Any) -> str:
   return "unknown"
 
 
-def read_lateral_samples(path: Path, mode: ReadMode) -> tuple[list[LateralSample], str]:
+def read_lateral_samples(path: Path, mode: ReadMode, include_lat_active_frames: bool) -> tuple[list[LateralSample], str]:
   latest: dict[str, Any] = {}
   samples: list[LateralSample] = []
   start_ns: int | None = None
@@ -154,7 +166,7 @@ def read_lateral_samples(path: Path, mode: ReadMode) -> tuple[list[LateralSample
     )
 
     interesting = (
-      lat_active or
+      (include_lat_active_frames and lat_active) or
       bool(safe_attr(car_state, "steerFaultTemporary", False)) or
       bool(safe_attr(car_state, "lowSpeedAlert", False)) or
       manual_candidate or
@@ -275,24 +287,57 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
   }
 
 
+def console_summary(report: dict[str, Any]) -> dict[str, Any]:
+  keys = (
+    "status",
+    "expectedCommit",
+    "logCommits",
+    "matchingCommitFiles",
+    "logFiles",
+    "scanMode",
+    "sampleFrames",
+    "tempFaultFrames",
+    "tempFaultLatActiveFrames",
+    "highSpeedTempFaultLatActiveFrames",
+    "lowSpeedAlertFrames",
+    "coveredByStrongDriverOverrideFrames",
+    "partialDriverOverrideFrames",
+    "uncoveredLatActiveTempFaultFrames",
+    "manualTurnGuardCandidateFrames",
+    "epsNearLimitFrames",
+  )
+  summary = {key: report.get(key) for key in keys if key in report}
+  summary["epsRiskBurstCount"] = len(report.get("epsRiskBursts", []))
+  summary["highSpeedFaultExampleCount"] = len(report.get("highSpeedFaultExamples", []))
+  summary["uncoveredExampleCount"] = len(report.get("uncoveredExamples", []))
+  return summary
+
+
 def main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument("--out", type=Path)
+  parser.add_argument("--include-lat-active-frames", action="store_true",
+                      help="Store every latActive frame. Slower; default stores only fault/risk frames.")
+  parser.add_argument("--summary-only", action="store_true",
+                      help="Print a concise summary while still writing the full JSON report to --out.")
   parser.add_argument("logs", nargs="+", type=Path)
   args = parser.parse_args()
 
   all_samples: list[LateralSample] = []
   commits: list[str] = []
-  for path in args.logs:
-    samples, commit = read_lateral_samples(path, ReadMode.AUTO_INTERACTIVE)
+  logs = expand_log_paths(args.logs)
+  for path in logs:
+    samples, commit = read_lateral_samples(path, ReadMode.AUTO_INTERACTIVE, args.include_lat_active_frames)
     all_samples.extend(samples)
     commits.append(commit)
 
   report = summarize(all_samples, commits, current_commit())
+  report["logFiles"] = len(logs)
+  report["scanMode"] = "lat_active_full" if args.include_lat_active_frames else "event_risk_only"
   text = json.dumps(report, indent=2, sort_keys=True)
   if args.out:
     args.out.write_text(text + "\n", encoding="utf-8")
-  print(text)
+  print(json.dumps(console_summary(report) if args.summary_only else report, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
