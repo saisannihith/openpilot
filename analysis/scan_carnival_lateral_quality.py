@@ -27,6 +27,7 @@ CURVATURE_ERROR_WARN = 0.0015
 LAT_ACCEL_ERROR_WARN = 0.35
 SATURATED_UNDERTRACK_LAT_ACCEL_ERROR = 0.35
 SATURATION_BURST_MIN_FRAMES = 20
+MS_TO_MPH = 2.2369362920544
 
 
 @dataclass
@@ -133,6 +134,30 @@ def event_dict(sample: QualitySample) -> dict[str, Any]:
   for key, value in list(data.items()):
     if isinstance(value, float):
       data[key] = round(value, 4)
+  return data
+
+
+def lateral_feasibility_dict(sample: QualitySample) -> dict[str, Any]:
+  desired_curvature = abs(sample.desired_curvature)
+  achieved_lat_accel = abs(sample.actual_lat_accel)
+  if desired_curvature < 1e-5 or achieved_lat_accel <= 0.0:
+    return {}
+
+  feasible_speed = math.sqrt(achieved_lat_accel / desired_curvature)
+  speed_reduction = max(sample.v_ego - feasible_speed, 0.0)
+  return {
+    "feasibleSpeedMps": round(feasible_speed, 3),
+    "feasibleSpeedMph": round(feasible_speed * MS_TO_MPH, 1),
+    "currentSpeedMph": round(sample.v_ego * MS_TO_MPH, 1),
+    "speedReductionMps": round(speed_reduction, 3),
+    "speedReductionMph": round(speed_reduction * MS_TO_MPH, 1),
+    "achievedToDesiredCurvatureRatio": round(abs(sample.actual_curvature) / desired_curvature, 3),
+  }
+
+
+def feasibility_event_dict(sample: QualitySample) -> dict[str, Any]:
+  data = event_dict(sample)
+  data.update(lateral_feasibility_dict(sample))
   return data
 
 
@@ -248,9 +273,12 @@ def summarize_saturation_bursts(samples: list[QualitySample]) -> dict[str, Any]:
   current_last: QualitySample | None = None
   current_frames = 0
   current_max_error = 0.0
+  current_min_feasible_speed: float | None = None
+  current_max_speed_reduction = 0.0
 
   def close_burst() -> None:
     nonlocal current_key, current_start, current_last, current_frames, current_max_error
+    nonlocal current_min_feasible_speed, current_max_speed_reduction
     if current_key is not None and current_start is not None and current_last is not None and current_frames >= SATURATION_BURST_MIN_FRAMES:
       bursts.append({
         "route": current_key[0],
@@ -262,13 +290,19 @@ def summarize_saturation_bursts(samples: list[QualitySample]) -> dict[str, Any]:
         "startVEgo": round(current_start.v_ego, 3),
         "endVEgo": round(current_last.v_ego, 3),
         "maxLatAccelError": round(current_max_error, 4),
-        "start": event_dict(current_start),
+        "minFeasibleSpeedMps": None if current_min_feasible_speed is None else round(current_min_feasible_speed, 3),
+        "minFeasibleSpeedMph": None if current_min_feasible_speed is None else round(current_min_feasible_speed * MS_TO_MPH, 1),
+        "maxSpeedReductionMps": round(current_max_speed_reduction, 3),
+        "maxSpeedReductionMph": round(current_max_speed_reduction * MS_TO_MPH, 1),
+        "start": feasibility_event_dict(current_start),
       })
     current_key = None
     current_start = None
     current_last = None
     current_frames = 0
     current_max_error = 0.0
+    current_min_feasible_speed = None
+    current_max_speed_reduction = 0.0
 
   for sample in samples:
     key = sample_key(sample)
@@ -283,6 +317,13 @@ def summarize_saturation_bursts(samples: list[QualitySample]) -> dict[str, Any]:
       current_last = sample
       current_frames += 1
       current_max_error = max(current_max_error, abs(sample.lat_accel_error))
+      feasible = lateral_feasibility_dict(sample)
+      feasible_speed = feasible.get("feasibleSpeedMps")
+      speed_reduction = feasible.get("speedReductionMps")
+      if feasible_speed is not None:
+        current_min_feasible_speed = feasible_speed if current_min_feasible_speed is None else min(current_min_feasible_speed, feasible_speed)
+      if speed_reduction is not None:
+        current_max_speed_reduction = max(current_max_speed_reduction, float(speed_reduction))
     else:
       close_burst()
   close_burst()
@@ -315,6 +356,10 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
   ]
   low_speed_saturated_undertrack = [s for s in saturated_undertrack if s.v_ego <= LOW_SPEED_MPS]
   highway_saturated_undertrack = [s for s in saturated_undertrack if s.v_ego >= HIGHWAY_SPEED_MPS]
+  speed_reductions = [
+    lateral_feasibility_dict(s).get("speedReductionMps", 0.0)
+    for s in saturated_undertrack
+  ]
   curvature_errors = [abs(s.curvature_error) for s in lat if s.v_ego >= 3.0]
   highway_curvature_errors = [abs(s.curvature_error) for s in highway_lat]
   lat_accel_errors = [abs(s.lat_accel_error) for s in lat if s.v_ego >= 3.0]
@@ -350,6 +395,8 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
     "saturatedUndertrackFrames": len(saturated_undertrack),
     "lowSpeedSaturatedUndertrackFrames": len(low_speed_saturated_undertrack),
     "highwaySaturatedUndertrackFrames": len(highway_saturated_undertrack),
+    "maxFeasibilitySpeedReductionMps": 0.0 if not speed_reductions else round(max(speed_reductions), 3),
+    "maxFeasibilitySpeedReductionMph": 0.0 if not speed_reductions else round(max(speed_reductions) * MS_TO_MPH, 1),
     "curvatureError": {
       "mean": None if not curvature_errors else round(mean(curvature_errors), 6),
       "p95": None if not curvature_errors else round(percentile(curvature_errors, 95.0), 6),
@@ -371,7 +418,7 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
       "lowSpeedAlerts": [event_dict(s) for s in low_speed_alerts[:12]],
       "strongDriverInterventions": [event_dict(s) for s in driver_interventions[:12]],
       "saturatedTorque": [event_dict(s) for s in saturated[:12]],
-      "saturatedUndertrack": [event_dict(s) for s in saturated_undertrack[:12]],
+      "saturatedUndertrack": [feasibility_event_dict(s) for s in saturated_undertrack[:12]],
     },
   }
 
@@ -393,6 +440,7 @@ def console_summary(report: dict[str, Any]) -> dict[str, Any]:
     "saturatedUndertrackFrames": report["saturatedUndertrackFrames"],
     "lowSpeedSaturatedUndertrackFrames": report["lowSpeedSaturatedUndertrackFrames"],
     "highwaySaturatedUndertrackFrames": report["highwaySaturatedUndertrackFrames"],
+    "maxFeasibilitySpeedReductionMph": report["maxFeasibilitySpeedReductionMph"],
     "saturationBursts": report["saturationBursts"]["totalBursts"],
     "maxSaturationBurstFrames": report["saturationBursts"]["maxFrames"],
     "curvatureErrorP95": report["curvatureError"]["p95"],
