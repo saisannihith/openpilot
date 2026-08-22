@@ -17,7 +17,7 @@ from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 import openpilot.selfdrive.controls.lib.longitudinal_planner as longitudinal_planner_module
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl, LongCtrlState
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
-from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, get_coast_accel, get_vehicle_min_accel, should_publish_planner_fcw, should_guard_carnival_lone_high_speed_red_light, update_carnival_lone_high_speed_red_light_suppression
+from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, get_coast_accel, get_vehicle_min_accel, should_publish_planner_fcw, should_guard_carnival_lone_high_speed_red_light, update_carnival_lone_high_speed_red_light_suppression, get_carnival_red_light_stop_line_decel
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LongitudinalMpc,
   build_model_lead_trajectory,
@@ -110,6 +110,78 @@ def test_carnival_lone_high_speed_red_light_latch_ignores_forcing_stop_only_afte
   suppressed = update_carnival_lone_high_speed_red_light_suppression(CP, 20.0, True, False, False, False, False)
   assert update_carnival_lone_high_speed_red_light_suppression(
     CP, 14.0, True, False, False, True, currently_suppressed=suppressed)
+
+
+def test_carnival_red_light_stop_line_decel_releases_route16_like_stop():
+  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
+
+  stop_line_decel = get_carnival_red_light_stop_line_decel(
+    CP,
+    17.13,
+    True,
+    model_should_stop=False,
+    lead_control_active=False,
+    forcing_stop=False,
+    model_length=52.7,
+  )
+
+  assert stop_line_decel == pytest.approx(2.886, abs=0.01)
+  assert not update_carnival_lone_high_speed_red_light_suppression(
+    CP,
+    17.13,
+    True,
+    model_should_stop=False,
+    lead_control_active=False,
+    forcing_stop=False,
+    model_length=52.7,
+  )
+
+
+def test_carnival_red_light_stop_line_decel_keeps_phantom_red_suppressed():
+  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
+
+  assert get_carnival_red_light_stop_line_decel(
+    CP,
+    31.0,
+    True,
+    model_should_stop=False,
+    lead_control_active=False,
+    forcing_stop=False,
+    model_length=100.0,
+  ) is None
+  assert update_carnival_lone_high_speed_red_light_suppression(
+    CP,
+    31.0,
+    True,
+    model_should_stop=False,
+    lead_control_active=False,
+    forcing_stop=False,
+    model_length=100.0,
+  )
+
+
+def test_carnival_red_light_stop_line_decel_requires_carnival_and_no_lead():
+  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
+  non_carnival = SimpleNamespace(carFingerprint="HONDA_CIVIC")
+
+  assert get_carnival_red_light_stop_line_decel(
+    non_carnival,
+    17.13,
+    True,
+    model_should_stop=False,
+    lead_control_active=False,
+    forcing_stop=False,
+    model_length=52.7,
+  ) is None
+  assert get_carnival_red_light_stop_line_decel(
+    CP,
+    17.13,
+    True,
+    model_should_stop=False,
+    lead_control_active=True,
+    forcing_stop=False,
+    model_length=52.7,
+  ) is None
 
 
 def test_carnival_pre_red_stop_evidence_confirms_yellow_light_approach():
