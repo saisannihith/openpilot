@@ -17,6 +17,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_LENGTH,
   CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_RATIO,
   CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_SPEED,
+  get_carnival_red_light_stop_line_decel,
   LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE,
   update_carnival_lone_high_speed_red_light_suppression,
 )
@@ -407,8 +408,10 @@ def summarize_current_red_light_gate(samples: list[Sample]) -> dict[str, Any]:
     "allowedStrongBrakeFrames": 0,
     "allowedStrongBrakeLongActiveFrames": 0,
     "allowedStrongBrakeLongActiveEnabledFrames": 0,
+    "stopLineEvidenceFrames": 0,
     "suppressedExamples": [],
     "allowedStrongBrakeExamples": [],
+    "stopLineEvidenceExamples": [],
   }
 
   for sample in sorted(samples, key=lambda s: (s.route, s.segment, s.t)):
@@ -418,6 +421,15 @@ def summarize_current_red_light_gate(samples: list[Sample]) -> dict[str, Any]:
       previous_segment = sample.segment
 
     lead_control_active = bool(sample.tracking_lead or sample.lead_status)
+    stop_line_decel = get_carnival_red_light_stop_line_decel(
+      CP,
+      sample.v_ego,
+      sample.red_light,
+      sample.model_should_stop,
+      lead_control_active,
+      sample.forcing_stop,
+      sample.forcing_stop_length,
+    )
     suppressed = update_carnival_lone_high_speed_red_light_suppression(
       CP,
       sample.v_ego,
@@ -439,6 +451,22 @@ def summarize_current_red_light_gate(samples: list[Sample]) -> dict[str, Any]:
       continue
 
     summary["redNoLeadNoModelStopFrames"] += 1
+    if stop_line_decel is not None:
+      summary["stopLineEvidenceFrames"] += 1
+      if len(summary["stopLineEvidenceExamples"]) < 12:
+        summary["stopLineEvidenceExamples"].append({
+          "route": sample.route,
+          "segment": sample.segment,
+          "t": round(sample.t, 2),
+          "vEgo": round(sample.v_ego, 2),
+          "forcingStop": sample.forcing_stop,
+          "forcingStopLength": round(sample.forcing_stop_length, 1),
+          "requiredDecel": round(stop_line_decel, 3),
+          "loggedPlanAccel": round(sample.plan_accel, 3),
+          "loggedCmdAccel": round(sample.cmd_accel, 3),
+          "longActive": sample.long_active,
+          "enabled": sample.enabled,
+        })
     if suppressed:
       summary["currentSuppressedFrames"] += 1
       if sample.plan_accel < cap:

@@ -73,6 +73,13 @@ LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE = 0.45
 LONE_HIGH_SPEED_RED_LIGHT_RELEASE_SPEED_MS = 13.41
 LONE_HIGH_SPEED_RED_LIGHT_RELEASE_MODEL_LENGTH_M = 35.0
 HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_MODEL_LENGTH_M = 160.0
+CARNIVAL_RED_LIGHT_STOP_LINE_MIN_SPEED = 8.0
+CARNIVAL_RED_LIGHT_STOP_LINE_MAX_SPEED = 23.5
+CARNIVAL_RED_LIGHT_STOP_LINE_MIN_LENGTH = 18.0
+CARNIVAL_RED_LIGHT_STOP_LINE_MAX_LENGTH = 95.0
+CARNIVAL_RED_LIGHT_STOP_LINE_MIN_DECEL = 0.95
+CARNIVAL_RED_LIGHT_STOP_LINE_MAX_DECEL = 3.00
+CARNIVAL_RED_LIGHT_STOP_LINE_BRAKE_MARGIN = 0.10
 CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_SPEED = 12.0
 CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_LENGTH = 20.0
 CARNIVAL_PRE_RED_STOP_EVIDENCE_MAX_LENGTH = 200.0
@@ -552,6 +559,34 @@ def get_accel_from_plan(speeds, accels, action_t=DT_MDL, vEgoStopping=0.05):
   return a_target, should_stop
 
 
+def get_carnival_red_light_stop_line_decel(CP, v_ego, red_light, model_should_stop,
+                                           lead_control_active, forcing_stop=False,
+                                           model_length=float("inf")):
+  if (
+    str(getattr(CP, "carFingerprint", "")) != "KIA_CARNIVAL_4TH_GEN" or
+    not red_light or
+    model_should_stop or
+    lead_control_active or
+    forcing_stop or
+    not math.isfinite(float(model_length))
+  ):
+    return None
+
+  v_ego = float(v_ego)
+  model_length = float(model_length)
+  if not (
+    CARNIVAL_RED_LIGHT_STOP_LINE_MIN_SPEED <= v_ego <= CARNIVAL_RED_LIGHT_STOP_LINE_MAX_SPEED and
+    CARNIVAL_RED_LIGHT_STOP_LINE_MIN_LENGTH <= model_length <= CARNIVAL_RED_LIGHT_STOP_LINE_MAX_LENGTH
+  ):
+    return None
+
+  required_decel = (v_ego * v_ego) / (2.0 * max(model_length, 1.0))
+  if not (CARNIVAL_RED_LIGHT_STOP_LINE_MIN_DECEL <= required_decel <= CARNIVAL_RED_LIGHT_STOP_LINE_MAX_DECEL):
+    return None
+
+  return min(required_decel + CARNIVAL_RED_LIGHT_STOP_LINE_BRAKE_MARGIN, CARNIVAL_RED_LIGHT_STOP_LINE_MAX_DECEL)
+
+
 def update_carnival_lone_high_speed_red_light_suppression(CP, v_ego, red_light,
                                                           model_should_stop, lead_control_active,
                                                           forcing_stop=False,
@@ -567,6 +602,9 @@ def update_carnival_lone_high_speed_red_light_suppression(CP, v_ego, red_light,
     forcing_stop and
     float(model_length) <= HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_MODEL_LENGTH_M
   )
+  stop_line_decel = get_carnival_red_light_stop_line_decel(
+    CP, v_ego, red_light, model_should_stop, lead_control_active, forcing_stop, model_length,
+  )
   return bool(
     str(getattr(CP, "carFingerprint", "")) == "KIA_CARNIVAL_4TH_GEN" and
     red_light and
@@ -575,6 +613,7 @@ def update_carnival_lone_high_speed_red_light_suppression(CP, v_ego, red_light,
     not pre_red_stop_evidence and
     not close_red_light_stop_evidence and
     not committed_plausible_stop_evidence and
+    stop_line_decel is None and
     (currently_suppressed or not forcing_stop) and
     (currently_suppressed or float(v_ego) >= LONE_HIGH_SPEED_RED_LIGHT_EVIDENCE_MIN_SPEED)
   )
@@ -3166,6 +3205,20 @@ class LongitudinalPlanner:
       self.a_desired = max(self.a_desired, red_light_floor)
       output_a_target = max(output_a_target, red_light_floor)
       output_should_stop = False
+    else:
+      stop_line_decel = get_carnival_red_light_stop_line_decel(
+        self.CP,
+        scene_v_ego,
+        starpilot_red_light,
+        bool(getattr(sm['modelV2'].action, 'shouldStop', False)),
+        lead_control_active,
+        starpilot_forcing_stop,
+        starpilot_forcing_stop_length,
+      )
+      if stop_line_decel is not None:
+        stop_line_floor = -stop_line_decel
+        self.a_desired = min(self.a_desired, stop_line_floor)
+        output_a_target = min(output_a_target, stop_line_floor)
 
     self.output_a_target = output_a_target
     self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)
