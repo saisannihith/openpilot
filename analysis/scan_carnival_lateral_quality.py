@@ -25,6 +25,8 @@ PING_PONG_MIN_TORQUE_UNITS = 80
 PING_PONG_MAX_INTERVAL_S = 1.2
 CURVATURE_ERROR_WARN = 0.0015
 LAT_ACCEL_ERROR_WARN = 0.35
+SATURATED_UNDERTRACK_LAT_ACCEL_ERROR = 0.35
+SATURATION_BURST_MIN_FRAMES = 20
 
 
 @dataclass
@@ -239,6 +241,61 @@ def summarize_ping_pong(samples: list[QualitySample]) -> dict[str, Any]:
   }
 
 
+def summarize_saturation_bursts(samples: list[QualitySample]) -> dict[str, Any]:
+  bursts: list[dict[str, Any]] = []
+  current_key: tuple[str, int] | None = None
+  current_start: QualitySample | None = None
+  current_last: QualitySample | None = None
+  current_frames = 0
+  current_max_error = 0.0
+
+  def close_burst() -> None:
+    nonlocal current_key, current_start, current_last, current_frames, current_max_error
+    if current_key is not None and current_start is not None and current_last is not None and current_frames >= SATURATION_BURST_MIN_FRAMES:
+      bursts.append({
+        "route": current_key[0],
+        "segment": current_key[1],
+        "startT": round(current_start.t, 3),
+        "endT": round(current_last.t, 3),
+        "durationS": round(max(current_last.t - current_start.t, 0.0), 3),
+        "frames": current_frames,
+        "startVEgo": round(current_start.v_ego, 3),
+        "endVEgo": round(current_last.v_ego, 3),
+        "maxLatAccelError": round(current_max_error, 4),
+        "start": event_dict(current_start),
+      })
+    current_key = None
+    current_start = None
+    current_last = None
+    current_frames = 0
+    current_max_error = 0.0
+
+  for sample in samples:
+    key = sample_key(sample)
+    saturated = sample.lat_active and abs(sample.output_torque_units) >= round(CARNIVAL_STEER_MAX * SATURATED_TORQUE_FRAC)
+    if saturated:
+      if key != current_key:
+        close_burst()
+        current_key = key
+        current_start = sample
+        current_frames = 0
+        current_max_error = 0.0
+      current_last = sample
+      current_frames += 1
+      current_max_error = max(current_max_error, abs(sample.lat_accel_error))
+    else:
+      close_burst()
+  close_burst()
+
+  return {
+    "minFrames": SATURATION_BURST_MIN_FRAMES,
+    "totalBursts": len(bursts),
+    "maxDurationS": None if not bursts else max(b["durationS"] for b in bursts),
+    "maxFrames": 0 if not bursts else max(b["frames"] for b in bursts),
+    "bursts": sorted(bursts, key=lambda b: (-b["frames"], -b["maxLatAccelError"]))[:12],
+  }
+
+
 def summarize(samples: list[QualitySample], commits: list[str], expected_commit: str, log_files: int) -> dict[str, Any]:
   lat = [s for s in samples if s.lat_active]
   enabled_lat = [s for s in lat if s.enabled]
@@ -252,17 +309,24 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
   ]
   near_limit = [s for s in lat if abs(s.output_torque_units) >= round(CARNIVAL_STEER_MAX * NEAR_LIMIT_TORQUE_FRAC)]
   saturated = [s for s in lat if abs(s.output_torque_units) >= round(CARNIVAL_STEER_MAX * SATURATED_TORQUE_FRAC)]
+  saturated_undertrack = [
+    s for s in saturated
+    if s.v_ego >= 3.0 and abs(s.lat_accel_error) >= SATURATED_UNDERTRACK_LAT_ACCEL_ERROR
+  ]
+  low_speed_saturated_undertrack = [s for s in saturated_undertrack if s.v_ego <= LOW_SPEED_MPS]
+  highway_saturated_undertrack = [s for s in saturated_undertrack if s.v_ego >= HIGHWAY_SPEED_MPS]
   curvature_errors = [abs(s.curvature_error) for s in lat if s.v_ego >= 3.0]
   highway_curvature_errors = [abs(s.curvature_error) for s in highway_lat]
   lat_accel_errors = [abs(s.lat_accel_error) for s in lat if s.v_ego >= 3.0]
   highway_lat_accel_errors = [abs(s.lat_accel_error) for s in highway_lat]
   ping_pong = summarize_ping_pong(lat)
+  saturation_bursts = summarize_saturation_bursts(lat)
   matching_commits = [commit for commit in commits if commit == expected_commit]
 
   status = "pass"
   if temp_lat or low_speed_alerts:
     status = "fail"
-  elif driver_interventions or saturated or ping_pong["totalEvents"] > 0:
+  elif driver_interventions or saturated_undertrack or saturated or ping_pong["totalEvents"] > 0:
     status = "warn"
   elif not matching_commits:
     status = "warn"
@@ -283,6 +347,9 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
     "strongDriverInterventionFrames": len(driver_interventions),
     "nearLimitTorqueFrames": len(near_limit),
     "saturatedTorqueFrames": len(saturated),
+    "saturatedUndertrackFrames": len(saturated_undertrack),
+    "lowSpeedSaturatedUndertrackFrames": len(low_speed_saturated_undertrack),
+    "highwaySaturatedUndertrackFrames": len(highway_saturated_undertrack),
     "curvatureError": {
       "mean": None if not curvature_errors else round(mean(curvature_errors), 6),
       "p95": None if not curvature_errors else round(percentile(curvature_errors, 95.0), 6),
@@ -298,11 +365,13 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
       "warnFrames": sum(1 for value in lat_accel_errors if value >= LAT_ACCEL_ERROR_WARN),
     },
     "pingPong": ping_pong,
+    "saturationBursts": saturation_bursts,
     "examples": {
       "tempFaultLatActive": [event_dict(s) for s in temp_lat[:12]],
       "lowSpeedAlerts": [event_dict(s) for s in low_speed_alerts[:12]],
       "strongDriverInterventions": [event_dict(s) for s in driver_interventions[:12]],
       "saturatedTorque": [event_dict(s) for s in saturated[:12]],
+      "saturatedUndertrack": [event_dict(s) for s in saturated_undertrack[:12]],
     },
   }
 
@@ -321,6 +390,11 @@ def console_summary(report: dict[str, Any]) -> dict[str, Any]:
     "strongDriverInterventionFrames": report["strongDriverInterventionFrames"],
     "nearLimitTorqueFrames": report["nearLimitTorqueFrames"],
     "saturatedTorqueFrames": report["saturatedTorqueFrames"],
+    "saturatedUndertrackFrames": report["saturatedUndertrackFrames"],
+    "lowSpeedSaturatedUndertrackFrames": report["lowSpeedSaturatedUndertrackFrames"],
+    "highwaySaturatedUndertrackFrames": report["highwaySaturatedUndertrackFrames"],
+    "saturationBursts": report["saturationBursts"]["totalBursts"],
+    "maxSaturationBurstFrames": report["saturationBursts"]["maxFrames"],
     "curvatureErrorP95": report["curvatureError"]["p95"],
     "curvatureErrorHighwayP95": report["curvatureError"]["highwayP95"],
     "latAccelErrorP95": report["latAccelError"]["p95"],
