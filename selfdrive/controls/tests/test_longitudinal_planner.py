@@ -17,7 +17,7 @@ from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 import openpilot.selfdrive.controls.lib.longitudinal_planner as longitudinal_planner_module
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl, LongCtrlState
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
-from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, get_coast_accel, get_vehicle_min_accel, should_publish_planner_fcw, should_guard_carnival_lone_high_speed_red_light, update_carnival_lone_high_speed_red_light_suppression, get_carnival_red_light_stop_line_decel
+from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, get_coast_accel, get_vehicle_min_accel, should_publish_planner_fcw, should_guard_carnival_lone_high_speed_red_light, update_carnival_lone_high_speed_red_light_suppression, get_carnival_red_light_stop_line_decel, get_carnival_low_speed_stop_context_hold_cap
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LongitudinalMpc,
   build_model_lead_trajectory,
@@ -186,6 +186,31 @@ def test_carnival_red_light_stop_line_decel_requires_carnival_and_no_lead():
     lead_control_active=True,
     forcing_stop=False,
     model_length=52.7,
+  ) is None
+
+
+def test_carnival_low_speed_stop_context_hold_cap_latches_red_or_model_stop():
+  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
+  non_carnival = SimpleNamespace(carFingerprint="HONDA_CIVIC")
+
+  assert get_carnival_low_speed_stop_context_hold_cap(
+    CP, 0.2, -3.5, red_light=True, model_should_stop=False, forcing_stop=False,
+  ) == pytest.approx(-0.45)
+  assert get_carnival_low_speed_stop_context_hold_cap(
+    CP, 0.0, -3.5, red_light=False, model_should_stop=True, forcing_stop=False,
+  ) == pytest.approx(-0.45)
+  assert get_carnival_low_speed_stop_context_hold_cap(
+    CP, 0.0, -3.5, red_light=False, model_should_stop=False, forcing_stop=True,
+  ) == pytest.approx(-0.45)
+
+  assert get_carnival_low_speed_stop_context_hold_cap(
+    CP, 1.4, -3.5, red_light=True, model_should_stop=False, forcing_stop=False,
+  ) is None
+  assert get_carnival_low_speed_stop_context_hold_cap(
+    CP, 0.0, -3.5, red_light=True, model_should_stop=False, forcing_stop=False, driver_gas=True,
+  ) is None
+  assert get_carnival_low_speed_stop_context_hold_cap(
+    non_carnival, 0.0, -3.5, red_light=True, model_should_stop=False, forcing_stop=False,
   ) is None
 
 

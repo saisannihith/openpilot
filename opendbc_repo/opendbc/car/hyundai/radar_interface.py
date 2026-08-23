@@ -306,12 +306,10 @@ class RadarInterface(RadarInterfaceBase):
             v_shadow = decode_carnival_confirmation_velocity(dat, bit_offset, state, state_alt)
             if self.carnival_confirmation_persist >= CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST:
               self.carnival_confirmation_track = (now, d_rel, y_shadow, v_shadow)
-            else:
-              self.carnival_confirmation_track = None
           else:
-            self.carnival_confirmation_track = None
             self.carnival_confirmation_persist = 0
             self.carnival_confirmation_prev = None
+          self._expire_carnival_confirmation_track(now)
 
         for label, start, size, scale in CARNIVAL_4TH_GEN_SHADOW_DISTANCE_FIELDS:
           d_shadow = get_little_unsigned(dat, start, size) * scale
@@ -348,7 +346,7 @@ class RadarInterface(RadarInterfaceBase):
     visual_candidate = confirmation_gate_active
     lead_confirm_candidate = confirmation_gate_active
     confirmation_track = confirmation_gate_active and self.carnival_confirmation_persist >= CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST
-    publish_ready = confirmation_track
+    publish_ready = self.carnival_confirmation_track is not None
     control_ready = False
     cloudlog.warning(
       "Carnival 4th gen radar probe: "
@@ -363,14 +361,22 @@ class RadarInterface(RadarInterfaceBase):
     )
     self.carnival_object_probe_last_log = now
 
+  def _expire_carnival_confirmation_track(self, now):
+    if self.carnival_confirmation_track is None:
+      return
+    track_time, *_ = self.carnival_confirmation_track
+    if now - track_time > CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE:
+      self.carnival_confirmation_track = None
+
   def _add_carnival_confirmation_track(self, rr):
     if self.carnival_confirmation_track is None:
       return
 
-    now, d_rel, y_rel, v_rel = self.carnival_confirmation_track
-    if time.monotonic() - now > CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE:
+    self._expire_carnival_confirmation_track(time.monotonic())
+    if self.carnival_confirmation_track is None:
       return
 
+    _, d_rel, y_rel, v_rel = self.carnival_confirmation_track
     pt = structs.RadarData.RadarPoint()
     pt.trackId = CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID
     pt.measured = True

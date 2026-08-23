@@ -91,6 +91,8 @@ CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_BRAKE = 0.75
 CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_DROP = 15.0
 CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_RATIO = 0.35
 CARNIVAL_PRE_RED_STOP_EVIDENCE_HOLD_TIME = 3.0
+CARNIVAL_LOW_SPEED_STOP_CONTEXT_HOLD_MAX_EGO_SPEED = 1.2
+CARNIVAL_LOW_SPEED_STOP_CONTEXT_HOLD_MIN_BRAKE = 0.45
 RAW_LEAD_SAFETY_MIN_CLOSING_SPEED = 0.5
 RAW_LEAD_SAFETY_TTC = 7.0
 RAW_LEAD_SAFETY_DISTANCE = 40.0
@@ -657,6 +659,20 @@ def get_carnival_red_light_stop_line_decel(CP, v_ego, red_light, model_should_st
     return None
 
   return min(required_decel + CARNIVAL_RED_LIGHT_STOP_LINE_BRAKE_MARGIN, CARNIVAL_RED_LIGHT_STOP_LINE_MAX_DECEL)
+
+
+def get_carnival_low_speed_stop_context_hold_cap(CP, v_ego, accel_min, red_light,
+                                                 model_should_stop, forcing_stop,
+                                                 driver_gas=False):
+  if str(getattr(CP, "carFingerprint", "")) != "KIA_CARNIVAL_4TH_GEN":
+    return None
+  if driver_gas or float(v_ego) > CARNIVAL_LOW_SPEED_STOP_CONTEXT_HOLD_MAX_EGO_SPEED:
+    return None
+  if not (red_light or model_should_stop or forcing_stop):
+    return None
+
+  brake_floor = -CARNIVAL_LOW_SPEED_STOP_CONTEXT_HOLD_MIN_BRAKE
+  return brake_floor if accel_min >= 0.0 else max(float(accel_min), brake_floor)
 
 
 def update_carnival_lone_high_speed_red_light_suppression(CP, v_ego, red_light,
@@ -3346,6 +3362,20 @@ class LongitudinalPlanner:
         stop_line_floor = -stop_line_decel
         self.a_desired = min(self.a_desired, stop_line_floor)
         output_a_target = min(output_a_target, stop_line_floor)
+
+    low_speed_stop_context_hold_cap = get_carnival_low_speed_stop_context_hold_cap(
+      self.CP,
+      scene_v_ego,
+      output_accel_min,
+      starpilot_red_light,
+      bool(getattr(sm['modelV2'].action, 'shouldStop', False)),
+      starpilot_forcing_stop,
+      bool(getattr(sm['carState'], 'gasPressed', False)) or bool(getattr(sm['starpilotCarState'], 'accelPressed', False)),
+    )
+    if low_speed_stop_context_hold_cap is not None:
+      self.a_desired = min(self.a_desired, low_speed_stop_context_hold_cap)
+      output_a_target = min(output_a_target, low_speed_stop_context_hold_cap)
+      output_should_stop = True
 
     self.output_a_target = output_a_target
     self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)
