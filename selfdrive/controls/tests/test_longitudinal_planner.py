@@ -2584,7 +2584,6 @@ def test_carnival_radar_confirmed_stop_hold_latches_confirmation_track():
     v_ego=1.9,
     accel_min=-2.0,
     driver_gas=False,
-    release_ready=False,
   )
 
   assert planner.carnival_radar_stop_hold_active
@@ -2597,7 +2596,6 @@ def test_carnival_radar_confirmed_stop_hold_latches_confirmation_track():
     v_ego=0.4,
     accel_min=-2.0,
     driver_gas=False,
-    release_ready=False,
   )
 
   assert planner.carnival_radar_stop_hold_active
@@ -2608,7 +2606,6 @@ def test_carnival_radar_confirmed_stop_hold_latches_confirmation_track():
     v_ego=0.4,
     accel_min=-2.0,
     driver_gas=True,
-    release_ready=False,
   )
 
   assert not planner.carnival_radar_stop_hold_active
@@ -2642,7 +2639,6 @@ def test_carnival_radar_confirmed_stop_hold_rejects_false_contexts():
       v_ego=case.get("v_ego", 1.9),
       accel_min=-2.0,
       driver_gas=False,
-      release_ready=False,
     )
     assert cap is None
     assert not planner.carnival_radar_stop_hold_active
@@ -2660,7 +2656,6 @@ def test_carnival_radar_confirmed_stop_hold_clears_on_departure():
     v_ego=1.9,
     accel_min=-2.0,
     driver_gas=False,
-    release_ready=False,
   ) is not None
 
   departing_lead = make_lead(status=True, d_rel=11.5, v_lead=2.2, a_lead=0.4, radar=False, model_prob=0.99, y_rel=-0.1)
@@ -2669,7 +2664,6 @@ def test_carnival_radar_confirmed_stop_hold_clears_on_departure():
     v_ego=2.0,
     accel_min=-2.0,
     driver_gas=False,
-    release_ready=False,
   )
   assert cap is None
   assert not planner.carnival_radar_stop_hold_active
@@ -2687,7 +2681,6 @@ def test_carnival_radar_confirmed_stop_hold_releases_for_confirmed_departure_wit
     v_ego=1.9,
     accel_min=-2.0,
     driver_gas=False,
-    release_ready=False,
   ) is not None
   assert planner.carnival_radar_stop_hold_active
 
@@ -2698,7 +2691,17 @@ def test_carnival_radar_confirmed_stop_hold_releases_for_confirmed_departure_wit
     v_ego=0.2,
     accel_min=-2.0,
     driver_gas=False,
-    release_ready=True,
+  )
+  assert cap is not None
+  assert planner.carnival_radar_stop_hold_active
+
+  departing_lead = make_lead(status=True, d_rel=8.2, v_lead=1.4, a_lead=0.2, radar=True, model_prob=1.0, y_rel=-0.1)
+  departing_lead.radarTrackId = 0xC4101
+  cap = planner.get_carnival_radar_stop_hold_cap(
+    (departing_lead, make_lead(status=False)),
+    v_ego=0.2,
+    accel_min=-2.0,
+    driver_gas=False,
   )
   assert cap is None
   assert not planner.carnival_radar_stop_hold_active

@@ -1965,7 +1965,10 @@ class LongitudinalPlanner:
 
     hold_leads = [
       lead for lead in centered_leads
-      if stopped_close(lead, CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_DISTANCE, CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_EGO_SPEED)
+      if (
+        float(v_ego) <= CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_EGO_SPEED and
+        float(getattr(lead, "dRel", float("inf"))) <= CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_DISTANCE
+      )
     ]
     if not hold_leads:
       self.carnival_radar_stop_hold_active = False
