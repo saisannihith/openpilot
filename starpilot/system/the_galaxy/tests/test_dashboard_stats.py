@@ -212,7 +212,42 @@ def _install_server_import_stubs():
       },
     ),
     FAVORITE_SLOTS_PARAM="FavoriteSlots",
+    SETTINGS_CATALOG_PATH=MODULE_DIR.parents[1] / "common/assets/device_settings_layout.json",
+    build_favorite_slot_options=lambda *args, **kwargs: [
+      {
+        "key": "__starpilot_favorite_action__:distance_decrease",
+        "label": "Distance - / SET",
+        "description": "Acts like a short press of the car's SET/- cruise button.",
+        "section": "Actions",
+        "action": "decelCruise",
+      },
+      {
+        "key": "__starpilot_favorite_action__:distance_increase",
+        "label": "Distance + / RES",
+        "description": "Acts like a short press of the car's RES/+ cruise button.",
+        "section": "Actions",
+        "action": "accelCruise",
+      },
+    ],
+    filter_favorite_slot_options=lambda options, capabilities=None: [
+      dict(option)
+      for option in options
+      if not option.get("requiresCapability") or (capabilities or {}).get(option["requiresCapability"], False)
+    ],
+    get_favorite_values=lambda items, params=None: {
+      (item if isinstance(item, str) else item.get("key")): (
+        bool(params.get_bool(item if isinstance(item, str) else item.get("key")))
+        if params is not None and hasattr(params, "get_bool")
+        else False
+      )
+      for item in items
+      if (item if isinstance(item, str) else (isinstance(item, dict) and item.get("key")))
+      and not str(item if isinstance(item, str) else item.get("key", "")).startswith("__starpilot_favorite_action__:")
+    },
     is_favorite_action_key=lambda key: str(key or "").startswith("__starpilot_favorite_action__:"),
+    load_settings_catalog=lambda layout_path=None: json.loads(
+      (Path(layout_path) if layout_path else MODULE_DIR.parents[1] / "common/assets/device_settings_layout.json").read_text()
+    ),
     normalize_favorite_slots=lambda *args, **kwargs: "",
     trigger_favorite_action=_trigger_stub_favorite_action,
   )
@@ -1634,6 +1669,27 @@ def test_clear_generated_build_state_preserves_prebuilts_and_user_data(tmp_path)
   assert not (tmp_path / "cereal" / "gen").exists()
   assert prebuilt.read_text() == "test"
   assert user_model.read_text() == "test"
+
+
+def test_sentry_notification_rate_limit_persists_and_expires(monkeypatch, tmp_path):
+  server = _load_server_module()
+  rate_limit_path = tmp_path / "sentry_notification_rate_limit.json"
+  now = [1000.0]
+  monkeypatch.setattr(server, "_sentry_notification_rate_limit_path", lambda: rate_limit_path)
+  monkeypatch.setattr(server.time, "time", lambda: now[0])
+  server._SENTRY_NOTIFICATION_LAST_AT = None
+  event = {"eventId": "event-1"}
+
+  assert server._claim_sentry_notification_slot(event) is True
+  assert rate_limit_path.exists()
+  server._SENTRY_NOTIFICATION_LAST_AT = None
+  assert server._claim_sentry_notification_slot({"eventId": "event-2"}) is False
+
+  now[0] += server.SENTRY_NOTIFICATION_RATE_LIMIT_SECONDS - 0.1
+  assert server._claim_sentry_notification_slot({"eventId": "event-3"}) is False
+
+  now[0] += 0.1
+  assert server._claim_sentry_notification_slot({"eventId": "event-4"}) is True
 
 
 def test_troubleshoot_steer_delay_normalizes_vehicle_delay_for_display():

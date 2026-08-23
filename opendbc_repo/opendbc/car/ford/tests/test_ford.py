@@ -1,12 +1,17 @@
 import random
 from collections.abc import Iterable
+from types import SimpleNamespace
 
 from hypothesis import settings, given, strategies as st
 from parameterized import parameterized
 
+from opendbc.car import gen_empty_fingerprint
+from opendbc.can import CANPacker
+from opendbc.car.ford import fordcan
 from opendbc.car.structs import CarParams
 from opendbc.car.fw_versions import build_fw_dict
-from opendbc.car.ford.values import CAR, FW_QUERY_CONFIG, FW_PATTERN, get_platform_codes, match_vin_to_car
+from opendbc.car.ford.interface import CarInterface
+from opendbc.car.ford.values import CAR, FW_QUERY_CONFIG, FW_PATTERN, FordSafetyFlags, get_platform_codes, match_vin_to_car
 from opendbc.car.ford.fingerprints import FW_VERSIONS
 
 Ecu = CarParams.Ecu
@@ -154,3 +159,45 @@ class TestFordFW:
     live_fw[(0x760, None)] = {b"M1MC-2D053-XX\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"}
     candidates = FW_QUERY_CONFIG.match_fw_to_car_fuzzy(live_fw, '', {expected_fingerprint: offline_fw})
     assert len(candidates) == 0, "Should not match new model year hint"
+
+
+def test_mach_e_longitudinal_toggle_controls_stock_acc_selection():
+  stock = CarInterface.get_params(
+    CAR.FORD_MUSTANG_MACH_E_MK1, gen_empty_fingerprint(), [], False, False, False, None)
+  enhanced = CarInterface.get_params(
+    CAR.FORD_MUSTANG_MACH_E_MK1, gen_empty_fingerprint(), [], True, False, False, None)
+
+  assert stock.alphaLongitudinalAvailable
+  assert not stock.openpilotLongitudinalControl
+  assert stock.pcmCruise
+  assert not (stock.safetyConfigs[-1].safetyParam & FordSafetyFlags.LONG_CONTROL)
+
+  assert enhanced.alphaLongitudinalAvailable
+  assert enhanced.openpilotLongitudinalControl
+  assert enhanced.safetyConfigs[-1].safetyParam & FordSafetyFlags.LONG_CONTROL
+
+
+def test_hands_free_cluster_status_is_opt_in():
+  packer = CANPacker("ford_lincoln_base_pt")
+  CAN = SimpleNamespace(main=0)
+  CP = SimpleNamespace(openpilotLongitudinalControl=False)
+  hud = SimpleNamespace(leftLaneDepart=False, rightLaneDepart=False)
+  stock_values = dict.fromkeys([
+    "HaDsply_No_Cs", "HaDsply_No_Cnt", "AccStopStat_D_Dsply", "AccTrgDist2_D_Dsply",
+    "AccStopRes_B_Dsply", "TjaWarn_D_Rq", "TjaMsgTxt_D_Dsply", "IaccLamp_D_Rq",
+    "AccMsgTxt_D2_Rq", "FcwDeny_B_Dsply", "FcwMemStat_B_Actl", "AccTGap_B_Dsply",
+    "CadsAlignIncplt_B_Actl", "AccFllwMde_B_Dsply", "CadsRadrBlck_B_Actl",
+    "CmbbPostEvnt_B_Dsply", "AccStopMde_B_Dsply", "FcwMemSens_D_Actl",
+    "FcwMsgTxt_D_Rq", "AccWarn_D_Dsply", "FcwVisblWarn_B_Rq", "FcwAudioWarn_B_Rq",
+    "AccTGap_D_Dsply", "AccMemEnbl_B_RqDrv", "FdaMem_B_Stat",
+  ], 0)
+
+  regular = fordcan.create_acc_ui_msg(
+    packer, CAN, CP, True, True, False, False, False, hud, stock_values)
+  hands_free = fordcan.create_acc_ui_msg(
+    packer, CAN, CP, True, True, False, False, False, hud, stock_values, True)
+  expected_regular = packer.make_can_msg("ACCDATA_3", 0, {"Tja_D_Stat": 2})
+  expected_hands_free = packer.make_can_msg("ACCDATA_3", 0, {"Tja_D_Stat": 7})
+
+  assert regular == expected_regular
+  assert hands_free == expected_hands_free

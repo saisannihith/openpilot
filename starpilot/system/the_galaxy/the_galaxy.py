@@ -81,9 +81,13 @@ from openpilot.starpilot.common.longitudinal_mode import (
   set_openpilot_long_disabled,
 )
 from openpilot.starpilot.common.favorite_slots import (
-  FAVORITE_ACTION_OPTIONS,
   FAVORITE_SLOTS_PARAM,
+  SETTINGS_CATALOG_PATH,
+  build_favorite_slot_options,
+  filter_favorite_slot_options,
+  get_favorite_values,
   is_favorite_action_key,
+  load_settings_catalog,
   normalize_favorite_slots,
   trigger_favorite_action,
 )
@@ -115,6 +119,7 @@ LEGACY_LATERAL_METHOD_API_PREFIX = "/api/" + "".join(("f", "t", "m"))
 VASM_CONFIGURATION_KEYS = {"VASMEnabled", "VASMConfidenceThreshold", "VASMSmoothSeconds", "VASMAnnotationConfig"}
 PIP_PREVIEW_CONFIGURATION_KEYS = {"PIPPreviewEnabled", "PIPPreviewMask", "PIPPreviewShowOnBlinker", "PIPPreviewShowOnBSM"}
 MODEL_SMOOTHING_KEYS = {"LatSmoothSeconds", "LongSmoothSeconds"}
+GALAXY_DEVELOPER_ONLY_KEYS = {"TurnSteeringLimitMuteSpeed"}
 PULSE_GLIDE_BUTTON_KEYS = {
   "CancelButtonControl", "DistanceButtonControl",
   "LongCancelButtonControl", "LongDistanceButtonControl",
@@ -126,6 +131,7 @@ SENTRY_NUMERIC_PARAM_BOUNDS = {
   "SentryModeSensitivity": (0.005, 1.0),
   "SentryModeWarningTime": (0.1, 10.0),
 }
+SENTRY_NOTIFICATION_RATE_LIMIT_SECONDS = 180.0
 
 GALAXY_DEPS_PATH = "/data/galaxy_deps"
 LEGACY_GALAXY_DEPS_PATH = "/data/" + "".join(chr(code) for code in (112, 111, 110, 100)) + "_deps"
@@ -548,6 +554,116 @@ def _sentry_event_roots() -> tuple[Path, ...]:
   return tuple(root.resolve() for root in roots)
 
 
+_SENTRY_EVENT_INDEX_NAME = "events.json"
+_SENTRY_EVENT_INDEX_LOCK = threading.Lock()
+
+
+def _sentry_event_index_path() -> Path:
+  return _sentry_event_roots()[0] / _SENTRY_EVENT_INDEX_NAME
+
+
+def _load_sentry_event_catalog_unlocked() -> list[dict]:
+  index_path = _sentry_event_index_path()
+  try:
+    raw_events = json.loads(index_path.read_text())
+  except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    return []
+
+  if not isinstance(raw_events, list):
+    return []
+
+  events = []
+  for raw_event in raw_events:
+    event = _normalize_sentry_event(raw_event)
+    if event is not None:
+      events.append(event)
+  return events
+
+
+def _save_sentry_event_catalog_unlocked(events: list[dict]) -> None:
+  index_path = _sentry_event_index_path()
+  index_path.parent.mkdir(parents=True, exist_ok=True)
+  temporary_path = index_path.with_suffix(".tmp")
+  temporary_path.write_text(json.dumps(events, separators=(",", ":")))
+  temporary_path.chmod(0o600)
+  temporary_path.replace(index_path)
+
+
+def _stored_sentry_event() -> dict | None:
+  raw_event = params.get("SentryModeLastEvent", encoding="utf-8") or "{}"
+  try:
+    payload = raw_event if isinstance(raw_event, dict) else json.loads(raw_event)
+  except (TypeError, ValueError, json.JSONDecodeError):
+    return None
+  return _normalize_sentry_event(payload)
+
+
+def _discover_legacy_sentry_events(known_event_ids: set[str]) -> list[dict]:
+  discovered = []
+  for root in _sentry_event_roots():
+    try:
+      directories = sorted(
+        (path for path in root.iterdir() if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+      )
+    except OSError:
+      continue
+
+    for directory in directories:
+      event_id = directory.name
+      if event_id == _SENTRY_LIVE_EVENT_ID or event_id in known_event_ids or len(event_id) > 96:
+        continue
+
+      image_paths = [
+        str(path) for path in (directory / "wide.jpg", directory / "driver.jpg")
+        if path.is_file()
+      ]
+      if not image_paths:
+        continue
+
+      try:
+        detected_at = datetime.fromtimestamp(directory.stat().st_mtime, timezone.utc).isoformat()
+      except OSError:
+        detected_at = ""
+      is_test = event_id.startswith("test-")
+      discovered.append({
+        "eventId": event_id,
+        "kind": "alarm" if is_test else "warning",
+        "detectedAt": detected_at,
+        "message": "Test sentry event." if is_test else "Movement detected while parked.",
+        "imagePaths": image_paths,
+      })
+      known_event_ids.add(event_id)
+  return discovered
+
+
+def _sentry_event_catalog() -> list[dict]:
+  with _SENTRY_EVENT_INDEX_LOCK:
+    events = _load_sentry_event_catalog_unlocked()
+    known_event_ids = {event["eventId"] for event in events}
+    legacy_events = _discover_legacy_sentry_events(known_event_ids)
+    if legacy_events:
+      events.extend(legacy_events)
+    latest_event = _stored_sentry_event()
+    if latest_event is not None and latest_event["eventId"] not in known_event_ids:
+      events.insert(0, latest_event)
+      _save_sentry_event_catalog_unlocked(events)
+    elif legacy_events:
+      _save_sentry_event_catalog_unlocked(events)
+    return events
+
+
+def _record_sentry_event(event: dict) -> None:
+  with _SENTRY_EVENT_INDEX_LOCK:
+    events = _load_sentry_event_catalog_unlocked()
+    known_event_ids = {existing["eventId"] for existing in events}
+    events.extend(_discover_legacy_sentry_events(known_event_ids))
+    events = [existing for existing in events if existing.get("eventId") != event["eventId"]]
+    events.insert(0, event)
+    _save_sentry_event_catalog_unlocked(events)
+
+
 def _safe_sentry_image_paths(raw_paths) -> list[str]:
   if not isinstance(raw_paths, list):
     return []
@@ -678,6 +794,8 @@ def _capture_sentry_live_images() -> list[str]:
 
 
 _SENTRY_PUSH_LOCK = threading.Lock()
+_SENTRY_NOTIFICATION_RATE_LIMIT_LOCK = threading.Lock()
+_SENTRY_NOTIFICATION_LAST_AT: float | None = None
 _SENTRY_PUSH_PRIVATE_KEY_NAME = "sentry_vapid_private.pem"
 _SENTRY_PUSH_SUBSCRIPTIONS_NAME = "sentry_push_subscriptions.json"
 _SENTRY_PUSH_SUBJECT = os.getenv("STARPILOT_VAPID_SUBJECT", "mailto:galaxy@firestar.link")
@@ -800,6 +918,61 @@ def _sentry_notification_channels() -> dict[str, bool]:
   }
 
 
+def _sentry_notification_rate_limit_path() -> Path:
+  return _get_galaxy_dir() / "sentry_notification_rate_limit.json"
+
+
+def _load_sentry_notification_last_at() -> float | None:
+  try:
+    payload = json.loads(_sentry_notification_rate_limit_path().read_text())
+    value = float(payload.get("lastNotificationAt")) if isinstance(payload, dict) else None
+  except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    return None
+  return value if value is not None and math.isfinite(value) else None
+
+
+def _claim_sentry_notification_slot(event: dict) -> bool:
+  """Reserve the shared notification slot for a real Sentry event."""
+  global _SENTRY_NOTIFICATION_LAST_AT
+
+  now = time.time()
+  with _SENTRY_NOTIFICATION_RATE_LIMIT_LOCK:
+    persisted_last_at = _load_sentry_notification_last_at()
+    last_at = max(
+      (value for value in (_SENTRY_NOTIFICATION_LAST_AT, persisted_last_at) if value is not None),
+      default=None,
+    )
+    if last_at is not None:
+      elapsed = max(0.0, now - last_at)
+      if elapsed < SENTRY_NOTIFICATION_RATE_LIMIT_SECONDS:
+        remaining = SENTRY_NOTIFICATION_RATE_LIMIT_SECONDS - elapsed
+        cloudlog.info(
+          "Galaxy: Sentry notification suppressed by rate limit (%.0f seconds remaining; event=%s)",
+          remaining,
+          event.get("eventId", ""),
+        )
+        return False
+
+    _SENTRY_NOTIFICATION_LAST_AT = now
+    rate_limit_path = _sentry_notification_rate_limit_path()
+    temporary_path = rate_limit_path.with_suffix(".tmp")
+    try:
+      rate_limit_path.parent.mkdir(parents=True, exist_ok=True)
+      temporary_path.write_text(json.dumps({
+        "lastNotificationAt": now,
+        "eventId": str(event.get("eventId") or ""),
+      }, separators=(",", ":")))
+      temporary_path.chmod(0o600)
+      temporary_path.replace(rate_limit_path)
+    except OSError:
+      cloudlog.warning("Galaxy: unable to persist Sentry notification rate-limit state")
+      try:
+        temporary_path.unlink(missing_ok=True)
+      except OSError:
+        pass
+    return True
+
+
 def _sentry_test_notification_event() -> dict:
   return {
     "eventId": f"notification-test-{int(time.time())}-{secrets.token_hex(4)}",
@@ -860,7 +1033,12 @@ def _dispatch_sentry_push(event: dict) -> None:
       ])
 
 
-def _dispatch_sentry_event(event: dict) -> None:
+def _dispatch_sentry_event(event: dict, *, bypass_rate_limit: bool = False) -> None:
+  if not any(_sentry_notification_channels().values()):
+    return
+  if not bypass_rate_limit and not _claim_sentry_notification_slot(event):
+    return
+
   _dispatch_sentry_push(event)
   message = f"🚨 StarPilot Sentry Mode: {event['message']}"
   webhook = (params.get("SentryModeWebhook", encoding="utf-8") or "").strip()
@@ -2790,18 +2968,16 @@ _favorite_slot_options = None
 def _get_layout_param_metadata():
   global _layout_param_metadata
   if _layout_param_metadata is None:
-    try:
-      layout_path = os.path.join(os.path.dirname(__file__), "assets", "components", "tools", "device_settings_layout.json")
-      with open(layout_path) as f:
-        layout_data = json.load(f)
+    layout_data = load_settings_catalog()
+    if layout_data is None:
+      _layout_param_metadata = {}
+    else:
       _layout_param_metadata = {
         p["key"]: p
         for section in layout_data
         for p in section.get("params", [])
-        if "key" in p
+        if isinstance(p, dict) and "key" in p
       }
-    except Exception:
-      _layout_param_metadata = {}
   return _layout_param_metadata
 
 def _get_layout_type_overrides():
@@ -2820,65 +2996,24 @@ def _get_favorite_slot_options():
   if _favorite_slot_options is not None:
     return _favorite_slot_options
 
-  allowed_keys, value_types = _get_param_type_info()
-  options = []
-  options.extend(dict(option) for option in FAVORITE_ACTION_OPTIONS)
-  try:
-    layout_path = os.path.join(os.path.dirname(__file__), "assets", "components", "tools", "device_settings_layout.json")
-    with open(layout_path) as f:
-      layout_data = json.load(f)
-
-    seen = set()
-    for section in layout_data:
-      section_name = section.get("name", "")
-      for param_data in section.get("params", []):
-        key = str(param_data.get("key") or "").strip()
-        if not key or key in seen:
-          continue
-        if key not in allowed_keys or value_types.get(key) is not bool:
-          continue
-        if param_data.get("ui_type") != "toggle" or param_data.get("data_type") != "bool":
-          continue
-        if key == "AlphaLongitudinalEnabled" and not _get_alpha_longitudinal_available():
-          continue
-
-        seen.add(key)
-        options.append({
-          "key": key,
-          "label": str(param_data.get("label") or key),
-          "description": str(param_data.get("description") or ""),
-          "section": section_name,
-          "requiresCapability": str(param_data.get("requires_capability") or ""),
-        })
-  except Exception:
-    options = []
-
-  options.sort(key=lambda option: (str(option.get("label") or option.get("key") or "").casefold(), str(option.get("key") or "").casefold()))
-  _favorite_slot_options = options
+  allowed_keys, _value_types = _get_param_type_info()
+  _favorite_slot_options = build_favorite_slot_options(
+    lambda key: key in allowed_keys,
+    alpha_longitudinal_available=_get_alpha_longitudinal_available(),
+  )
   return _favorite_slot_options
 
 def _get_available_favorite_slot_options():
-  capabilities = {
-    "HasRivianAngleHarness": _get_has_rivian_angle_harness(),
-  }
-  return [
-    option for option in _get_favorite_slot_options()
-    if not option.get("requiresCapability") or capabilities.get(option["requiresCapability"], False)
-  ]
+  return filter_favorite_slot_options(
+    _get_favorite_slot_options(),
+    {"HasRivianAngleHarness": _get_has_rivian_angle_harness()},
+  )
 
 def _favorite_slot_values(options):
-  return {
-    option["key"]: _safe_params_get_bool(option["key"])
-    for option in options
-    if option.get("key") and not is_favorite_action_key(option.get("key"))
-  }
+  return get_favorite_values(options, params)
 
 def _configured_favorite_slot_values(slots):
-  return {
-    slot["key"]: _safe_params_get_bool(slot["key"])
-    for slot in slots
-    if slot.get("key") and not is_favorite_action_key(slot.get("key"))
-  }
+  return get_favorite_values(slots, params)
 
 _cached_allowed_keys = None
 _cached_param_types = None
@@ -4522,6 +4657,12 @@ def setup(app):
     response.headers["Expires"] = "0"
     return response
 
+  @app.route("/assets/components/tools/device_settings_layout.json", methods=["GET"])
+  def device_settings_layout_asset():
+    if not SETTINGS_CATALOG_PATH.is_file():
+      return "Settings catalog not found", 404
+    return send_file(str(SETTINGS_CATALOG_PATH), mimetype="application/json")
+
   @app.route("/manifest.json", methods=["GET"])
   @app.route("/assets/manifest.json", methods=["GET"])
   def manifest():
@@ -4933,6 +5074,9 @@ def setup(app):
       if key == "PulseGlideSpeedDelta" or (key in PULSE_GLIDE_BUTTON_KEYS and str_val.strip() == str(BUTTON_FUNCTIONS["PULSE_AND_GLIDE"])):
         if not params.get_bool("GalaxyDeveloperMode"):
           return jsonify({"error": "Pulse and Glide is available only with Galaxy Developer Mode enabled."}), 403
+
+      if key in GALAXY_DEVELOPER_ONLY_KEYS and not params.get_bool("GalaxyDeveloperMode"):
+        return jsonify({"error": f"{key} is available only with Galaxy Developer Mode enabled."}), 403
 
       if key in SENTRY_NUMERIC_PARAM_BOUNDS:
         minimum, maximum = SENTRY_NUMERIC_PARAM_BOUNDS[key]
@@ -7168,6 +7312,7 @@ def setup(app):
     threading.Thread(
       target=_dispatch_sentry_event,
       args=(event,),
+      kwargs={"bypass_rate_limit": True},
       name="galaxy-sentry-notification-test",
       daemon=True,
     ).start()
@@ -7179,21 +7324,25 @@ def setup(app):
 
   @app.route("/api/sentry/status", methods=["GET"])
   def sentry_status():
-    raw_event = params.get("SentryModeLastEvent", encoding="utf-8") or "{}"
     raw_status = params.get("SentryModeStatus", encoding="utf-8") or "{}"
-    try:
-      last_event = json.loads(raw_event)
-    except (TypeError, ValueError, json.JSONDecodeError):
-      last_event = {}
     try:
       status = json.loads(raw_status)
     except (TypeError, ValueError, json.JSONDecodeError):
       status = {}
 
+    events = _sentry_event_catalog()
+    last_event = events[0] if events else {}
+
     return jsonify({
       "enabled": params.get_bool("SentryModeEnabled"),
       "status": status if isinstance(status, dict) else {},
-      "lastEvent": _public_sentry_event(last_event) if isinstance(last_event, dict) else {},
+      "lastEvent": _public_sentry_event(last_event),
+    })
+
+  @app.route("/api/sentry/events", methods=["GET"])
+  def get_sentry_events():
+    return jsonify({
+      "events": [_public_sentry_event(event) for event in _sentry_event_catalog()],
     })
 
   @app.route("/api/sentry/events/<event_id>", methods=["DELETE"])
@@ -7203,6 +7352,8 @@ def setup(app):
     if not event_id or event_id in {".", ".."} or Path(event_id).name != event_id:
       return jsonify({"error": "Invalid Sentry event ID."}), 400
 
+    _sentry_event_catalog()
+
     deleted_storage = False
     for root in _sentry_event_roots():
       directory = (root / event_id).resolve()
@@ -7211,18 +7362,23 @@ def setup(app):
       shutil.rmtree(directory)
       deleted_storage = True
 
-    raw_event = params.get("SentryModeLastEvent", encoding="utf-8") or "{}"
-    try:
-      current_event = raw_event if isinstance(raw_event, dict) else json.loads(raw_event)
-    except (TypeError, ValueError, json.JSONDecodeError):
-      current_event = {}
+    current_event = _stored_sentry_event()
+    current_event_deleted = current_event is not None and current_event.get("eventId") == event_id
+    with _SENTRY_EVENT_INDEX_LOCK:
+      events = _load_sentry_event_catalog_unlocked()
+      retained_events = [event for event in events if event.get("eventId") != event_id]
+      catalog_deleted = len(retained_events) != len(events)
+      if catalog_deleted:
+        _save_sentry_event_catalog_unlocked(retained_events)
 
-    cleared_latest = isinstance(current_event, dict) and str(current_event.get("eventId") or "") == event_id
-    if cleared_latest:
-      params.remove("SentryModeLastEvent")
-
-    if not deleted_storage and not cleared_latest:
+    if not deleted_storage and not catalog_deleted:
       return jsonify({"error": "Sentry event not found."}), 404
+
+    if current_event_deleted:
+      if retained_events:
+        params.put("SentryModeLastEvent", json.dumps(retained_events[0], separators=(",", ":")))
+      else:
+        params.remove("SentryModeLastEvent")
 
     return jsonify({"deleted": True, "eventId": event_id})
 
@@ -7268,8 +7424,15 @@ def setup(app):
 
     def capture_and_publish():
       event["imagePaths"] = _capture_sentry_test_images(event_id)
+      _record_sentry_event(event)
       params.put("SentryModeLastEvent", json.dumps(event, separators=(",", ":")))
-      threading.Thread(target=_dispatch_sentry_event, args=(event,), name="galaxy-sentry-test-notify", daemon=True).start()
+      threading.Thread(
+        target=_dispatch_sentry_event,
+        args=(event,),
+        kwargs={"bypass_rate_limit": True},
+        name="galaxy-sentry-test-notify",
+        daemon=True,
+      ).start()
 
     threading.Thread(target=capture_and_publish, name="galaxy-sentry-test-capture", daemon=True).start()
     return jsonify({"accepted": True, "eventId": event_id}), 202
@@ -7283,6 +7446,7 @@ def setup(app):
     if event is None:
       return jsonify({"error": "Invalid sentry event."}), 400
 
+    _record_sentry_event(event)
     params.put("SentryModeLastEvent", json.dumps(event, separators=(",", ":")))
     if request.args.get("blocking") == "1":
       _dispatch_sentry_event(event)

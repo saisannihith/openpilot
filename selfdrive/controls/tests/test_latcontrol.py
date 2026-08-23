@@ -44,6 +44,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import (
   get_gmc_yukon_cc_ff_scale,
   get_ram_1500_center_output_scale,
   get_ram_1500_transition_output_scale,
+  get_ram_1500_unwind_output_scale,
   get_ram_1500_ff_scale,
   get_rav4_tss2_pid_output,
   get_subaru_impreza_pid_output_scale,
@@ -87,6 +88,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   get_genesis_gv70_friction_threshold,
   get_genesis_gv70_high_speed_error_scale,
   get_genesis_gv70_unwind_ff_scale,
+  get_honda_accord_ff_scale,
   get_elantra_non_scc_ff_scale,
   get_honda_accord_steer_ratio_scale,
   get_palisade_ff_scale,
@@ -113,6 +115,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   get_toyota_highlander_tss2_ff_scale,
   get_toyota_highlander_tss2_friction_scale,
   get_toyota_highlander_tss2_friction_threshold,
+  get_toyota_highlander_tss2_output_taper_scale,
   get_toyota_corolla_tss2_center_output_scale,
   get_toyota_corolla_tss2_ff_scale,
   get_lexus_is_ff_scale,
@@ -1044,6 +1047,13 @@ class TestLatControl:
     assert 0.90 < unwind_scale < 1.0
     assert turn_scale == pytest.approx(1.0)
 
+    unwind_output = get_toyota_highlander_tss2_output_taper_scale(0.8, -0.8, 9.0)
+    turn_output = get_toyota_highlander_tss2_output_taper_scale(0.8, 0.8, 9.0)
+    highway_output = get_toyota_highlander_tss2_output_taper_scale(0.8, -0.8, 28.0)
+    assert 0.80 < unwind_output < 1.0
+    assert turn_output == pytest.approx(1.0)
+    assert highway_output > unwind_output
+
   def test_rav4_prime_forced_torque_update_path(self, monkeypatch):
     controller, VM, CS, params, starpilot_toggles = self._build_torque_controller(TOYOTA.TOYOTA_RAV4_PRIME, force_torque=True)
     CS.vEgo = 13.0
@@ -1081,6 +1091,18 @@ class TestLatControl:
     assert highway > center
     assert crawl > center
     assert center > 0.85
+
+  def test_ram_1500_unwind_output_taper_is_high_speed_and_phase_gated(self):
+    turn_in = get_ram_1500_unwind_output_scale(1.2, 1.1, 25.0)
+    low_speed = get_ram_1500_unwind_output_scale(1.2, -1.1, 15.0)
+    high_speed = get_ram_1500_unwind_output_scale(1.2, -1.1, 25.0)
+    sharp_reversal = get_ram_1500_unwind_output_scale(2.4, -2.0, 29.0)
+
+    assert turn_in == pytest.approx(1.0)
+    assert low_speed == pytest.approx(1.0)
+    assert 0.95 < high_speed < 1.0
+    assert sharp_reversal < high_speed
+    assert sharp_reversal > 0.80
 
   def test_ram_1500_phase_feedforward_curve(self):
     assert get_ram_1500_ff_scale(0.0, 1.0, 15.0) == pytest.approx(1.0)
@@ -1772,6 +1794,11 @@ class TestLatControl:
     expected_scale = 14.0 / 16.33
     assert get_honda_accord_steer_ratio_scale(0.0) == pytest.approx(expected_scale)
     assert get_honda_accord_steer_ratio_scale(20.0) == pytest.approx(expected_scale)
+
+  def test_honda_accord_turn_feedforward_taper(self):
+    assert get_honda_accord_ff_scale(0.0) > get_honda_accord_ff_scale(0.8)
+    assert get_honda_accord_ff_scale(-0.8) == pytest.approx(get_honda_accord_ff_scale(0.8))
+    assert get_honda_accord_ff_scale(0.0) == pytest.approx(1.0, abs=0.01)
 
   def test_subaru_impreza_pid_output_scale_preserves_small_errors(self):
     assert get_subaru_impreza_pid_output_scale(0.0) == 1.0

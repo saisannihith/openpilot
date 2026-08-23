@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-LAYOUT_PATH = REPO_ROOT / "starpilot/system/the_galaxy/assets/components/tools/device_settings_layout.json"
+LAYOUT_PATH = REPO_ROOT / "starpilot/common/assets/device_settings_layout.json"
 PARAM_KEYS_PATH = REPO_ROOT / "common/params_keys.h"
 
 
@@ -175,6 +175,34 @@ def test_requested_simple_and_advanced_settings_tiers():
   assert sections["Visual (Display & UI)"]["DisableWideRoad"]["settings_tier"] == "advanced"
 
 
+def test_turn_steering_limit_mute_speed_is_galaxy_developer_only():
+  sections = _params_by_section(_layout())
+  setting = sections["Developer"]["TurnSteeringLimitMuteSpeed"]
+
+  assert setting["parent_key"] == "GalaxyDeveloperMode"
+  assert setting["settings_tier"] == "advanced"
+  assert setting["data_type"] == "int"
+  assert setting["min"] == 0.0
+  assert setting["max"] == 99.0
+  assert _declared_default("TurnSteeringLimitMuteSpeed") == "0"
+
+  physical_settings = (
+    REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/sounds.py",
+    REPO_ROOT / "selfdrive/ui/layouts/settings/starpilot/aethergrid.py",
+  )
+  assert all("TurnSteeringLimitMuteSpeed" not in path.read_text(encoding="utf-8") for path in physical_settings)
+
+
+def test_honda_pid_scale_controls_use_galaxy_fine_granularity():
+  developer = _params_by_section(_layout())["Developer"]
+
+  for key in ("HondaLateralPidKpScale", "HondaLateralPidKiScale"):
+    setting = developer[key]
+    assert setting["step"] == 0.01
+    assert setting["precision"] == 2
+    assert setting["settings_tier"] == "advanced"
+
+
 def test_hidden_feature_defaults_remain_enabled():
   assert _declared_default("GalaxyDeveloperMode") == "0"
   assert _declared_default("NavDesiresAllowed") == "1"
@@ -196,12 +224,12 @@ def test_human_acceleration_param_is_removed():
   assert '{"HumanAcceleration",' not in params_source
 
 
-def test_rivian_angle_control_is_live_favorite_and_harness_gated():
+def test_rivian_angle_control_is_harness_gated():
   sections = _params_by_section(_layout())
   setting = sections["Vehicle"]["RivianAngleControl"]
 
   assert setting["ui_type"] == "toggle"
-  assert setting["favorite_eligible"] is True
+  assert setting["data_type"] == "bool"
   assert setting["requires_capability"] == "HasRivianAngleHarness"
   assert "reboot" not in setting["description"].lower()
   assert _declared_default("RivianAngleControl") == "0"

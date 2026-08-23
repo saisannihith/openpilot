@@ -4,6 +4,8 @@ import numpy as np
 HONDA_HRV_3G_FAR_FOLLOW_BRAKE_SLEW_RATE = 3.0
 HONDA_HRV_3G_FAR_FOLLOW_RELEASE_SLEW_RATE = 2.0
 HONDA_HRV_3G_UNTRACKED_SLOW_LEAD_DECEL_SCALE = 1.35
+HONDA_ACCORD_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL = 0.85
+HONDA_ACCORD_LEAD_DEPART_ACCEL_ASSIST = 0.25
 HYUNDAI_ELANTRA_LEAD_FOLLOW_JERK_SCALE = 1.25
 GM_SILVERADO_EARLY_FOLLOW_MIN_EGO_SPEED = 18.0
 GM_SILVERADO_EARLY_FOLLOW_MAX_DISTANCE = 130.0
@@ -34,6 +36,17 @@ TOYOTA_RAV4_TSS2_RADAR_FOLLOW_MAX_DISTANCE = 100.0
 TOYOTA_RAV4_TSS2_RADAR_FOLLOW_DISTANCE_TIME = 4.5
 TOYOTA_RAV4_TSS2_RADAR_FOLLOW_DISTANCE_OFFSET = 32.0
 TOYOTA_RAV4_TSS2_RADAR_FOLLOW_MAX_LATERAL_OFFSET = 1.75
+TOYOTA_RAV4_TSS2_FAR_FOLLOW_BRAKE_SLEW_RATE = 2.5
+TOYOTA_RAV4_TSS2_FAR_FOLLOW_RELEASE_SLEW_RATE = 1.75
+TOYOTA_RAV4_TSS2_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL = 0.70
+TOYOTA_RAV4_TSS2_LEAD_DEPART_ACCEL_ASSIST = 0.20
+TOYOTA_PRIUS_STOPPED_LEAD_OBSTACLE_BIAS_M = 1.5
+TOYOTA_PRIUS_STOPPED_LEAD_MAX_EGO_SPEED = 22.0
+TOYOTA_PRIUS_STOPPED_LEAD_MAX_SPEED = 1.0
+TOYOTA_PRIUS_STOPPED_LEAD_MIN_CLOSING_SPEED = 0.15
+TOYOTA_PRIUS_STOPPED_LEAD_MAX_DISTANCE = 80.0
+TOYOTA_PRIUS_STOPPED_LEAD_RAMP_DISTANCE = 10.0
+TOYOTA_PRIUS_STOPPED_LEAD_MAX_LATERAL_OFFSET = 1.75
 TOYOTA_CAMRY_TSS2_FORCE_STOP_HANDOFF_M = 4.5
 KIA_CARNIVAL_4TH_GEN_FORCE_STOP_HANDOFF_M = 5.5
 KIA_CARNIVAL_4TH_GEN_RADAR_FAR_FOLLOW_MIN_SPEED = 22.0
@@ -53,12 +66,50 @@ KIA_CARNIVAL_4TH_GEN_FORCE_STOP_DISTANCE_BIAS_M = 2.0
 DEFAULT_FORCE_STOP_HANDOFF_M = 6.0
 
 
+def get_toyota_prius_stopped_lead_obstacle_bias(CP, lead, v_ego):
+  """Move the ordinary Prius stopped-lead target back without touching stop targets."""
+  if (
+    getattr(CP, "brand", "") != "toyota" or
+    str(getattr(CP, "carFingerprint", "")) != "TOYOTA_PRIUS" or
+    lead is None or not bool(getattr(lead, "status", False)) or
+    float(v_ego) <= 0.0 or float(v_ego) > TOYOTA_PRIUS_STOPPED_LEAD_MAX_EGO_SPEED or
+    float(getattr(lead, "vLead", 0.0)) > TOYOTA_PRIUS_STOPPED_LEAD_MAX_SPEED or
+    abs(float(getattr(lead, "yRel", 0.0))) > TOYOTA_PRIUS_STOPPED_LEAD_MAX_LATERAL_OFFSET
+  ):
+    return 0.0
+
+  distance = float(getattr(lead, "dRel", float("inf")))
+  closing_speed = float(v_ego) - float(getattr(lead, "vLead", 0.0))
+  if (
+    distance <= 0.0 or distance > TOYOTA_PRIUS_STOPPED_LEAD_MAX_DISTANCE or
+    closing_speed < TOYOTA_PRIUS_STOPPED_LEAD_MIN_CLOSING_SPEED
+  ):
+    return 0.0
+
+  strength = np.clip(
+    (TOYOTA_PRIUS_STOPPED_LEAD_MAX_DISTANCE - distance) /
+    (TOYOTA_PRIUS_STOPPED_LEAD_MAX_DISTANCE - TOYOTA_PRIUS_STOPPED_LEAD_RAMP_DISTANCE),
+    0.0, 1.0,
+  )
+  bias = TOYOTA_PRIUS_STOPPED_LEAD_OBSTACLE_BIAS_M * strength
+  return float(min(bias, max(distance - 0.5, 0.0)))
+
+
 def is_toyota_rav4_tss2_post_departure_tune(CP):
   """Identify RAV4 TSS2 variants that need normal catch-up caps after departure."""
   return (
     getattr(CP, "brand", "") == "toyota" and
     str(getattr(CP, "carFingerprint", "")) in ("TOYOTA_RAV4_TSS2", "TOYOTA_RAV4_TSS2_2023")
   )
+
+
+def get_toyota_rav4_tss2_lead_departure_tune(CP):
+  if is_toyota_rav4_tss2_post_departure_tune(CP):
+    return (
+      TOYOTA_RAV4_TSS2_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL,
+      TOYOTA_RAV4_TSS2_LEAD_DEPART_ACCEL_ASSIST,
+    )
+  return None
 
 
 def get_toyota_rav4_tss2_early_lead_cap(CP, lead, v_ego, accel_min):
@@ -191,6 +242,11 @@ def get_far_follow_output_slew_rates(CP):
       HONDA_HRV_3G_FAR_FOLLOW_BRAKE_SLEW_RATE,
       HONDA_HRV_3G_FAR_FOLLOW_RELEASE_SLEW_RATE,
     )
+  if is_toyota_rav4_tss2_post_departure_tune(CP):
+    return (
+      TOYOTA_RAV4_TSS2_FAR_FOLLOW_BRAKE_SLEW_RATE,
+      TOYOTA_RAV4_TSS2_FAR_FOLLOW_RELEASE_SLEW_RATE,
+    )
   return 0.0, 0.0
 
 
@@ -205,6 +261,15 @@ def get_lead_follow_jerk_scale(CP):
   if getattr(CP, "brand", "") == "hyundai" and str(getattr(CP, "carFingerprint", "")) == "HYUNDAI_ELANTRA_2021":
     return HYUNDAI_ELANTRA_LEAD_FOLLOW_JERK_SCALE
   return 1.0
+
+
+def get_honda_accord_lead_departure_tune(CP):
+  if CP.brand == "honda" and str(CP.carFingerprint) == "HONDA_ACCORD":
+    return (
+      HONDA_ACCORD_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL,
+      HONDA_ACCORD_LEAD_DEPART_ACCEL_ASSIST,
+    )
+  return None
 
 
 def is_gm_silverado_early_follow_lead(CP, lead, v_ego):

@@ -27,8 +27,12 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   allow_radar_standstill_gap_settle,
+  get_far_follow_output_slew_rates,
   get_follow_prebrake_min_headway,
   get_kia_carnival_4th_gen_radar_far_follow_cap,
+  get_honda_accord_lead_departure_tune,
+  get_toyota_prius_stopped_lead_obstacle_bias,
+  get_toyota_rav4_tss2_lead_departure_tune,
   get_toyota_rav4_tss2_early_lead_cap,
   get_toyota_sienna_post_departure_restop_cap,
   is_toyota_rav4_tss2_radar_follow_lead,
@@ -290,6 +294,28 @@ def test_mpc_duplicate_lead_filters_do_not_cross_contaminate_tracks():
   assert mpc.duplicate_lead_v_filters[1].x == pytest.approx(28.0)
 
 
+def test_prius_stopped_lead_obstacle_bias_is_small_and_vehicle_specific():
+  prius = ToyotaCarInterface.get_non_essential_params(TOYOTA_CAR.TOYOTA_PRIUS)
+  other = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  stopped_lead = make_lead(status=True, d_rel=18.0, v_lead=0.2, model_prob=0.99)
+
+  bias = get_toyota_prius_stopped_lead_obstacle_bias(prius, stopped_lead, v_ego=8.0)
+  assert 0.0 < bias < 1.5
+  assert get_toyota_prius_stopped_lead_obstacle_bias(other, stopped_lead, v_ego=8.0) == pytest.approx(0.0)
+  assert get_toyota_prius_stopped_lead_obstacle_bias(
+    prius, make_lead(status=True, d_rel=18.0, v_lead=4.0), v_ego=8.0,
+  ) == pytest.approx(0.0)
+
+
+def test_prius_stopped_lead_obstacle_bias_does_not_apply_at_standstill_or_to_departures():
+  prius = ToyotaCarInterface.get_non_essential_params(TOYOTA_CAR.TOYOTA_PRIUS)
+  stopped_lead = make_lead(status=True, d_rel=4.0, v_lead=0.0, model_prob=0.99)
+  departing_lead = make_lead(status=True, d_rel=18.0, v_lead=2.0, model_prob=0.99)
+
+  assert get_toyota_prius_stopped_lead_obstacle_bias(prius, stopped_lead, v_ego=0.0) == pytest.approx(0.0)
+  assert get_toyota_prius_stopped_lead_obstacle_bias(prius, departing_lead, v_ego=8.0) == pytest.approx(0.0)
+
+
 def test_mpc_duplicate_vision_filter_smooths_distance_jumps_per_track():
   mpc = LongitudinalMpc()
   mpc.set_cur_state(27.0, 0.0)
@@ -437,6 +463,28 @@ def test_non_hrv_has_no_vehicle_far_follow_output_slew():
   )
 
   assert target == pytest.approx(-1.0)
+
+
+def test_rav4_far_follow_output_slew_damps_vision_lead_chatter():
+  v_ego = 24.0
+  CP = ToyotaCarInterface.get_non_essential_params(TOYOTA_CAR.TOYOTA_RAV4_TSS2_2023)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  planner.lead_one = make_lead(status=True, d_rel=58.0, v_lead=20.0, model_prob=0.99)
+  planner.lead_two = make_lead(status=False)
+
+  brake_rate, release_rate = get_far_follow_output_slew_rates(CP)
+  assert brake_rate > 0.0
+  assert release_rate > 0.0
+
+  initial = planner.get_vehicle_far_follow_slew_target(
+    v_ego, prev_target=0.0, target=-0.6, output_should_stop=False, panic_bypass=False,
+  )
+  smoothed = planner.get_vehicle_far_follow_slew_target(
+    v_ego, prev_target=initial, target=0.4, output_should_stop=False, panic_bypass=False,
+  )
+
+  assert initial == pytest.approx(-0.6)
+  assert smoothed == pytest.approx(initial + release_rate * planner.dt)
 
 
 def test_depart_release_hold_rejects_nearby_stopped_lead_conflict():
@@ -2842,7 +2890,6 @@ def test_carnival_confirmed_departing_lead_gets_stronger_accel_floor():
   CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
   CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
   planner = LongitudinalPlanner(CP, init_v=0.0)
-
   lead = make_lead(
     status=True,
     d_rel=7.7,
@@ -2857,6 +2904,55 @@ def test_carnival_confirmed_departing_lead_gets_stronger_accel_floor():
   assert floor >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MIN_ACCEL
   assert floor > longitudinal_planner_module.LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL
   assert floor <= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL
+
+
+def test_honda_accord_lead_departure_assist_is_stronger_but_vehicle_scoped():
+  accord = CarInterface.get_non_essential_params(CAR.HONDA_ACCORD)
+  civic = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(accord, init_v=0.0)
+  lead = make_lead(
+    status=True,
+    d_rel=7.7,
+    v_lead=2.0,
+    a_lead=1.79,
+    radar=False,
+    model_prob=1.0,
+  )
+
+  accord_floor = planner.get_lead_depart_accel_floor(lead, v_ego=0.0, model_desired_accel=0.44)
+  civic_floor = LongitudinalPlanner(civic, init_v=0.0).get_lead_depart_accel_floor(
+    lead, v_ego=0.0, model_desired_accel=0.44,
+  )
+
+  assert get_honda_accord_lead_departure_tune(accord) is not None
+  assert get_honda_accord_lead_departure_tune(civic) is None
+  assert accord_floor > civic_floor
+  assert accord_floor <= get_honda_accord_lead_departure_tune(accord)[0]
+
+
+def test_rav4_tss2_lead_departure_assist_is_vehicle_scoped():
+  rav4 = ToyotaCarInterface.get_non_essential_params(TOYOTA_CAR.TOYOTA_RAV4_TSS2_2023)
+  civic = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  lead = make_lead(
+    status=True,
+    d_rel=7.7,
+    v_lead=2.0,
+    a_lead=1.79,
+    radar=False,
+    model_prob=1.0,
+  )
+
+  rav4_floor = LongitudinalPlanner(rav4, init_v=0.0).get_lead_depart_accel_floor(
+    lead, v_ego=0.0, model_desired_accel=0.44,
+  )
+  civic_floor = LongitudinalPlanner(civic, init_v=0.0).get_lead_depart_accel_floor(
+    lead, v_ego=0.0, model_desired_accel=0.44,
+  )
+
+  assert get_toyota_rav4_tss2_lead_departure_tune(rav4) is not None
+  assert get_toyota_rav4_tss2_lead_departure_tune(civic) is None
+  assert rav4_floor > civic_floor
+  assert rav4_floor == pytest.approx(0.64)
 
 
 def test_carnival_logged_lead_departure_geometry_gets_responsive_floor():

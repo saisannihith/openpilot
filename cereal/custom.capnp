@@ -220,6 +220,7 @@ struct StarPilotPlan @0xf98d843bfd7004a3 {
   disableThrottle @35 :Bool;
   trackingLead @36 :Bool;
   stopSignConfirmed @37 :Bool;
+  pulseGlideCoasting @38 :Bool;  # developer-only P&G phase for on-road status UI
 }
 
 struct StarPilotRadarState @0xb86e6369214c01c8 {
@@ -264,6 +265,7 @@ struct StarPilotSelfdriveState @0xf416ec09499d9d19 {
   alertSize @3 :AlertSize;
   alertType @4 :Text;
   alertSound @5 :Car.CarControl.HUDControl.AudibleAlert;
+  vEgo @6 :Float32;
 
   enum AlertStatus {
     normal @0;

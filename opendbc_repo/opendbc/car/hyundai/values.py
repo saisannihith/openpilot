@@ -121,6 +121,7 @@ class HyundaiSafetyFlags(IntFlag):
 
 
 class HyundaiStarPilotSafetyFlags(IntFlag):
+  AOL_MAIN_LKAS_SYNC = 32
   HAS_LDA_BUTTON = 1024
   AOL_LKAS_ON_ENGAGE = 2048
 
@@ -984,6 +985,7 @@ CAN_CANFD_BLENDED_HDA2_LONGITUDINAL_CAR = frozenset({
 KIA_EV6_GT_LINE_LONG_TUNING_VDS_PREFIXES = frozenset({
   "C4DLC",
 })
+KIA_EV6_GT_LINE_LONG_TUNING_TESTING_GROUND_ID = "5"
 
 
 ALT_BUS_LDA_BUTTON_CARS = frozenset()
@@ -994,9 +996,9 @@ def hyundai_cancel_button_enables_cruise(car_fingerprint) -> bool:
   return car_fingerprint in CANCEL_BUTTON_ENABLE_CARS
 
 
-def kia_ev6_gt_line_longitudinal_tuning(car_fingerprint, vin: str) -> bool:
-  return car_fingerprint == CAR.KIA_EV6 and isinstance(vin, str) and \
-    len(vin) == 17 and vin[3:8] in KIA_EV6_GT_LINE_LONG_TUNING_VDS_PREFIXES
+def kia_ev6_gt_line_longitudinal_tuning(car_fingerprint, vin: str, testing_ground_active: bool = False) -> bool:
+  vin_match = isinstance(vin, str) and len(vin) == 17 and vin[3:8] in KIA_EV6_GT_LINE_LONG_TUNING_VDS_PREFIXES
+  return car_fingerprint == CAR.KIA_EV6 and (vin_match or testing_ground_active)
 
 
 def get_platform_codes(fw_versions: list[bytes]) -> set[tuple[bytes, bytes | None]]:
@@ -1221,6 +1223,9 @@ NON_SCC_CAR = CAR.with_flags(HyundaiFlags.NON_SCC)
 #       HyundaiFlags.CANFD_RADAR_SCC | HyundaiFlags.CANFD_NO_RADAR_DISABLE | )
 UNSUPPORTED_LONGITUDINAL_CAR = CAR.with_flags(HyundaiFlags.LEGACY) | CAR.with_flags(HyundaiFlags.UNSUPPORTED_LONGITUDINAL)
 
-LEGACY_LONGITUDINAL_CAR = {CAR.KIA_XCEED_PHEV}
+LEGACY_LONGITUDINAL_CAR = {
+  CAR.GENESIS_G80,
+  CAR.KIA_XCEED_PHEV,
+}
 
 DBC = CAR.create_dbc_map()
