@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import datetime
 import json
 import math
 
@@ -201,7 +202,7 @@ class StarPilotVCruise:
     self.pre_red_stop_evidence_distance = 0.0
     self.pre_red_stop_evidence_last_time = None
     self.pre_red_stop_evidence_last_v = 0.0
-    self.pre_red_stop_evidence_until = 0.0
+    self.pre_red_stop_evidence_until = None
     self.controls_enabled_previously = False
     # Kinematic distance estimator. Same attribute also published as
     # starpilotPlan.forcingStopLength, so the existing reader keeps working.
@@ -245,6 +246,12 @@ class StarPilotVCruise:
   def _elapsed_seconds(now, since):
     delta = now - since
     return delta.total_seconds() if hasattr(delta, "total_seconds") else float(delta)
+
+  @staticmethod
+  def _add_seconds(now, seconds):
+    if isinstance(now, datetime.datetime):
+      return now + datetime.timedelta(seconds=float(seconds))
+    return now + float(seconds)
 
   def _clear_standstill_force_stop_hold(self):
     self.standstill_force_stop_hold = False
@@ -498,8 +505,10 @@ class StarPilotVCruise:
       HIGH_SPEED_RED_LIGHT_CONFIRM_MIN_DECEL <= required_stop_decel <= HIGH_SPEED_RED_LIGHT_CONFIRM_MAX_DECEL
     )
     if pre_red_stop_evidence_now:
-      self.pre_red_stop_evidence_until = now + CARNIVAL_PRE_RED_STOP_EVIDENCE_HOLD_TIME
-    pre_red_stop_evidence_active = now < self.pre_red_stop_evidence_until
+      self.pre_red_stop_evidence_until = self._add_seconds(now, CARNIVAL_PRE_RED_STOP_EVIDENCE_HOLD_TIME)
+    pre_red_stop_evidence_active = (
+      self.pre_red_stop_evidence_until is not None and now < self.pre_red_stop_evidence_until
+    )
     plausible_high_speed_red_light_now = (
       high_speed_lone_red_light_candidate and
       red_light_approach_elapsed >= HIGH_SPEED_RED_LIGHT_CONFIRM_TIME and

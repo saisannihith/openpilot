@@ -762,6 +762,27 @@ def test_carnival_pre_red_approach_arms_force_stop_when_light_turns_red():
   assert not vcruise.lone_high_speed_red_light_suppressed
 
 
+def test_carnival_pre_red_approach_accepts_datetime_now_without_crashing():
+  planner, vcruise = make_vcruise(red_light=False, raw_model_stopped=False, forcing_stop=False, road_curvature=0.001)
+  sm = make_sm(standstill=False)
+  toggles = make_toggles(car_model=str(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN))
+  base = datetime.datetime(2026, 8, 23, tzinfo=datetime.UTC)
+
+  for frame in range(90):
+    planner.model_length = 195.0 - (24.0 * DT_MDL * 0.8 * frame)
+    update_vcruise(vcruise, sm, toggles, now=base + datetime.timedelta(seconds=frame * DT_MDL), v_ego=24.0)
+
+  planner.starpilot_cem.stop_light_detected = True
+  planner.model_length = 52.0
+  for frame in range(90, 102):
+    result = update_vcruise(vcruise, sm, toggles, now=base + datetime.timedelta(seconds=frame * DT_MDL), v_ego=17.0)
+
+  assert 0.0 < result < 20.0
+  assert vcruise.force_stop_timer >= 0.5
+  assert vcruise.forcing_stop
+  assert not vcruise.lone_high_speed_red_light_suppressed
+
+
 def test_high_speed_lone_red_light_latch_is_carnival_only():
   _, vcruise = make_vcruise(red_light=True, raw_model_stopped=False, forcing_stop=False, road_curvature=0.001)
   sm = make_sm(standstill=False)
