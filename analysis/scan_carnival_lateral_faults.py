@@ -18,8 +18,12 @@ from opendbc.car.hyundai.carcontroller import (
   CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES,
   CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED,
   CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE,
+  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_RELEASE_FRAMES,
   CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE,
+  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_ANGLE,
+  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_MIN_DRIVER_TORQUE,
   apply_carnival_4th_gen_eps_fault_guard,
+  apply_carnival_4th_gen_manual_turn_torque_guard,
 )
 from opendbc.car.hyundai.values import CAR
 
@@ -156,8 +160,16 @@ def read_lateral_samples(path: Path, mode: ReadMode, include_lat_active_frames: 
     manual_candidate = (
       steering_pressed and
       v_ego <= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED and
-      abs(steering_angle) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE and
-      abs(steering_torque) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE
+      (
+        (
+          abs(steering_angle) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE and
+          abs(steering_torque) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE
+        ) or
+        (
+          abs(steering_angle) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_ANGLE and
+          abs(steering_torque) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_MIN_DRIVER_TORQUE
+        )
+      )
     )
     eps_near_limit = (
       lat_active and
@@ -250,9 +262,13 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
   eps_guard_sim_events: list[dict[str, Any]] = []
   eps_guard_sim_active_frames = 0
   eps_guard_sim_below_threshold_frames = 0
+  manual_guard_sim_active_frames = 0
   max_eps_guard_sim_high_torque_frames = 0
   active_count: dict[tuple[str, int], int] = {}
-  sim_state: dict[tuple[str, int], tuple[int, int]] = {}
+  eps_sim_state: dict[tuple[str, int], tuple[int, int]] = {}
+  manual_sim_state: dict[tuple[str, int], tuple[int, int]] = {}
+  manual_sim_active_ids: set[int] = set()
+  manual_sim_events: list[dict[str, Any]] = []
   for sample in samples:
     key = sample_key(sample)
     if sample.eps_guard_near_limit:
@@ -262,13 +278,13 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
     else:
       active_count[key] = max(active_count.get(key, 0) - 2, 0)
 
-    high_torque_frames, guard_frames = sim_state.get(key, (0, 0))
+    high_torque_frames, guard_frames = eps_sim_state.get(key, (0, 0))
     guarded_torque, high_torque_frames, guard_frames, guard_active, near_limit = apply_carnival_4th_gen_eps_fault_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, sample.output_torque_units, CARNIVAL_STEER_MAX, sample.v_ego,
       sample.steering_angle_deg, sample.lat_active, sample.steering_pressed, sample.output_torque_units,
       high_torque_frames, guard_frames,
     )
-    sim_state[key] = (high_torque_frames, guard_frames)
+    eps_sim_state[key] = (high_torque_frames, guard_frames)
     max_eps_guard_sim_high_torque_frames = max(max_eps_guard_sim_high_torque_frames, high_torque_frames)
     if guard_active:
       eps_guard_sim_active_frames += 1
@@ -276,6 +292,33 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
         eps_guard_sim_below_threshold_frames += 1
       if near_limit and len(eps_guard_sim_events) < 12:
         eps_guard_sim_events.append(eps_guard_event_dict(sample, guarded_torque, high_torque_frames, guard_frames))
+
+    manual_guard_frames, manual_last_torque = manual_sim_state.get(key, (0, sample.output_torque_units))
+    manual_guarded_torque, manual_guard_active, manual_guard_frames = apply_carnival_4th_gen_manual_turn_torque_guard(
+      CAR.KIA_CARNIVAL_4TH_GEN, sample.output_torque_units, CARNIVAL_STEER_MAX, sample.v_ego,
+      sample.steering_angle_deg, sample.steering_torque, sample.steering_pressed, manual_last_torque,
+      manual_guard_frames,
+    )
+    manual_sim_state[key] = (manual_guard_frames, manual_guarded_torque if manual_guard_active else sample.output_torque_units)
+    if manual_guard_active:
+      manual_guard_sim_active_frames += 1
+      manual_sim_active_ids.add(id(sample))
+      if sample.steer_fault_temporary and len(manual_sim_events) < 12:
+        data = event_dict(sample)
+        data["manualGuardedTorqueUnits"] = manual_guarded_torque
+        data["manualGuardFrames"] = manual_guard_frames
+        manual_sim_events.append(data)
+
+  covered_by_manual_sim = [s for s in temp_lat if id(s) in manual_sim_active_ids]
+  zero_output_temp = [s for s in temp_lat if abs(s.output_torque_units) <= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_RELEASE_FRAMES]
+  uncovered_after_manual_sim = [
+    s for s in temp_lat
+    if (
+      id(s) not in manual_sim_active_ids and
+      abs(s.output_torque_units) > CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_RELEASE_FRAMES and
+      not (s.steering_pressed and s.override_release_scale <= 0.05)
+    )
+  ]
 
   near_fault_precursors = []
   for fault in temp_lat:
@@ -293,7 +336,7 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
 
   matching_commits = [commit for commit in commits if commit == expected_commit]
   status = "pass"
-  if uncovered or high_speed_temp_lat:
+  if uncovered_after_manual_sim or high_speed_temp_lat:
     status = "fail"
   elif not matching_commits or low_speed_alerts or eps_risk_bursts:
     status = "warn"
@@ -311,6 +354,9 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
     "coveredByStrongDriverOverrideFrames": len(covered_override),
     "partialDriverOverrideFrames": len(partial_override),
     "uncoveredLatActiveTempFaultFrames": len(uncovered),
+    "manualTurnGuardSimCoveredTempFaultFrames": len(covered_by_manual_sim),
+    "zeroOutputTempFaultFrames": len(zero_output_temp),
+    "uncoveredAfterManualTurnGuardSimFrames": len(uncovered_after_manual_sim),
     "manualTurnGuardCandidateFrames": len(manual_candidates),
     "epsNearLimitFrames": len(eps_near),
     "epsRiskBursts": eps_risk_bursts[:12],
@@ -321,8 +367,13 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
       "triggerFrames": CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES,
       "events": eps_guard_sim_events[:12],
     },
+    "manualTurnGuardSimulation": {
+      "activeFrames": manual_guard_sim_active_frames,
+      "events": manual_sim_events[:12],
+    },
     "highSpeedFaultExamples": [event_dict(s) for s in high_speed_temp_lat[:12]],
     "uncoveredExamples": [event_dict(s) for s in uncovered[:12]],
+    "uncoveredAfterManualTurnGuardSimExamples": [event_dict(s) for s in uncovered_after_manual_sim[:12]],
     "coveredExamples": [event_dict(s) for s in covered_override[:12]],
     "nearFaultPrecursors": near_fault_precursors[:20],
   }

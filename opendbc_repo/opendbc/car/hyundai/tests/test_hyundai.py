@@ -173,22 +173,28 @@ class TestHyundaiFingerprint:
 
     assert apply_carnival_4th_gen_manual_turn_torque_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 7.7, 101.0, 637.0, True, 409
-    ) == (385, True)
+    ) == (385, True, 80)
     assert apply_carnival_4th_gen_manual_turn_torque_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 6.5, 96.0, 488.0, True, 0
-    ) == (0, True)
+    ) == (0, True, 80)
     assert apply_carnival_4th_gen_manual_turn_torque_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 8.9, 94.0, 442.0, True, 0
-    ) == (0, True)
+    ) == (0, True, 80)
     assert apply_carnival_4th_gen_manual_turn_torque_guard(
-      CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 6.5, 50.0, 488.0, True, 409
-    ) == (409, False)
+      CAR.KIA_CARNIVAL_4TH_GEN, -179, 409, 8.9, -37.7, 89.0, True, -179, 42
+    ) == (-155, True, 80)
+    assert apply_carnival_4th_gen_manual_turn_torque_guard(
+      CAR.KIA_CARNIVAL_4TH_GEN, -179, 409, 8.9, -37.7, 89.0, True, -179
+    ) == (-155, True, 80)
+    assert apply_carnival_4th_gen_manual_turn_torque_guard(
+      CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 6.5, 30.0, 488.0, True, 409
+    ) == (409, False, 0)
     assert apply_carnival_4th_gen_manual_turn_torque_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 15.0, 101.0, 637.0, True, 409
-    ) == (409, False)
+    ) == (409, False, 0)
     assert apply_carnival_4th_gen_manual_turn_torque_guard(
       CAR.KIA_CARNIVAL_2025, 409, 409, 7.7, 101.0, 637.0, True, 409
-    ) == (409, False)
+    ) == (409, False, 0)
     assert apply_carnival_4th_gen_eps_fault_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 27.0, 12.0, True, False, 409, 49, 0
     ) == (385, 50, 120, True, True)
