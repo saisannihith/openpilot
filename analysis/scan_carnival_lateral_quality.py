@@ -191,13 +191,13 @@ def is_undertracking(sample: QualitySample) -> bool:
   return (wrong_direction or weak_same_direction) and abs(desired - actual) >= SATURATED_UNDERTRACK_LAT_ACCEL_ERROR
 
 
-def read_quality_samples(path: Path, mode: ReadMode) -> tuple[list[QualitySample], str]:
+def read_quality_samples(path: Path, mode: ReadMode, sort_by_time: bool) -> tuple[list[QualitySample], str]:
   latest: dict[str, Any] = {}
   samples: list[QualitySample] = []
   start_ns: int | None = None
   git_commit = "unknown"
 
-  for msg in LogReader(str(path), default_mode=mode, sort_by_time=True):
+  for msg in LogReader(str(path), default_mode=mode, sort_by_time=sort_by_time):
     which = msg.which()
     mono_time = int(msg.logMonoTime)
 
@@ -209,6 +209,8 @@ def read_quality_samples(path: Path, mode: ReadMode) -> tuple[list[QualitySample
       latest[which] = getattr(msg, which)
       if start_ns is None:
         start_ns = mono_time
+    else:
+      continue
 
     if start_ns is None or "carState" not in latest:
       continue
@@ -564,17 +566,27 @@ def console_summary(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
-  parser = argparse.ArgumentParser(description="Measure Carnival lateral quality from qlogs.")
+  parser = argparse.ArgumentParser(description="Measure Carnival lateral quality from qlogs/rlogs.")
   parser.add_argument("--out", type=Path)
   parser.add_argument("--summary-only", action="store_true")
+  parser.add_argument("--max-files", type=int, default=0,
+                      help="Limit scanned files after path expansion. 0 means all files.")
+  parser.add_argument("--recent-first", action="store_true",
+                      help="Scan newest files first after path expansion.")
+  parser.add_argument("--sort-by-time", action="store_true",
+                      help="Strictly sort each log by monotonic time before scanning. Slower; streaming order is the default.")
   parser.add_argument("logs", nargs="+", type=Path)
   args = parser.parse_args()
 
   logs = expand_log_paths(args.logs)
+  if args.recent_first:
+    logs = sorted(logs, key=lambda path: path.stat().st_mtime, reverse=True)
+  if args.max_files > 0:
+    logs = logs[:args.max_files]
   all_samples: list[QualitySample] = []
   commits: list[str] = []
   for path in logs:
-    samples, commit = read_quality_samples(path, ReadMode.AUTO_INTERACTIVE)
+    samples, commit = read_quality_samples(path, ReadMode.AUTO_INTERACTIVE, args.sort_by_time)
     all_samples.extend(samples)
     commits.append(commit)
 
