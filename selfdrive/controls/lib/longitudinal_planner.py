@@ -861,6 +861,17 @@ class LongitudinalPlanner:
   def get_radar_standstill_gap_settle_accel(self):
     return CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL if self.is_carnival_4th_gen() else RADAR_STANDSTILL_GAP_SETTLE_ACCEL
 
+  def get_standstill_release_ready(self, lead_depart_ready, confident_depart_ready,
+                                   slow_creep_depart_ready, radar_gap_settle_active,
+                                   depart_release_hold_active):
+    release_ready = bool(
+      lead_depart_ready or confident_depart_ready or
+      slow_creep_depart_ready or depart_release_hold_active
+    )
+    if not self.is_carnival_4th_gen():
+      release_ready = release_ready or bool(radar_gap_settle_active)
+    return release_ready
+
   def get_lead_depart_accel_hold_time(self):
     return CARNIVAL_LEAD_DEPART_ACCEL_HOLD_TIME if self.is_carnival_4th_gen() else LEAD_DEPART_ACCEL_HOLD_TIME
 
@@ -2880,9 +2891,9 @@ class LongitudinalPlanner:
       else STANDSTILL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED
     )
     if standstill_guard_lead_present and (bool(sm['carState'].standstill) or float(sm['carState'].vEgo) <= standstill_guard_max_ego_speed):
-      release_ready = bool(
-        lead_depart_ready or confident_depart_ready or slow_creep_depart_ready or
-        radar_gap_settle_active or depart_release_hold_active
+      release_ready = self.get_standstill_release_ready(
+        lead_depart_ready, confident_depart_ready, slow_creep_depart_ready,
+        radar_gap_settle_active, depart_release_hold_active,
       )
       standstill_stopped_lead_guard_caps = [
         cap for cap in (
@@ -2915,12 +2926,15 @@ class LongitudinalPlanner:
       bool(getattr(sm['carState'], 'gasPressed', False)) or bool(getattr(sm['starpilotCarState'], 'accelPressed', False)),
     )
     carnival_close_stop_hold_active = carnival_radar_stop_hold_cap is not None
+    carnival_stop_hold_active = self.is_carnival_4th_gen() and (
+      carnival_close_stop_hold_active or standstill_stopped_lead_guard_cap is not None
+    )
     if carnival_radar_stop_hold_cap is not None:
       output_should_stop = True
 
     if (
       lead_control_active and sm['carState'].standstill and moving_leads and
-      not depart_safety_veto and not carnival_close_stop_hold_active
+      not depart_safety_veto and not carnival_stop_hold_active
     ):
       output_a_target = max(output_a_target, STANDSTILL_LEAD_NUDGE_ACCEL)
 
@@ -2929,7 +2943,7 @@ class LongitudinalPlanner:
       sm['carState'].standstill and
       (confident_depart_ready or lead_depart_ready or slow_creep_depart_ready) and
       not depart_safety_veto and
-      not carnival_close_stop_hold_active and
+      not carnival_stop_hold_active and
       not bool(getattr(sm['starpilotPlan'], 'forcingStop', False)) and
       not bool(getattr(sm['starpilotPlan'], 'redLight', False)) and
       (confident_depart_ready or slow_creep_depart_ready or model_desired_accel >= STANDSTILL_LEAD_DEPART_MIN_MODEL_ACCEL)
@@ -2965,7 +2979,7 @@ class LongitudinalPlanner:
       output_a_target = max(output_a_target, self.get_standstill_lead_depart_min_accel())
       self.post_departure_follow_settle_until = now_t + POST_DEPARTURE_FOLLOW_SETTLE_LATCH_TIME
 
-    if radar_gap_settle_active:
+    if radar_gap_settle_active and not carnival_stop_hold_active:
       vision_low_speed_stop_active = False
       output_should_stop = False
       output_a_target = self.get_radar_standstill_gap_settle_accel()
@@ -3204,7 +3218,7 @@ class LongitudinalPlanner:
       if sm['carState'].standstill:
         output_should_stop = True
 
-    if lead_depart_accel_hold_active and not carnival_close_stop_hold_active:
+    if lead_depart_accel_hold_active and not carnival_stop_hold_active:
       output_a_target = max(output_a_target, lead_depart_accel_floor)
 
     if low_speed_weak_lead_accel_cap is not None and not (lead_depart_accel_hold_active and lead_depart_accel_floor_reused):
@@ -3217,7 +3231,7 @@ class LongitudinalPlanner:
       output_should_stop and
       accelerating_nudge_lead and
       not depart_safety_veto and
-      not carnival_close_stop_hold_active
+      not carnival_stop_hold_active
     ):
       output_a_target = max(output_a_target, STANDSTILL_LEAD_NUDGE_ACCEL)
 
@@ -3269,7 +3283,7 @@ class LongitudinalPlanner:
       self.a_desired = min(self.a_desired, experimental_release_accel_target)
       output_a_target = min(output_a_target, experimental_release_accel_target)
 
-    if depart_release_hold_active and not carnival_close_stop_hold_active:
+    if depart_release_hold_active and not carnival_stop_hold_active:
       output_a_target = max(output_a_target, self.get_standstill_lead_depart_min_accel(slow_creep_only=True))
 
     output_a_target = self.get_vehicle_far_follow_slew_target(
@@ -3280,7 +3294,7 @@ class LongitudinalPlanner:
       panic_bypass,
     )
 
-    if radar_gap_settle_active and not carnival_close_stop_hold_active:
+    if radar_gap_settle_active and not carnival_stop_hold_active:
       output_a_target = self.get_radar_standstill_gap_settle_accel()
       output_should_stop = False
 

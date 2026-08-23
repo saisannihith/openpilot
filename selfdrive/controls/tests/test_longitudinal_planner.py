@@ -165,6 +165,56 @@ def test_carnival_red_light_stop_line_decel_keeps_phantom_red_suppressed():
   )
 
 
+def test_carnival_stopped_lead_hold_ignores_gap_settle_release_permission():
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+  lead = make_lead(status=True, d_rel=5.8, v_lead=0.0, radar=True, model_prob=1.0)
+
+  release_ready = planner.get_standstill_release_ready(
+    lead_depart_ready=False,
+    confident_depart_ready=False,
+    slow_creep_depart_ready=False,
+    radar_gap_settle_active=True,
+    depart_release_hold_active=False,
+  )
+  cap = planner.get_standstill_stopped_lead_guard_cap(
+    lead,
+    v_ego=0.2,
+    accel_min=-1.0,
+    stop_distance=4.5,
+    release_ready=release_ready,
+    confident_depart_ready=False,
+  )
+
+  assert not release_ready
+  assert cap is not None
+  assert cap <= -0.45
+
+
+def test_non_carnival_stopped_lead_guard_allows_gap_settle_release_permission():
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+  lead = make_lead(status=True, d_rel=4.0, v_lead=0.0, radar=True, model_prob=1.0)
+
+  release_ready = planner.get_standstill_release_ready(
+    lead_depart_ready=False,
+    confident_depart_ready=False,
+    slow_creep_depart_ready=False,
+    radar_gap_settle_active=True,
+    depart_release_hold_active=False,
+  )
+
+  assert release_ready
+  assert planner.get_standstill_stopped_lead_guard_cap(
+    lead,
+    v_ego=0.2,
+    accel_min=-1.0,
+    stop_distance=4.5,
+    release_ready=release_ready,
+    confident_depart_ready=False,
+  ) is None
+
+
 def test_carnival_red_light_stop_line_decel_requires_carnival_and_no_lead():
   CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
   non_carnival = SimpleNamespace(carFingerprint="HONDA_CIVIC")
