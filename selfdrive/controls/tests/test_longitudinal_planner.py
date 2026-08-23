@@ -2342,6 +2342,7 @@ def test_carnival_stationary_radar_gap_settle_uses_stronger_launch_floor(model_v
 
   assert not planner.output_should_stop
   assert planner.output_a_target == pytest.approx(longitudinal_planner_module.CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL)
+  assert planner.output_a_target > longitudinal_planner_module.RADAR_STANDSTILL_GAP_SETTLE_ACCEL
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
