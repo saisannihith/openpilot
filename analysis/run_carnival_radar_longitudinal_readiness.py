@@ -352,10 +352,18 @@ def main() -> int:
   parser = argparse.ArgumentParser(description="Carnival radar-track longitudinal readiness report.")
   parser.add_argument("logs", nargs="+", help="qlog paths/globs")
   parser.add_argument("--radar-only", action="store_true", help="Skip longitudinal sample parsing for faster rlog raw-track checks.")
+  parser.add_argument("--max-files", type=int, default=0,
+                      help="Limit scanned files after path expansion. 0 means all files.")
+  parser.add_argument("--recent-first", action="store_true",
+                      help="Scan newest files first after path expansion.")
   parser.add_argument("--out", help="Optional JSON output path")
   args = parser.parse_args()
 
   paths = expand_logs(args.logs)
+  if args.recent_first:
+    paths = sorted(paths, key=lambda path: path.stat().st_mtime, reverse=True)
+  if args.max_files > 0:
+    paths = paths[:args.max_files]
   report = build_report(paths, radar_only=args.radar_only)
   text = json.dumps(report, indent=2, sort_keys=True)
   print(text)
