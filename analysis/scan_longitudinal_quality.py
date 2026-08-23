@@ -17,6 +17,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import (
   CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_LENGTH,
   CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_RATIO,
   CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_SPEED,
+  CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL,
+  RADAR_STANDSTILL_GAP_SETTLE_MAX_EXTRA_GAP,
+  RADAR_STANDSTILL_GAP_SETTLE_MAX_LATERAL_OFFSET,
+  RADAR_STANDSTILL_GAP_SETTLE_MAX_LEAD_SPEED,
   get_carnival_red_light_stop_line_decel,
   LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE,
   update_carnival_lone_high_speed_red_light_suppression,
@@ -334,6 +338,14 @@ def summarize_stop_releases(samples: list[Sample]) -> list[dict[str, Any]]:
 
     ego_move = next((s for s in window if s.v_ego >= 0.75), None)
     move_time = None if ego_move is None else ego_move.t
+    max_early_plan_accel = max((s.plan_accel for s in window[:25]), default=0.0)
+    gap_settle_like = (
+      start.lead_status and
+      start.standstill and
+      start.lead_d_rel <= 3.0 + RADAR_STANDSTILL_GAP_SETTLE_MAX_EXTRA_GAP + 3.0 and
+      abs(start.lead_y_rel) <= RADAR_STANDSTILL_GAP_SETTLE_MAX_LATERAL_OFFSET and
+      abs(start.lead_v_lead) <= max(RADAR_STANDSTILL_GAP_SETTLE_MAX_LEAD_SPEED, 0.2)
+    )
     manual = next((
       s for s in window
       if (s.brake_pressed or s.gas_pressed) and (move_time is None or s.t < move_time)
@@ -348,9 +360,14 @@ def summarize_stop_releases(samples: list[Sample]) -> list[dict[str, Any]]:
       "startLongControlState": start.long_control_state,
       "startLeadStatus": start.lead_status,
       "startLeadDRel": None if not start.lead_status else round(start.lead_d_rel, 3),
+      "startLeadVLead": None if not start.lead_status else round(start.lead_v_lead, 3),
+      "startLeadYRel": None if not start.lead_status else round(start.lead_y_rel, 3),
       "startPlanAccel": round(start.plan_accel, 3),
       "startCmdAccel": round(start.cmd_accel, 3),
-      "maxEarlyPlanAccel": round(max((s.plan_accel for s in window[:25]), default=0.0), 3),
+      "maxEarlyPlanAccel": round(max_early_plan_accel, 3),
+      "gapSettleLikeRelease": gap_settle_like,
+      "currentGapSettleFloorAccel": round(CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL, 3),
+      "currentGapSettleFloorWouldLiftAccel": bool(gap_settle_like and max_early_plan_accel < CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL),
       "egoMoveDelay": None if ego_move is None else round(ego_move.t - start.t, 2),
       "egoMoveLongControlState": None if ego_move is None else ego_move.long_control_state,
       "manualOverrideBeforeMoveDelay": None if manual is None else round(manual.t - start.t, 2),
