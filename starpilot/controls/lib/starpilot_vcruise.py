@@ -657,16 +657,24 @@ class StarPilotVCruise:
 
     if self.standstill_force_stop_hold:
       pedal_override = bool(sm["carState"].gasPressed or sm["starpilotCarState"].accelPressed)
+      carnival_light_hold_scene_active = bool(
+        carnival_lone_red_light_latch_allowed and
+        self.standstill_force_stop_reason == "light" and
+        (standstill_force_stop_scene_active or stop_light_detected or dash_active)
+      )
       light_hold_expired = (
         self.standstill_force_stop_reason == "light" and
         self.standstill_force_stop_started_at is not None and
-        self._elapsed_seconds(now, self.standstill_force_stop_started_at) >= STANDSTILL_FORCE_STOP_LIGHT_HOLD_TIME
+        self._elapsed_seconds(now, self.standstill_force_stop_started_at) >= STANDSTILL_FORCE_STOP_LIGHT_HOLD_TIME and
+        not carnival_light_hold_scene_active
       )
       if pedal_override:
         self.override_force_stop_timer = OVERRIDE_FORCE_STOP_TIMER
       elif light_hold_expired:
         self.override_force_stop_timer = OVERRIDE_FORCE_STOP_TIMER
-      if (not controls_enabled) or (not standstill) or lead_present or pedal_override or light_hold_expired:
+      if ((not controls_enabled) or (not standstill) or
+          (lead_present and not carnival_light_hold_scene_active) or
+          pedal_override or light_hold_expired):
         self._clear_standstill_force_stop_hold()
       elif standstill_force_stop_scene_active:
         self.standstill_force_stop_clear_since = 0.0

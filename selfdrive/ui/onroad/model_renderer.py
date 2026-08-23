@@ -31,6 +31,8 @@ RADAR_MARKER_TEXTURE_CENTER = RADAR_MARKER_TEXTURE_SIZE / 2.0
 RADAR_MARKER_TEXTURE_KEY = "onroad-radar-marker-v1"
 RADAR_MARKER_OUTLINE_COLOR = rl.Color(0, 0, 0, 170)
 RADAR_MARKER_FILL_COLOR = rl.Color(255, 40, 40, 230)
+RADAR_STATE_TRACK_MIN_DISTANCE = 0.1
+RADAR_STATE_TRACK_MAX_DISTANCE = 140.0
 
 THROTTLE_COLORS = [
   rl.Color(13, 248, 122, 102),   # HSLF(148/360, 0.94, 0.51, 0.4)
@@ -610,11 +612,26 @@ class ModelRenderer(Widget):
       return
 
     sm = ui_state.sm
-    if not sm.valid.get("liveTracks", False):
-      self._clear_radar_projection_cache()
-      return
+    radar_points = list(sm["liveTracks"].points) if sm.valid.get("liveTracks", False) else []
+    existing_track_ids = {
+      int(getattr(point, "trackId", -1))
+      for point in radar_points
+      if int(getattr(point, "trackId", -1)) >= 0
+    }
+    if sm.valid.get("radarState", False):
+      radar_state = sm["radarState"]
+      for lead in (radar_state.leadOne, radar_state.leadTwo):
+        track_id = int(getattr(lead, "radarTrackId", -1))
+        d_rel = float(getattr(lead, "dRel", 0.0))
+        if (
+          bool(getattr(lead, "status", False)) and
+          bool(getattr(lead, "radar", False)) and
+          track_id not in existing_track_ids and
+          RADAR_STATE_TRACK_MIN_DISTANCE <= d_rel <= RADAR_STATE_TRACK_MAX_DISTANCE
+        ):
+          radar_points.append(lead)
+          existing_track_ids.add(track_id)
 
-    radar_points = sm["liveTracks"].points
     if len(radar_points) == 0:
       self._clear_radar_projection_cache()
       return
@@ -625,7 +642,8 @@ class ModelRenderer(Widget):
       return
 
     projection_key = (
-      sm.recv_frame["liveTracks"],
+      sm.recv_frame.get("liveTracks", 0),
+      sm.recv_frame.get("radarState", 0),
       self._radar_path_generation,
       self._radar_transform_generation,
       float(self._path_offset_z),
