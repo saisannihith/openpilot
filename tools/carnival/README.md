@@ -9,7 +9,9 @@ The comma 3x now exposes a dedicated `Carnival` settings page between `StarPilot
 - EPS Fault Predictor live risk and enable control.
 - Route Replay Scorecard with on-device run status and scores.
 
-Route replay is on demand by default. Press `Run Now`, or explicitly enable `CarnivalAutoAnalyze`, and the low-priority offroad `carnival_analyzerd` process writes:
+Compact route scoring is enabled by default. A lightweight offroad `carnival_watchd` process notices a settled new route and starts the low-priority `carnival_analyzerd` only while work is pending. Press `Run Now` to repeat the latest route manually.
+
+The on-device path prefers qlogs and skips raw CAN object retention. A 33-segment route completed in 32.6 seconds with a 72 MB peak on comma 3x. Full raw-radar decoding remains available from this script on a PC without `--compact`.
 
 - `/data/media/0/carnival_reports/carnival-report-*.md`
 - `/data/media/0/carnival_reports/carnival-report-*.json`

@@ -1,14 +1,13 @@
-import os
 import operator
+import os
 import platform
 import sys
-
 from types import SimpleNamespace
 
 from cereal import car, messaging
 from openpilot.common.params import Params
 from openpilot.system.hardware import HARDWARE, PC, TICI
-from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
+from openpilot.system.manager.process import DaemonProcess, NativeProcess, PythonProcess
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 UI_WATCHDOG_MAX_DT = int(os.getenv("UI_WATCHDOG_MAX_DT", "10"))
@@ -75,9 +74,12 @@ def is_carnival_4th_gen(params: Params, CP: car.CarParams) -> bool:
 def carnival_only(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started and is_carnival_4th_gen(params, CP)
 
+def carnival_watch_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  return not started and params.get_bool("CarnivalAutoAnalyze") and is_carnival_4th_gen(params, CP)
+
 def carnival_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   requested = any(params.get_bool(key) for key in (
-    "CarnivalAutoAnalyze", "CarnivalAnalyzeNow", "CarnivalAnalysisRunning",
+    "CarnivalAnalyzeNow", "CarnivalAnalysisRunning",
     "CarnivalApplyProfile", "CarnivalRevertProfile",
   ))
   return not started and requested and is_carnival_4th_gen(params, CP)
@@ -181,6 +183,7 @@ procs = [
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
   PythonProcess("carnivald", "selfdrive.controls.carnivald", carnival_only),
+  PythonProcess("carnival_watchd", "selfdrive.controls.carnival_watchd", carnival_watch_offroad, nice=19),
   PythonProcess("carnival_analyzerd", "selfdrive.controls.carnival_analyzerd", carnival_offroad, nice=19),
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),

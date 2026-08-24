@@ -1,5 +1,7 @@
 import json
+import os
 
+from openpilot.selfdrive.controls import carnival_analyzerd
 from openpilot.selfdrive.controls.carnival_analyzerd import (
   apply_pending_profile,
   discover_routes,
@@ -7,6 +9,8 @@ from openpilot.selfdrive.controls.carnival_analyzerd import (
   prune_reports,
   scorecard_log_files,
 )
+from openpilot.selfdrive.controls.carnival_watchd import request_new_route
+from openpilot.tools.carnival.collect_and_report import RouteReport, summarize_compact_radar
 
 
 class FakeParams:
@@ -75,3 +79,54 @@ def test_report_retention_removes_old_pairs(tmp_path):
   prune_reports(tmp_path, keep=2)
   assert len(list(tmp_path.glob("*.json"))) == 2
   assert len(list(tmp_path.glob("*.md"))) == 2
+
+
+def test_compact_radar_summary_uses_fused_state_only():
+  metrics = summarize_compact_radar(100, 50, 40, 5, 3)
+  assert metrics.mode == "compact"
+  assert metrics.coverage == 0.8
+  assert metrics.state_samples == 100
+  assert metrics.stale_samples == 5
+  assert metrics.cut_in_samples == 3
+  assert metrics.distance_mae is None
+
+
+def test_compact_radar_summary_falls_back_to_logged_radar_state():
+  metrics = summarize_compact_radar(0, 0, 0, 0, 0, fallback_vision_samples=60, fallback_radar_samples=40)
+  assert metrics.mode == "compact-fallback"
+  assert metrics.coverage == 0.4
+  assert metrics.refs == 100
+  assert metrics.selected == 40
+
+
+def test_watcher_requests_one_settled_unscored_route(tmp_path):
+  segment = tmp_path / "dongle|2026-08-24--abcd--0"
+  segment.mkdir()
+  qlog = segment / "qlog"
+  qlog.write_bytes(b"compact")
+  os.utime(qlog, (100.0, 100.0))
+  params = FakeParams()
+
+  requested = request_new_route(params, tmp_path, 200.0)
+  assert requested == "dongle|2026-08-24--abcd"
+  assert params.get_bool("CarnivalAnalyzeNow")
+
+  params.put_bool("CarnivalAnalyzeNow", False)
+  assert request_new_route(params, tmp_path, 200.0, requested) == requested
+  assert not params.get_bool("CarnivalAnalyzeNow")
+
+
+def test_analyzer_always_uses_compact_replay(monkeypatch, tmp_path):
+  calls = []
+
+  def fake_analyze(route, files, *, compact=False):
+    calls.append((route, files, compact))
+    return RouteReport(route=route, files=len(files), analysis_mode="compact")
+
+  monkeypatch.setattr(carnival_analyzerd, "analyze_route", fake_analyze)
+  monkeypatch.setattr(carnival_analyzerd, "REPORT_ROOT", tmp_path)
+  monkeypatch.setattr(carnival_analyzerd, "write_markdown", lambda *args: None)
+  params = FakeParams()
+  carnival_analyzerd.analyze_completed_route(params, "route", [tmp_path / "qlog"])
+  assert calls == [("route", [tmp_path / "qlog"], True)]
+  assert not params.get_bool("CarnivalAnalysisRunning")

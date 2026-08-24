@@ -55,9 +55,13 @@ class Obj:
 
 @dataclass
 class RadarMetrics:
+  mode: str = "deep"
   refs: int = 0
   selected: int = 0
   coverage: float = 0.0
+  state_samples: int = 0
+  stale_samples: int = 0
+  cut_in_samples: int = 0
   distance_mae: float | None = None
   distance_p90: float | None = None
   derived_velocity_mae: float | None = None
@@ -134,6 +138,7 @@ class SteeringEventWindow:
 @dataclass
 class RouteReport:
   route: str
+  analysis_mode: str = "deep"
   files: int = 0
   car_params: list[dict[str, Any]] = field(default_factory=list)
   services: dict[str, int] = field(default_factory=dict)
@@ -220,7 +225,7 @@ def segment_index(path: Path) -> int:
   return int(match.group(1)) if match else -1
 
 
-def iter_log_files(root: Path) -> list[Path]:
+def iter_log_files(root: Path, *, prefer_qlog: bool = False) -> list[Path]:
   files_by_segment: dict[Path, list[Path]] = defaultdict(list)
   for p in root.rglob("*"):
     if p.name in LOG_NAMES:
@@ -229,7 +234,9 @@ def iter_log_files(root: Path) -> list[Path]:
   out = []
   for files in files_by_segment.values():
     rlogs = [p for p in files if p.name.startswith("rlog")]
-    out.extend(rlogs if rlogs else files)
+    qlogs = [p for p in files if p.name.startswith("qlog")]
+    preferred = qlogs if prefer_qlog else rlogs
+    out.extend(preferred if preferred else files)
   return sorted(out, key=lambda p: (route_key(p, root), segment_index(p), p.name))
 
 
@@ -400,11 +407,48 @@ def summarize_radar(refs: list[RefLead], objects_by_addr: dict[int, list[Obj]]) 
   return metrics
 
 
-def analyze_route(route: str, files: list[Path]) -> RouteReport:
-  report = RouteReport(route=route, files=len(files))
+def summarize_compact_radar(state_samples: int, vision_samples: int, radar_samples: int,
+                            stale_samples: int, cut_in_samples: int, fallback_vision_samples: int = 0,
+                            fallback_radar_samples: int = 0) -> RadarMetrics:
+  if state_samples == 0:
+    fallback_leads = fallback_vision_samples + fallback_radar_samples
+    if fallback_leads == 0:
+      return RadarMetrics(mode="compact", verdict="insufficient fused-state data")
+    return RadarMetrics(
+      mode="compact-fallback",
+      refs=fallback_leads,
+      selected=fallback_radar_samples,
+      coverage=fallback_radar_samples / fallback_leads,
+      verdict="compact radarState coverage; fused-state unavailable",
+    )
+
+  coverage = min(1.0, radar_samples / max(vision_samples, 1)) if vision_samples else 0.0
+  if vision_samples == 0:
+    verdict = "no lead encountered during compact replay"
+  elif coverage >= 0.65:
+    verdict = "compact radar-vision coverage strong"
+  elif coverage >= 0.35:
+    verdict = "compact radar-vision coverage partial"
+  else:
+    verdict = "compact radar-vision coverage weak"
+  return RadarMetrics(
+    mode="compact",
+    refs=vision_samples,
+    selected=radar_samples,
+    coverage=coverage,
+    state_samples=state_samples,
+    stale_samples=stale_samples,
+    cut_in_samples=cut_in_samples,
+    verdict=verdict,
+  )
+
+
+def analyze_route(route: str, files: list[Path], *, compact: bool = False) -> RouteReport:
+  report = RouteReport(route=route, files=len(files), analysis_mode="compact" if compact else "deep")
   car_params = Counter()
   services = Counter()
   events = Counter()
+  event_occurrences = Counter()
   alerts = Counter()
   refs: list[RefLead] = []
   objects_by_addr: dict[int, list[Obj]] = defaultdict(list)
@@ -439,6 +483,12 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
   false_brake_events = 0
   low_speed_creep_samples = 0
   confidence_samples: list[float] = []
+  previous_onroad_events: set[str] = set()
+  carnival_state_samples = 0
+  carnival_radar_samples = 0
+  carnival_vision_samples = 0
+  carnival_radar_stale_samples = 0
+  carnival_cut_in_samples = 0
 
   def capture_steering_window(event_name: str, t: float) -> None:
     if len(report.steering_windows) >= 80:
@@ -573,18 +623,27 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
             curvature_errors.append(abs(desired_curvature - curvature))
 
       elif which == "onroadEvents":
+        current_onroad_events: set[str] = set()
         for onroad_event in event.onroadEvents:
           name = enum_name(onroad_event.name)
+          current_onroad_events.add(name)
           events[name] += 1
-          if name in ("steerTempUnavailable", "steerTempUnavailableSilent", "steerUnavailable", "steerSaturated", "steerOverride", "steerDisengage"):
+          if name not in previous_onroad_events:
+            event_occurrences[name] += 1
+          if name not in previous_onroad_events and name in (
+            "steerTempUnavailable", "steerTempUnavailableSilent", "steerUnavailable",
+            "steerSaturated", "steerOverride", "steerDisengage",
+          ):
             capture_steering_window(name, t)
+        previous_onroad_events = current_onroad_events
 
       elif which == "radarState":
         latest_radar_state = event.radarState
         lead = event.radarState.leadOne
         if lead.status and latest_car_state is not None and 1.0 < lead.dRel < 180.0:
           ref = RefLead(t, float(lead.dRel), float(lead.yRel), float(lead.vRel), float(latest_car_state.vEgo))
-          refs.append(ref)
+          if not compact:
+            refs.append(ref)
           lead_samples += 1
           lead_distances.append(ref.d_rel)
           if lead.radar:
@@ -596,6 +655,8 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
             ttc_values.append(ref.d_rel / closing)
 
       elif which == "can":
+        if compact:
+          continue
         for msg in event.can:
           addr = int(msg.address)
           dat = bytes(msg.dat)
@@ -609,7 +670,13 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
         latest_model = event.modelV2
 
       elif which == "carnivalState":
-        confidence_samples.append(safe_float(safe_attr(event.carnivalState, "overallConfidence", 0.0)))
+        carnival_state = event.carnivalState
+        carnival_state_samples += 1
+        confidence_samples.append(safe_float(safe_attr(carnival_state, "overallConfidence", 0.0)))
+        carnival_radar_samples += int(bool(safe_attr(carnival_state, "radarLeadPresent", False)))
+        carnival_vision_samples += int(bool(safe_attr(carnival_state, "visionLeadPresent", False)))
+        carnival_radar_stale_samples += int(bool(safe_attr(carnival_state, "radarStale", False)))
+        carnival_cut_in_samples += int(safe_float(safe_attr(carnival_state, "cutInCandidateCount", 0)))
 
   report.services = dict(services)
   report.events = dict(events.most_common(20))
@@ -633,14 +700,26 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
       "radarUnavailable": primary["radarUnavailable"],
     }
 
-  report.radar = summarize_radar(refs, objects_by_addr)
+  report.radar = (
+    summarize_compact_radar(
+      carnival_state_samples,
+      carnival_vision_samples,
+      carnival_radar_samples,
+      carnival_radar_stale_samples,
+      carnival_cut_in_samples,
+      vision_lead_samples,
+      radar_lead_samples,
+    )
+    if compact else summarize_radar(refs, objects_by_addr)
+  )
   report.lateral = LateralMetrics(
     active_samples=lateral_active_samples,
     steering_pressed_samples=steering_pressed_samples,
     steering_pressed_pct=steering_pressed_samples / max(services["carState"], 1),
-    steering_temp_events=events["steerTempUnavailable"] + events["steerTempUnavailableSilent"] + events["steerUnavailable"],
-    steer_saturated_events=events["steerSaturated"],
-    lateral_takeover_events=events["steerOverride"] + events["steerDisengage"],
+    steering_temp_events=(event_occurrences["steerTempUnavailable"] + event_occurrences["steerTempUnavailableSilent"] +
+                          event_occurrences["steerUnavailable"]),
+    steer_saturated_events=event_occurrences["steerSaturated"],
+    lateral_takeover_events=event_occurrences["steerOverride"] + event_occurrences["steerDisengage"],
     torque_clip_samples=torque_clip_samples,
     torque_clip_pct=torque_clip_samples / max(torque_clip_total, 1),
     max_torque_error=0.0,
@@ -685,11 +764,17 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
     min(25, report.longitudinal.harsh_brake_samples / max(report.longitudinal.enabled_samples, 1) * 500.0) -
     min(20, low_speed_creep_samples / max(services["carState"], 1) * 600.0)
   )))
-  distance_quality = 0.0 if report.radar.distance_mae is None else max(0.0, 1.0 - report.radar.distance_mae / 5.0)
-  velocity_quality = 0.0 if report.radar.derived_velocity_mae is None else max(0.0, 1.0 - report.radar.derived_velocity_mae / 4.0)
-  radar_score = max(0, min(100, round(100.0 * (
-    0.45 * report.radar.coverage + 0.35 * distance_quality + 0.20 * velocity_quality
-  ))))
+  if compact:
+    freshness = (1.0 - report.radar.stale_samples / report.radar.state_samples) if report.radar.state_samples else 0.5
+    radar_score = 0 if report.radar.refs == 0 else max(0, min(100, round(100.0 * (
+      0.80 * report.radar.coverage + 0.20 * freshness
+    ))))
+  else:
+    distance_quality = 0.0 if report.radar.distance_mae is None else max(0.0, 1.0 - report.radar.distance_mae / 5.0)
+    velocity_quality = 0.0 if report.radar.derived_velocity_mae is None else max(0.0, 1.0 - report.radar.derived_velocity_mae / 4.0)
+    radar_score = max(0, min(100, round(100.0 * (
+      0.45 * report.radar.coverage + 0.35 * distance_quality + 0.20 * velocity_quality
+    ))))
   recommendations: list[dict[str, Any]] = []
   if missed_stop_events:
     recommendations.append({"target": "stop-hold distance", "delta": "+0.1 m maximum", "confidence": "medium",
@@ -733,7 +818,10 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
 
 
 def add_issues(report: RouteReport) -> None:
-  if report.radar.verdict == "strong shadow candidate":
+  if report.radar.mode.startswith("compact"):
+    if report.radar.verdict == "insufficient fused-state data":
+      report.issues.append("Compact replay did not contain Carnival fused-state samples.")
+  elif report.radar.verdict == "strong shadow candidate":
     report.issues.append("Hidden 0x180 object distance is strong; keep shadow until lateral/velocity decode is solved.")
   elif report.radar.verdict != "insufficient reference lead data":
     report.issues.append(f"Hidden radar candidate is not yet clean: {report.radar.verdict}.")
@@ -803,6 +891,7 @@ def write_markdown(reports: list[RouteReport], output: Path, log_root: Path) -> 
       "",
       "### Route Scorecard",
       "",
+      f"- Analysis mode: {report.analysis_mode}",
       f"- Overall/lateral/longitudinal/radar: {route_scores}",
       f"- Interventions/false brakes/missed stops: {route_events}",
       f"- Low-speed creep samples: {report.scorecard.low_speed_creep_samples}",
@@ -817,8 +906,10 @@ def write_markdown(reports: list[RouteReport], output: Path, log_root: Path) -> 
       "",
       "### Radar Candidate",
       "",
+      f"- Analysis mode: {report.radar.mode}",
       f"- Verdict: {report.radar.verdict}",
       f"- Refs/selected/coverage: {report.radar.refs}/{report.radar.selected}/{report.radar.coverage:.1%}",
+      f"- Fused-state/stale/cut-in samples: {report.radar.state_samples}/{report.radar.stale_samples}/{report.radar.cut_in_samples}",
       f"- Distance MAE/P90: {fmt(report.radar.distance_mae, ' m')} / {fmt(report.radar.distance_p90, ' m')}",
       f"- Derived velocity MAE/P90: {fmt(report.radar.derived_velocity_mae, ' m/s')} / {fmt(report.radar.derived_velocity_p90, ' m/s')}",
       f"- Raw velocity MAE: {fmt(report.radar.raw_velocity_mae, ' m/s')}",
@@ -886,6 +977,8 @@ def main() -> None:
                       help="Analyze at most this many segments per route, from the beginning after sorting.")
   parser.add_argument("--recent-segments-per-route", type=int, default=None,
                       help="Analyze only the most recent N segments per route.")
+  parser.add_argument("--compact", action="store_true",
+                      help="Use qlogs and skip raw-CAN radar decoding for a bounded on-device scorecard.")
   args = parser.parse_args()
 
   if args.device and not args.skip_pull:
@@ -901,7 +994,7 @@ def main() -> None:
     raise SystemExit(f"Log root does not exist: {args.log_root}")
 
   by_route: dict[str, list[Path]] = defaultdict(list)
-  for file in iter_log_files(args.log_root):
+  for file in iter_log_files(args.log_root, prefer_qlog=args.compact):
     by_route[route_key(file, args.log_root)].append(file)
   if not by_route:
     raise SystemExit(f"No rlog/qlog files found under {args.log_root}")
@@ -932,7 +1025,7 @@ def main() -> None:
   reports = []
   for route, files in route_items:
     print(f"Analyzing {route} ({len(files)} log files)...", flush=True)
-    reports.append(analyze_route(route, files))
+    reports.append(analyze_route(route, files, compact=args.compact))
 
   timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
   output = args.output or (Path("drive_reports") / f"carnival-report-{timestamp}.md")

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
+import time
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import UTC, datetime
-import json
 from pathlib import Path
-import time
 
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
@@ -18,7 +18,6 @@ from openpilot.tools.carnival.self_tune_profile import (
   resolve_values,
   revert_snapshot,
 )
-
 
 LOG_ROOT = Path("/data/media/0/realdata")
 REPORT_ROOT = Path("/data/media/0/carnival_reports")
@@ -115,7 +114,7 @@ def analyze_completed_route(params: Params, route: str, files: list[Path]) -> No
   params.put_bool("CarnivalAnalysisRunning", True)
   params.put("CarnivalAnalysisError", "")
   try:
-    report = analyze_route(route, files)
+    report = analyze_route(route, files, compact=True)
     payload = asdict(report)
     scorecard = dict(payload.get("scorecard", {}))
     scorecard.update({
@@ -160,14 +159,16 @@ def main() -> None:
       params.put_bool("CarnivalAnalysisRunning", True)
       params.put_bool("CarnivalAnalyzeNow", False)
 
-    if force or params.get_bool("CarnivalAutoAnalyze"):
+    if force:
       routes = discover_routes(LOG_ROOT) if LOG_ROOT.exists() else []
       if routes:
         route, files, newest = routes[-1]
-        already_done = route == (params.get("CarnivalLastAnalysisRoute", encoding="utf-8") or "")
         settled = (datetime.now().timestamp() - newest) >= ROUTE_SETTLE_SECONDS
-        if force or (not already_done and settled):
+        if settled:
           analyze_completed_route(params, route, files)
+        else:
+          params.put("CarnivalAnalysisError", "The latest route is still being finalized.")
+          params.put_bool("CarnivalAnalysisRunning", False)
       elif force:
         params.put("CarnivalAnalysisError", "No completed routes are available.")
         params.put_bool("CarnivalAnalysisRunning", False)
