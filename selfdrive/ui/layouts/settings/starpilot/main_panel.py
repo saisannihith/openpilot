@@ -139,7 +139,7 @@ class StarPilotLayout(Widget):
     )
 
     self._breadcrumbs = BreadcrumbController()
-    self._main_grid = TileGrid(columns=None, padding=SPACING.tile_gap)
+    self._main_grid = TileGrid(columns=None, padding=8)
     self._rebuild_grid()
 
   def set_depth_callback(self, callback: Callable):
@@ -290,17 +290,17 @@ class StarPilotLayout(Widget):
     self._commit_navigation()
 
   def _render(self, rect: rl.Rectangle):
-    TOP_BAR_HEIGHT = 72
-    BOTTOM_BAR_HEIGHT = 10
+    TOP_BAR_HEIGHT = 58
+    BOTTOM_BAR_HEIGHT = 2
     content_rect = rl.Rectangle(rect.x, rect.y + TOP_BAR_HEIGHT, rect.width, rect.height - TOP_BAR_HEIGHT - BOTTOM_BAR_HEIGHT)
 
-    # Standardize width to perfectly match subpanel shells
-    shell_w = min(rect.width - AETHER_LIST_METRICS.outer_margin_x * 2, AETHER_LIST_METRICS.max_content_width)
+    shell_margin = 4.0
+    shell_w = min(rect.width - shell_margin * 2, AETHER_LIST_METRICS.max_content_width)
     shell_x = rect.x + (rect.width - shell_w) / 2
 
     # 0. Draw top bar with HubTile-style purple glow
     glass_rect = rl.Rectangle(shell_x, rect.y + 2, shell_w, TOP_BAR_HEIGHT - 4)
-    draw_hud_background(glass_rect, AetherListColors.PRIMARY, radius_px=34)
+    draw_hud_background(glass_rect, AetherListColors.PRIMARY, radius_px=26)
 
     accessory_width = min(self._header_accessory_width(), max(0.0, glass_rect.width - 360.0))
 
@@ -312,7 +312,7 @@ class StarPilotLayout(Widget):
 
     # 4. Render active content panel
     if self._current_panel == StarPilotPanelType.MAIN:
-      grid_rect = rl.Rectangle(shell_x, content_rect.y + AETHER_LIST_METRICS.outer_margin_y, shell_w, content_rect.height - AETHER_LIST_METRICS.outer_margin_y * 2)
+      grid_rect = rl.Rectangle(shell_x, content_rect.y + 4, shell_w, content_rect.height - 8)
       self._main_grid.render(grid_rect)
     else:
       panel = self._panels[self._current_panel]

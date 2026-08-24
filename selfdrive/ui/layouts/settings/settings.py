@@ -23,7 +23,7 @@ CLOSE_BTN_SIZE = 132
 CLOSE_ICON_SIZE = 50
 NAV_BTN_HEIGHT = 90
 NAV_TEXT_SIZE = 48
-PANEL_MARGIN = 10
+PANEL_MARGIN = 0
 
 # Colors
 SIDEBAR_COLOR = rl.BLACK
@@ -256,8 +256,8 @@ class SettingsLayout(Widget):
         y += nav_btn_h
 
   def _draw_current_panel(self, rect: rl.Rectangle):
-    rl.draw_rectangle_rounded(rl.Rectangle(rect.x + 10, rect.y + 10, rect.width - 20, rect.height - 20), 0.04, 30, PANEL_COLOR)
-    content_rect = rl.Rectangle(rect.x + PANEL_MARGIN, rect.y + 10, rect.width - (PANEL_MARGIN * 2), rect.height - 20)
+    rl.draw_rectangle_rec(rect, PANEL_COLOR)
+    content_rect = rl.Rectangle(rect.x + PANEL_MARGIN, rect.y, rect.width - (PANEL_MARGIN * 2), rect.height)
     panel = self._panels[self._current_panel]
     if panel.instance:
       panel.instance.render(content_rect)
