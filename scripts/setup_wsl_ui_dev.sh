@@ -23,7 +23,8 @@ sudo apt-get install -y \
   libavformat-dev \
   libavutil-dev \
   libncurses-dev \
-  libopencl-dev \
+  ocl-icd-opencl-dev \
+  opencl-headers \
   libyuv-dev \
   patchelf \
   pkg-config \
