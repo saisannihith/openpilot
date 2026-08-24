@@ -290,8 +290,8 @@ class StarPilotLayout(Widget):
     self._commit_navigation()
 
   def _render(self, rect: rl.Rectangle):
-    TOP_BAR_HEIGHT = 84
-    TOP_BAR_INSET = 8
+    TOP_BAR_HEIGHT = 108
+    TOP_BAR_INSET = 10
     BOTTOM_BAR_HEIGHT = 2
     content_rect = rl.Rectangle(rect.x, rect.y + TOP_BAR_INSET + TOP_BAR_HEIGHT, rect.width,
                                 rect.height - TOP_BAR_INSET - TOP_BAR_HEIGHT - BOTTOM_BAR_HEIGHT)
@@ -336,7 +336,7 @@ class StarPilotLayout(Widget):
       return
 
     prefix = tr("Current") + ":"
-    font_size = 38
+    font_size = 40
     prefix_font = gui_app.font(FontWeight.MEDIUM)
     model_font = gui_app.font(FontWeight.SEMI_BOLD)
     prefix_w = measure_text_cached(prefix_font, prefix, font_size).x

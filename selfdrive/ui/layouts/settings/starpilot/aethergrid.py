@@ -1271,15 +1271,15 @@ class BreadcrumbController:
     target = 1.0 if self._expanded else 0.0
     self._expand_alpha += (target - self._expand_alpha) * ANIM_LERP
 
-    ACTIVE_SIZE = 34
-    PAST_SIZE = 28
-    MIN_ACTIVE_SIZE = 26
-    CHEVRON_SIZE = 20
-    CHEVRON_W = 12
-    GAP = 12
-    LEFT_INSET = 34
-    CAPSULE_W = 64
-    CAPSULE_H = 34
+    ACTIVE_SIZE = 40
+    PAST_SIZE = 32
+    MIN_ACTIVE_SIZE = 30
+    CHEVRON_SIZE = 24
+    CHEVRON_W = 14
+    GAP = 14
+    LEFT_INSET = 38
+    CAPSULE_W = 76
+    CAPSULE_H = 44
 
     center_y = rect.y + rect.height / 2
     color_sep = rl.Color(140, 150, 175, 220)
@@ -1310,7 +1310,7 @@ class BreadcrumbController:
       direct_fit = False
       active_size = ACTIVE_SIZE
 
-      for f in (34, 32, 30, 28, 26):
+      for f in (40, 38, 36, 34, 32, 30):
         w_active = measure_text_cached(semi_font, active_text, f).x
         if past_w_sum + w_active <= available_w:
           active_size = f
@@ -1396,10 +1396,11 @@ class BreadcrumbController:
           rl.draw_rectangle_rounded_lines_ex(cap_rect, 1.0, 16, 1.0, outline)
 
           font_dots = gui_app.font(FontWeight.SEMI_BOLD)
-          dots_ts = measure_text_cached(font_dots, "...", 24)
+          dots_size = 30
+          dots_ts = measure_text_cached(font_dots, "...", dots_size)
           rl.draw_text_ex(font_dots, "...",
             rl.Vector2(cap_rect.x + (cap_rect.width - dots_ts.x) / 2, center_y - dots_ts.y / 2),
-            24, 0, dots_c)
+            dots_size, 0, dots_c)
         current_x += CAPSULE_W + GAP
 
       else:
@@ -1414,7 +1415,7 @@ class BreadcrumbController:
         color = past_pressed if pressed else (past_hover if hovered else (active_normal if is_last else past_normal))
 
         if hovered and not is_last:
-          highlight_h = 44
+          highlight_h = 58
           highlight_rect = rl.Rectangle(current_x - 6, center_y - highlight_h / 2, ts.x + 12, highlight_h)
           rl.draw_rectangle_rounded(highlight_rect, 0.35, 10, rl.Color(255, 255, 255, 14))
 
