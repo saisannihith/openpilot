@@ -1,7 +1,10 @@
 import operator
 import os
 import platform
+import re
 import sys
+import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from cereal import car, messaging
@@ -12,6 +15,12 @@ from openpilot.system.manager.process import DaemonProcess, NativeProcess, Pytho
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 UI_WATCHDOG_MAX_DT = int(os.getenv("UI_WATCHDOG_MAX_DT", "10"))
 CAMERAD_WATCHDOG_MAX_DT = int(os.getenv("CAMERAD_WATCHDOG_MAX_DT", "5"))
+CARNIVAL_LOG_ROOT = "/data/media/0/realdata"
+CARNIVAL_LOG_NAMES = ("qlog", "qlog.zst", "qlog.bz2", "rlog", "rlog.zst", "rlog.bz2")
+CARNIVAL_ROUTE_SETTLE_SECONDS = 45.0
+CARNIVAL_ROUTE_SCAN_INTERVAL = 10.0
+_carnival_next_route_scan = 0.0
+_carnival_last_requested_route = ""
 
 def driverview(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started or params.get_bool("IsDriverViewEnabled")
@@ -74,15 +83,63 @@ def is_carnival_4th_gen(params: Params, CP: car.CarParams) -> bool:
 def carnival_only(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started and is_carnival_4th_gen(params, CP)
 
-def carnival_watch_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
-  return not started and params.get_bool("CarnivalAutoAnalyze") and is_carnival_4th_gen(params, CP)
+def newest_carnival_route(root: str = CARNIVAL_LOG_ROOT) -> tuple[str, float] | None:
+  newest_by_route: dict[str, float] = {}
+  try:
+    segments = os.scandir(root)
+  except OSError:
+    return None
+  with segments:
+    for segment in segments:
+      if not segment.is_dir():
+        continue
+      match = re.match(r"(.+--[0-9a-f]+)--\d+$", segment.name)
+      route = match.group(1) if match else segment.name
+      for name in CARNIVAL_LOG_NAMES:
+        path = os.path.join(segment.path, name)
+        try:
+          modified = os.path.getmtime(path)
+        except OSError:
+          continue
+        newest_by_route[route] = max(newest_by_route.get(route, 0.0), modified)
+        break
+  return max(newest_by_route.items(), key=lambda item: item[1]) if newest_by_route else None
+
+
+def carnival_new_route_ready(params: Params, root: str, now: float) -> str:
+  latest = newest_carnival_route(root)
+  if latest is None:
+    return ""
+  route, modified = latest
+  completed = params.get("CarnivalLastAnalysisRoute") or b""
+  if isinstance(completed, bytes):
+    completed = completed.decode("utf-8", errors="replace")
+  return route if route != completed and now - modified >= CARNIVAL_ROUTE_SETTLE_SECONDS else ""
+
+
+def carnival_auto_analysis_requested(params: Params) -> bool:
+  global _carnival_last_requested_route, _carnival_next_route_scan
+  if not params.get_bool("CarnivalAutoAnalyze"):
+    return False
+  now_monotonic = time.monotonic()
+  if now_monotonic < _carnival_next_route_scan:
+    return False
+  _carnival_next_route_scan = now_monotonic + CARNIVAL_ROUTE_SCAN_INTERVAL
+  route = carnival_new_route_ready(params, CARNIVAL_LOG_ROOT, datetime.now(UTC).timestamp())
+  if route and route != _carnival_last_requested_route:
+    _carnival_last_requested_route = route
+    params.put_bool("CarnivalAnalyzeNow", True)
+    return True
+  return False
 
 def carnival_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  if started or not is_carnival_4th_gen(params, CP):
+    return False
   requested = any(params.get_bool(key) for key in (
     "CarnivalAnalyzeNow", "CarnivalAnalysisRunning",
     "CarnivalApplyProfile", "CarnivalRevertProfile",
   ))
-  return not started and requested and is_carnival_4th_gen(params, CP)
+  return requested or carnival_auto_analysis_requested(params)
 
 def only_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return not started
@@ -183,7 +240,6 @@ procs = [
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
   PythonProcess("carnivald", "selfdrive.controls.carnivald", carnival_only),
-  PythonProcess("carnival_watchd", "selfdrive.controls.carnival_watchd", carnival_watch_offroad, nice=19),
   PythonProcess("carnival_analyzerd", "selfdrive.controls.carnival_analyzerd", carnival_offroad, nice=19),
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),

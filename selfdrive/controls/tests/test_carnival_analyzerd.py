@@ -1,5 +1,4 @@
 import json
-import os
 
 from openpilot.selfdrive.controls import carnival_analyzerd
 from openpilot.selfdrive.controls.carnival_analyzerd import (
@@ -9,7 +8,6 @@ from openpilot.selfdrive.controls.carnival_analyzerd import (
   prune_reports,
   scorecard_log_files,
 )
-from openpilot.selfdrive.controls.carnival_watchd import request_new_route
 from openpilot.tools.carnival.collect_and_report import RouteReport, summarize_compact_radar
 
 
@@ -97,23 +95,6 @@ def test_compact_radar_summary_falls_back_to_logged_radar_state():
   assert metrics.coverage == 0.4
   assert metrics.refs == 100
   assert metrics.selected == 40
-
-
-def test_watcher_requests_one_settled_unscored_route(tmp_path):
-  segment = tmp_path / "dongle|2026-08-24--abcd--0"
-  segment.mkdir()
-  qlog = segment / "qlog"
-  qlog.write_bytes(b"compact")
-  os.utime(qlog, (100.0, 100.0))
-  params = FakeParams()
-
-  requested = request_new_route(params, tmp_path, 200.0)
-  assert requested == "dongle|2026-08-24--abcd"
-  assert params.get_bool("CarnivalAnalyzeNow")
-
-  params.put_bool("CarnivalAnalyzeNow", False)
-  assert request_new_route(params, tmp_path, 200.0, requested) == requested
-  assert not params.get_bool("CarnivalAnalyzeNow")
 
 
 def test_analyzer_always_uses_compact_replay(monkeypatch, tmp_path):
