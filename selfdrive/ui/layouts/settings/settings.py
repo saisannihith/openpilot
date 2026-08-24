@@ -148,8 +148,8 @@ class SettingsLayout(Widget):
     rl.draw_line_ex(p2, p3, 2.8, color)
 
   def _sidebar_tab_hit_zone(self, rect: rl.Rectangle) -> rl.Rectangle:
-    tab_h = min(140.0, max(96.0, rect.height * 0.22))
-    tab_y = rect.y + (rect.height - tab_h) / 2
+    tab_h = 72
+    tab_y = rect.y + 16
     return rl.Rectangle(rect.x, tab_y, 40, tab_h)
 
   def _draw_sidebar(self, rect: rl.Rectangle):
@@ -159,16 +159,27 @@ class SettingsLayout(Widget):
     line_rect = rl.Rectangle(rect.x, rect.y, 2, rect.height)
     rl.draw_rectangle_rec(line_rect, ACCENT_LINE_COLOR)
 
-    # Unified Protruding Edge Tab (Expand/Collapse toggle)
-    tab_h = min(140.0, max(96.0, rect.height * 0.22))
-    tab_w = 70
-    tab_cy = int(rect.y + rect.height / 2)
-    tab_x = rect.x - 30  # Leaves exactly 40px protruding onto the screen
-    tab_y = tab_cy - (tab_h / 2)
+    # Unified expand/collapse control. It stays in the header area so the
+    # collapsed handle does not cover the StarPilot navigation label.
+    if self._sidebar_expanded:
+      tab_h = 64
+      tab_w = min(180.0, max(132.0, rect.width - 96.0))
+      tab_x = rect.x + (rect.width - tab_w) / 2
+      tab_y = rect.y + 16
+      tab_cy = int(tab_y + tab_h / 2)
+      chevron_x = int(tab_x + tab_w / 2)
+    else:
+      tab_h = 72
+      tab_w = 70
+      tab_x = rect.x - 30  # Leaves exactly 40px protruding onto the screen
+      tab_y = rect.y + 16
+      tab_cy = int(tab_y + tab_h / 2)
+      chevron_x = rect.x + 20
     tab_rect = rl.Rectangle(tab_x, tab_y, tab_w, tab_h)
 
-    # Hit zone is the visible portion on screen
-    self._collapse_btn_rect = rl.Rectangle(rect.x, tab_y, 40, tab_h)
+    # Hit zone is the visible portion on screen when collapsed, and the full
+    # top control when expanded.
+    self._collapse_btn_rect = tab_rect if self._sidebar_expanded else rl.Rectangle(rect.x, tab_y, 40, tab_h)
 
     # Interaction state
     is_pressed = False
@@ -192,18 +203,46 @@ class SettingsLayout(Widget):
     rl.draw_rectangle_rounded(tab_rect, 0.5, 30, tab_bg)
     rl.draw_rectangle_rounded_lines_ex(tab_rect, 0.5, 30, 2.0, tab_border)
 
-    # Chevron properly centered on the *visible* portion of the tab
-    chevron_x = rect.x + 20
+    # Chevron properly centered on the visible control
     self._draw_chevron(chevron_x, tab_cy, not self._sidebar_expanded, rl.Color(255, 255, 255, 255), size=24, bloom=True)
 
     if self._sidebar_expanded:
       # ── EXPANDED ──
 
       # Back/Close button - hierarchical navigation
-      top_pad = max(24.0, min(54.0, rect.height * 0.05))
+      top_pad = tab_h + max(34.0, min(54.0, rect.height * 0.05))
       bottom_pad = max(22.0, min(48.0, rect.height * 0.05))
       close_size = min(float(CLOSE_BTN_SIZE), max(104.0, rect.height * 0.15))
-      back_btn_rect = rl.Rectangle(rect.x + (rect.width - close_size) / 2, rect.y + top_pad, close_size, close_size)
+      back_btn_rect = rl.Rectangle(rect.x + (rect.width - close_size) / 2, rect.y + rect.height - bottom_pad - close_size, close_size, close_size)
+
+      # Navigation buttons: fit the available sidebar height instead of using
+      # fixed desktop y positions that overflow on the comma display.
+      y = rect.y + top_pad
+      nav_count = max(1, len(self._panels))
+      close_gap_top = max(18.0, min(36.0, rect.height * 0.035))
+      available_h = max(0.0, back_btn_rect.y - close_gap_top - y)
+      nav_btn_h = min(float(NAV_BTN_HEIGHT), max(58.0, available_h / nav_count))
+      for panel_type, panel_info in self._panels.items():
+        button_rect = rl.Rectangle(rect.x + 8, y, rect.width - 16, nav_btn_h)
+
+        # Button styling
+        is_selected = panel_type == self._current_panel
+        text_color = TEXT_SELECTED if is_selected else TEXT_NORMAL
+        # Draw button text centered across the full sidebar width.
+        panel_name = tr(panel_info.name)
+        font_size = int(min(float(NAV_TEXT_SIZE), max(34.0, nav_btn_h * 0.56)))
+        text_size = measure_text_cached(self._font_medium, panel_name, font_size)
+        while text_size.x > button_rect.width - 16 and font_size > 38:
+          font_size -= 2
+          text_size = measure_text_cached(self._font_medium, panel_name, font_size)
+        text_pos = rl.Vector2(button_rect.x + (button_rect.width - text_size.x) / 2, button_rect.y + (button_rect.height - text_size.y) / 2)
+        rl.draw_text_ex(self._font_medium, panel_name, rl.Vector2(floor(text_pos.x), floor(text_pos.y)), font_size, 0, text_color)
+
+        # Store button rect for click detection
+        panel_info.button_rect = button_rect
+
+        y += nav_btn_h
+
       pressed = gui_app.last_mouse_event.left_down and rl.check_collision_point_rec(gui_app.last_mouse_event.pos, back_btn_rect)
       close_color = CLOSE_BTN_PRESSED if pressed else CLOSE_BTN_COLOR
       rl.draw_rectangle_rounded(back_btn_rect, 1.0, 20, close_color)
@@ -226,34 +265,6 @@ class SettingsLayout(Widget):
 
       # Store back button rect for click detection
       self._back_btn_rect = back_btn_rect
-
-      # Navigation buttons: fit the available sidebar height instead of using
-      # fixed desktop y positions that overflow on the comma display.
-      nav_gap_top = max(18.0, min(44.0, rect.height * 0.04))
-      y = back_btn_rect.y + back_btn_rect.height + nav_gap_top
-      nav_count = max(1, len(self._panels))
-      available_h = max(0.0, rect.y + rect.height - bottom_pad - y)
-      nav_btn_h = min(float(NAV_BTN_HEIGHT), max(58.0, available_h / nav_count))
-      for panel_type, panel_info in self._panels.items():
-        button_rect = rl.Rectangle(rect.x + 28, y, rect.width - 70, nav_btn_h)
-
-        # Button styling
-        is_selected = panel_type == self._current_panel
-        text_color = TEXT_SELECTED if is_selected else TEXT_NORMAL
-        # Draw button text (right-aligned)
-        panel_name = tr(panel_info.name)
-        font_size = int(min(float(NAV_TEXT_SIZE), max(34.0, nav_btn_h * 0.56)))
-        text_size = measure_text_cached(self._font_medium, panel_name, font_size)
-        while text_size.x > button_rect.width and font_size > 38:
-          font_size -= 2
-          text_size = measure_text_cached(self._font_medium, panel_name, font_size)
-        text_pos = rl.Vector2(button_rect.x + button_rect.width - text_size.x, button_rect.y + (button_rect.height - text_size.y) / 2)
-        rl.draw_text_ex(self._font_medium, panel_name, rl.Vector2(floor(text_pos.x), floor(text_pos.y)), font_size, 0, text_color)
-
-        # Store button rect for click detection
-        panel_info.button_rect = button_rect
-
-        y += nav_btn_h
 
   def _draw_current_panel(self, rect: rl.Rectangle):
     rl.draw_rectangle_rec(rect, PANEL_COLOR)
