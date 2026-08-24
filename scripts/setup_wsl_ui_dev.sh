@@ -40,11 +40,6 @@ if [[ ! -x .venv/bin/python3 ]]; then
   ./tools/install_python_dependencies.sh
 fi
 
-if [[ -f third_party/acados/x86_64/lib/libblasfeo.so ]] &&
-   readelf -W -l third_party/acados/x86_64/lib/libblasfeo.so 2>/dev/null | grep -q "GNU_STACK.*RWE"; then
-  patchelf --clear-execstack third_party/acados/x86_64/lib/libblasfeo.so
-fi
-
 echo "WSL UI development setup complete."
 echo "Run: ./scripts/start_raylib_ui_browser.sh"
 echo "Then: ./scripts/run_onroad_browser.sh --demo"
