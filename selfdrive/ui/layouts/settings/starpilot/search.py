@@ -1,25 +1,29 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Callable
 
 import pyray as rl
 
 from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.multilang import tr, tr_noop
-from openpilot.system.ui.widgets import DialogResult, Widget
+from openpilot.system.ui.widgets import DialogResult
 from openpilot.system.ui.widgets.inputbox import InputBox
 from openpilot.system.ui.widgets.keyboard import Keyboard
 from openpilot.system.ui.widgets.label import gui_label
 
 from openpilot.selfdrive.ui.layouts.settings.starpilot.panel import _SettingsPage, StarPilotPanelInfo, StarPilotPanelType
+from openpilot.selfdrive.ui.layouts.settings.starpilot.settings_index import (
+  SettingsEntry,
+  build_settings_index,
+  filter_settings_entries,
+  row_enabled,
+  row_visible,
+)
 from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
   AETHER_LIST_METRICS,
   AetherListColors,
   DEFAULT_PANEL_STYLE,
   PanelManagerView,
-  SettingRow,
-  SettingSection,
   draw_empty_state_card,
   draw_list_group_shell,
   draw_rounded_fill,
@@ -39,13 +43,6 @@ SEARCH_ROW_HEIGHT = 122
 SEARCH_HEADER_HEIGHT = 54
 SEARCH_GAP = 16
 MAX_SEARCH_RESULTS = 80
-
-
-@dataclass(frozen=True)
-class SearchEntry:
-  row: SettingRow
-  path: str
-  terms: str
 
 
 class SearchInputBox(InputBox):
@@ -89,8 +86,8 @@ class SettingsSearchView(PanelManagerView):
     self._controller = controller
     self._panel_provider = panel_provider
     self._query_box = self._child(SearchInputBox(max_text_size=64))
-    self._entries: list[SearchEntry] = []
-    self._matches: list[SearchEntry] = []
+    self._entries: list[SettingsEntry] = []
+    self._matches: list[SettingsEntry] = []
     self._last_query = ""
     self._index_ready = False
 
@@ -103,114 +100,16 @@ class SettingsSearchView(PanelManagerView):
     self._query_box.text = query
     self._last_query = ""
 
-  def _row_enabled(self, row: SettingRow) -> bool:
-    try:
-      return row.enabled() if row.enabled is not None else True
-    except Exception:
-      return False
-
-  def _row_visible(self, row: SettingRow) -> bool:
-    try:
-      return row.visible() if row.visible is not None else True
-    except Exception:
-      return False
-
-  def _section_visible(self, section: SettingSection) -> bool:
-    try:
-      return section.visible() if section.visible is not None else True
-    except Exception:
-      return False
-
-  def _row_terms(self, row: SettingRow, path: str) -> str:
-    parts = [
-      row.id,
-      row.title,
-      row.subtitle,
-      row.disabled_label,
-      row.action_text,
-      path,
-    ]
-    return " ".join(str(p) for p in parts if p).lower()
-
-  def _panel_title(self, panel_type: StarPilotPanelType, info: StarPilotPanelInfo) -> str:
-    if info.name:
-      return tr(info.name)
-    return panel_type.name.replace("_", " ").title()
-
-  def _view_title(self, name: str, widget: Widget) -> str:
-    header_title = getattr(widget, "_header_title", "")
-    if header_title:
-      return tr(header_title)
-    return name.replace("_", " ").title()
-
-  def _collect_rows_from_view(self, widget: Widget, path: str, seen: set[int]) -> list[SearchEntry]:
-    entries: list[SearchEntry] = []
-
-    sections = getattr(widget, "_sections", None)
-    if sections:
-      for section in sections:
-        if not isinstance(section, SettingSection) or not self._section_visible(section):
-          continue
-        section_path = path
-        if section.title:
-          section_path = f"{path} / {tr(section.title)}"
-        for row in section.rows:
-          if not isinstance(row, SettingRow) or id(row) in seen:
-            continue
-          if row.type not in ("toggle", "value", "action"):
-            continue
-          if row.get_state is None and row.on_click is None and row.set_state is None and row.type != "action":
-            continue
-          seen.add(id(row))
-          entries.append(SearchEntry(row, section_path, self._row_terms(row, section_path)))
-
-    for sub_name, sub_widget in getattr(widget, "_sub_panels", {}).items():
-      if sub_widget is None:
-        continue
-      sub_path = f"{path} / {self._view_title(str(sub_name), sub_widget)}"
-      entries.extend(self._collect_rows_from_view(sub_widget, sub_path, seen))
-
-    return entries
-
   def _rebuild_index(self) -> None:
-    seen: set[int] = set()
-    entries: list[SearchEntry] = []
-    for panel_type, info in self._panel_provider().items():
-      if panel_type in (StarPilotPanelType.MAIN, StarPilotPanelType.SEARCH):
-        continue
-      if info.instance is None:
-        continue
-      panel_path = self._panel_title(panel_type, info)
-      entries.extend(self._collect_rows_from_view(info.instance, panel_path, seen))
-    self._entries = entries
+    self._entries = build_settings_index(
+      self._panel_provider,
+      exclude_panel_types={StarPilotPanelType.MAIN, StarPilotPanelType.SEARCH},
+    )
     self._index_ready = True
     self._matches = self._filter_entries()
 
-  def _filter_entries(self) -> list[SearchEntry]:
-    query = self._query_box.text.strip().lower()
-    if len(query) < 2:
-      return []
-
-    tokens = [token for token in query.split() if token]
-    scored: list[tuple[int, SearchEntry]] = []
-    for entry in self._entries:
-      if not all(token in entry.terms for token in tokens):
-        continue
-      title = str(entry.row.title).lower()
-      row_id = entry.row.id.lower()
-      score = 0
-      if title.startswith(query) or row_id.startswith(query):
-        score += 40
-      if query in title:
-        score += 25
-      if query in row_id:
-        score += 20
-      if self._row_visible(entry.row):
-        score += 5
-      scored.append((score, entry))
-
-    scored.sort(key=lambda item: (-item[0], tr(item[1].row.title).lower(), item[1].path))
-    return [entry for _score, entry in scored[:MAX_SEARCH_RESULTS]]
+  def _filter_entries(self) -> list[SettingsEntry]:
+    return filter_settings_entries(self._entries, self._query_box.text, MAX_SEARCH_RESULTS)
 
   def _refresh_matches_if_needed(self) -> None:
     if not self._index_ready:
@@ -238,7 +137,7 @@ class SettingsSearchView(PanelManagerView):
       return
 
     row = entry.row
-    if not self._row_enabled(row):
+    if not row_enabled(row):
       return
     if row.type == "toggle" and row.get_state is not None and row.set_state is not None:
       row.set_state(not row.get_state())
@@ -305,13 +204,13 @@ class SettingsSearchView(PanelManagerView):
       row_separator=PANEL_STYLE.divider_color,
     )
 
-  def _draw_result_row(self, rect: rl.Rectangle, entry: SearchEntry, index: int, is_last: bool) -> None:
+  def _draw_result_row(self, rect: rl.Rectangle, entry: SettingsEntry, index: int, is_last: bool) -> None:
     row = entry.row
     target_id = f"result:{index}"
     hovered, pressed = self._interactive_state(target_id, rect)
-    enabled = self._row_enabled(row)
-    visible = self._row_visible(row)
-    path = entry.path if visible else f"{entry.path} / Hidden until dependency is enabled"
+    enabled = row_enabled(row)
+    visible = row_visible(row)
+    path = entry.label_path if visible else f"{entry.label_path} / Hidden until dependency is enabled"
     subtitle_parts = [path]
     if row.subtitle:
       subtitle_parts.append(tr(row.subtitle))

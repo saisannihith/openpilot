@@ -110,8 +110,8 @@ class StarPilotLayout(Widget):
 
     self._panels = {
       StarPilotPanelType.MAIN: StarPilotPanelInfo("", None),
-      StarPilotPanelType.QUICK_CONTROLS: StarPilotPanelInfo(tr_noop("Quick Controls"), StarPilotQuickControlsLayout()),
-      StarPilotPanelType.SEARCH: StarPilotPanelInfo(tr_noop("Search Settings"), StarPilotSearchLayout(lambda: self._panels)),
+      StarPilotPanelType.QUICK_CONTROLS: StarPilotPanelInfo(tr_noop("Quick Controls"), StarPilotQuickControlsLayout(lambda: getattr(self, "_panels", {}))),
+      StarPilotPanelType.SEARCH: StarPilotPanelInfo(tr_noop("Search Settings"), StarPilotSearchLayout(lambda: getattr(self, "_panels", {}))),
       StarPilotPanelType.SOUNDS: StarPilotPanelInfo(tr_noop("Sounds"), StarPilotSoundsLayout()),
       StarPilotPanelType.SYSTEM: StarPilotPanelInfo(tr_noop("System Settings"), StarPilotSystemLayout()),
       StarPilotPanelType.DRIVING_MODEL: StarPilotPanelInfo(tr_noop("Driving Model"), StarPilotDrivingModelLayout()),
