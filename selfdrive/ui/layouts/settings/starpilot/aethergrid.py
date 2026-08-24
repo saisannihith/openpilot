@@ -443,7 +443,7 @@ def init_list_panel(rect: rl.Rectangle, style: PanelStyle | None = None, metrics
   frame = build_list_panel_frame(rect, metrics)
   draw_list_panel_shell(frame, style)
   scroll_rect = frame.scroll
-  content_width = scroll_rect.width - AETHER_LIST_METRICS.content_right_gutter
+  content_width = scroll_rect.width - metrics.content_right_gutter
   return frame, scroll_rect, content_width
 
 
@@ -5599,4 +5599,3 @@ class TileGrid(Widget):
           tile.set_parent_rect(parent_rect)
         tile.render(snap_rect(rl.Rectangle(row_x + c * (row_tile_w + self._gap), rect.y + y_offset + r * (tile_h + self._gap), row_tile_w, tile_h)))
         tile_idx += 1
-

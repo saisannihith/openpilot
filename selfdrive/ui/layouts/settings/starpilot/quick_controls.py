@@ -49,7 +49,7 @@ from openpilot.starpilot.common.longitudinal_mode import (
 
 
 PANEL_STYLE = DEFAULT_PANEL_STYLE
-CUSTOMIZE_PANEL_METRICS = replace(AETHER_LIST_METRICS, header_height=108)
+CUSTOMIZE_PANEL_METRICS = replace(AETHER_LIST_METRICS, header_height=118, content_right_gutter=44)
 QUICK_CONTROL_ORDER_PARAM = "StarPilotQuickControlOrder"
 STOCK_ID_PREFIX = "stock:"
 ADD_SEARCH_BOX_HEIGHT = 86
@@ -83,7 +83,7 @@ class QuickControlsSearchInputBox(InputBox):
       color=rl.Color(4, 4, 8, 210),
       border_color=with_alpha(PANEL_STYLE.surface_border, 42),
       text_color=PANEL_STYLE.title_color,
-      font_size=34,
+      font_size=36,
     )
 
 
@@ -591,8 +591,8 @@ class QuickControlsCustomizeView(PanelManagerView):
       header_rect,
       tr("Customize Quick Controls"),
       tr("Drag the handle to reorder. Use + and x to add or remove controls."),
-      title_size=30,
-      subtitle_size=24,
+      title_size=34,
+      subtitle_size=26,
     )
 
   def _measure_content_height(self, content_width: float) -> float:
@@ -735,8 +735,8 @@ class QuickControlsCustomizeView(PanelManagerView):
       is_last=is_last,
       action_width=action_width,
       action_pill=True,
-      title_size=34,
-      subtitle_size=22,
+      title_size=36,
+      subtitle_size=24,
       row_separator=PANEL_STYLE.divider_color,
     )
 
@@ -757,8 +757,8 @@ class QuickControlsCustomizeView(PanelManagerView):
       is_last=is_last,
       action_width=96,
       action_pill=True,
-      title_size=32,
-      subtitle_size=21,
+      title_size=34,
+      subtitle_size=23,
       row_separator=PANEL_STYLE.divider_color,
     )
     add_rect = rl.Rectangle(rect.x + rect.width - 84, rect.y + 20, 66, rect.height - 40)
@@ -770,7 +770,7 @@ class QuickControlsCustomizeView(PanelManagerView):
     label_width = 185
     clear_width = 88 if self._query_box.text.strip() else 0
     label_rect = rl.Rectangle(rect.x + 24, rect.y, label_width, rect.height)
-    gui_label(label_rect, tr("Search"), 31, PANEL_STYLE.title_color, FontWeight.BOLD)
+    gui_label(label_rect, tr("Search"), 34, PANEL_STYLE.title_color, FontWeight.BOLD)
 
     input_right_pad = 26 + clear_width
     input_rect = rl.Rectangle(rect.x + label_width + 28, rect.y + 12, rect.width - label_width - input_right_pad - 28, rect.height - 24)
@@ -790,13 +790,13 @@ class QuickControlsCustomizeView(PanelManagerView):
       hovered=False,
       pressed=False,
       is_last=True,
-      action_width=96,
+      action_width=156,
       action_pill=True,
-      title_size=32,
-      subtitle_size=21,
+      title_size=34,
+      subtitle_size=23,
       row_separator=PANEL_STYLE.divider_color,
     )
-    reset_rect = rl.Rectangle(rect.x + rect.width - 108, rect.y + 20, 90, rect.height - 40)
+    reset_rect = rl.Rectangle(rect.x + rect.width - 144, rect.y + 18, 120, rect.height - 36)
     self._draw_icon_button(reset_rect, tr("Reset"), "reset", danger=True)
 
   def _draw_scroll_content(self, rect: rl.Rectangle, content_width: float) -> None:
