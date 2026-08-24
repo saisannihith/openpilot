@@ -92,7 +92,10 @@ class CarnivalLayout(Widget):
 
   def _json_param(self, key: str) -> dict:
     try:
-      value = json.loads(_decode(self._params.get(key, return_default=True)) or "{}")
+      raw = self._params.get(key, return_default=True)
+      if isinstance(raw, dict):
+        return raw
+      value = json.loads(_decode(raw) or "{}")
       return value if isinstance(value, dict) else {}
     except (TypeError, ValueError):
       return {}

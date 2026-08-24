@@ -26,7 +26,7 @@ class FakeParams:
     return value in (True, "1", b"1")
 
   def put(self, key, value):
-    self.values[key] = str(value)
+    self.values[key] = value
 
   def put_bool(self, key, value):
     self.values[key] = "1" if value else "0"
@@ -67,7 +67,15 @@ def test_apply_and_revert_pending_profile():
   params.put_bool("CarnivalRevertProfile", True)
   handle_profile_requests(params)
   assert params.values["StandardFollow"] == "1.45"
-  assert params.values["CarnivalProfileSnapshot"] == "{}"
+  assert params.values["CarnivalProfileSnapshot"] == {}
+
+
+def test_json_params_use_native_typed_values():
+  payload = {"overall_score": 91}
+  params = FakeParams({"CarnivalLastScorecard": payload})
+  assert carnival_analyzerd._json_param(params, "CarnivalLastScorecard") == payload
+  carnival_analyzerd._write_json_param(params, "CarnivalLastScorecard", {"overall_score": 92})
+  assert params.values["CarnivalLastScorecard"] == {"overall_score": 92}
 
 
 def test_report_retention_removes_old_pairs(tmp_path):

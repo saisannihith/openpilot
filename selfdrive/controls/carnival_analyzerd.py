@@ -30,7 +30,9 @@ LOG_NAMES = {"rlog", "rlog.zst", "rlog.bz2", "qlog", "qlog.zst", "qlog.bz2"}
 def _json_param(params: Params, key: str) -> dict:
   try:
     raw = params.get(key, return_default=True)
-    payload = json.loads(raw.decode() if isinstance(raw, bytes) else str(raw or "{}"))
+    if isinstance(raw, dict):
+      return raw
+    payload = json.loads(raw.decode() if isinstance(raw, bytes) else (raw or "{}"))
     return payload if isinstance(payload, dict) else {}
   except (TypeError, ValueError):
     return {}
@@ -61,7 +63,7 @@ def discover_routes(root: Path) -> list[tuple[str, list[Path], float]]:
 
 
 def _write_json_param(params: Params, key: str, payload: dict) -> None:
-  params.put(key, json.dumps(payload, separators=(",", ":")))
+  params.put(key, payload)
 
 
 def prune_reports(root: Path, keep: int = MAX_STORED_REPORTS) -> None:
@@ -107,7 +109,7 @@ def handle_profile_requests(params: Params) -> None:
     params.put_bool("CarnivalRevertProfile", False)
     snapshot = _json_param(params, "CarnivalProfileSnapshot")
     if revert_snapshot(params, snapshot):
-      params.put("CarnivalProfileSnapshot", "{}")
+      params.put("CarnivalProfileSnapshot", {})
 
 
 def analyze_completed_route(params: Params, route: str, files: list[Path]) -> None:
