@@ -290,7 +290,7 @@ class StarPilotLayout(Widget):
     self._commit_navigation()
 
   def _render(self, rect: rl.Rectangle):
-    TOP_BAR_HEIGHT = 72
+    TOP_BAR_HEIGHT = 84
     TOP_BAR_INSET = 8
     BOTTOM_BAR_HEIGHT = 2
     content_rect = rl.Rectangle(rect.x, rect.y + TOP_BAR_INSET + TOP_BAR_HEIGHT, rect.width,
