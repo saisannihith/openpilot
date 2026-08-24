@@ -10,7 +10,7 @@ import time
 
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
-from openpilot.tools.carnival.collect_and_report import analyze_route, iter_log_files, route_key, write_markdown
+from openpilot.tools.carnival.collect_and_report import analyze_route, route_key, segment_index, write_markdown
 from openpilot.tools.carnival.self_tune_profile import (
   apply_resolved_plan,
   build_delta_plan,
@@ -25,6 +25,7 @@ REPORT_ROOT = Path("/data/media/0/carnival_reports")
 ROUTE_SETTLE_SECONDS = 45.0
 POLL_SECONDS = 3.0
 MAX_STORED_REPORTS = 40
+LOG_NAMES = {"rlog", "rlog.zst", "rlog.bz2", "qlog", "qlog.zst", "qlog.bz2"}
 
 
 def _json_param(params: Params, key: str) -> dict:
@@ -36,9 +37,22 @@ def _json_param(params: Params, key: str) -> dict:
     return {}
 
 
+def scorecard_log_files(root: Path) -> list[Path]:
+  files_by_segment: dict[Path, list[Path]] = defaultdict(list)
+  for path in root.rglob("*"):
+    if path.name in LOG_NAMES:
+      files_by_segment[path.parent].append(path)
+
+  selected = []
+  for files in files_by_segment.values():
+    qlogs = [path for path in files if path.name.startswith("qlog")]
+    selected.extend(qlogs if qlogs else files)
+  return sorted(selected, key=lambda path: (route_key(path, root), segment_index(path), path.name))
+
+
 def discover_routes(root: Path) -> list[tuple[str, list[Path], float]]:
   grouped: dict[str, list[Path]] = defaultdict(list)
-  for path in iter_log_files(root):
+  for path in scorecard_log_files(root):
     grouped[route_key(path, root)].append(path)
   routes = []
   for route, files in grouped.items():

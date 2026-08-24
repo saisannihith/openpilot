@@ -15,6 +15,7 @@ The comma 3x now exposes a dedicated `Carnival` settings page between `StarPilot
 - `/data/media/0/carnival_reports/carnival-report-*.json`
 
 The latest scorecard, pending profile, applied snapshot, report path, and any error are also stored in Params for the native UI. Analysis never runs onroad.
+The on-device scorecard prefers each segment's compact qlog to keep CPU and memory bounded; the full-rate rlogs remain untouched for deep PC diagnostics.
 
 ## Optional PC Workflow
 

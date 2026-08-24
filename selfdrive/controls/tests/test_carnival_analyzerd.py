@@ -1,6 +1,12 @@
 import json
 
-from openpilot.selfdrive.controls.carnival_analyzerd import apply_pending_profile, discover_routes, handle_profile_requests, prune_reports
+from openpilot.selfdrive.controls.carnival_analyzerd import (
+  apply_pending_profile,
+  discover_routes,
+  handle_profile_requests,
+  prune_reports,
+  scorecard_log_files,
+)
 
 
 class FakeParams:
@@ -33,6 +39,19 @@ def test_discover_routes_groups_segments_and_orders_by_mtime(tmp_path):
   (second / "qlog").write_bytes(b"two")
   routes = discover_routes(tmp_path)
   assert [route for route, _, _ in routes] == ["dongle|2026-08-24--aaaa", "dongle|2026-08-24--bbbb"]
+
+
+def test_scorecard_prefers_qlog_for_full_drive_with_rlog_fallback(tmp_path):
+  first = tmp_path / "dongle|2026-08-24--aaaa--0"
+  second = tmp_path / "dongle|2026-08-24--aaaa--1"
+  first.mkdir()
+  second.mkdir()
+  (first / "qlog.zst").write_bytes(b"compact")
+  (first / "rlog.zst").write_bytes(b"full")
+  (second / "rlog").write_bytes(b"fallback")
+
+  files = scorecard_log_files(tmp_path)
+  assert [path.name for path in files] == ["qlog.zst", "rlog"]
 
 
 def test_apply_and_revert_pending_profile():
