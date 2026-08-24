@@ -27,12 +27,12 @@ class StarPilotLayout(Widget):
   CATEGORIES = [
     {
       "title": "Quick Controls",
-      "icon": "system",
+      "icon": "display",
       "panel": "QUICK_CONTROLS",
     },
     {
       "title": "Search Settings",
-      "icon": "display",
+      "icon": "system",
       "panel": "SEARCH",
     },
     {
