@@ -19,11 +19,10 @@ from openpilot.system.ui.widgets.network import NetworkUI
 COLLAPSED_WIDTH = 0
 EXPANDED_WIDTH = 420
 SWIPE_THRESHOLD = 80
-CLOSE_BTN_SIZE = 154
-CLOSE_ICON_SIZE = 58
-NAV_BTN_HEIGHT = 96
-NAV_TEXT_SIZE = 56
-HEADER_TEXT_SIZE = 64
+CLOSE_BTN_SIZE = 118
+CLOSE_ICON_SIZE = 46
+NAV_BTN_MIN_HEIGHT = 72
+NAV_TEXT_SIZE = 76
 PANEL_MARGIN = 0
 
 # Colors
@@ -164,9 +163,9 @@ class SettingsLayout(Widget):
     # collapsed handle does not cover the StarPilot navigation label.
     if self._sidebar_expanded:
       tab_h = 72
-      tab_w = 72
-      tab_x = rect.x + rect.width - tab_w - 16
-      tab_y = rect.y + 16
+      tab_w = 150
+      tab_x = rect.x + (rect.width - tab_w) / 2
+      tab_y = rect.y + 18
       tab_cy = int(tab_y + tab_h / 2)
       chevron_x = int(tab_x + tab_w / 2)
     else:
@@ -210,33 +209,20 @@ class SettingsLayout(Widget):
     if self._sidebar_expanded:
       # ── EXPANDED ──
 
-      # Header row: StarPilot title plus the top collapse control.
-      header_rect = rl.Rectangle(rect.x + 8, tab_y, max(0.0, tab_x - rect.x - 16), tab_h)
-      header_text = tr(self._panels[PanelType.STARPILOT].name)
-      header_font_size = HEADER_TEXT_SIZE
-      header_text_size = measure_text_cached(self._font_medium, header_text, header_font_size)
-      while header_text_size.x > header_rect.width - 8 and header_font_size > 44:
-        header_font_size -= 2
-        header_text_size = measure_text_cached(self._font_medium, header_text, header_font_size)
-      header_pos = rl.Vector2(header_rect.x + (header_rect.width - header_text_size.x) / 2, header_rect.y + (header_rect.height - header_text_size.y) / 2)
-      header_color = TEXT_SELECTED if self._current_panel == PanelType.STARPILOT else TEXT_NORMAL
-      rl.draw_text_ex(self._font_medium, header_text, rl.Vector2(floor(header_pos.x), floor(header_pos.y)), header_font_size, 0, header_color)
-      self._panels[PanelType.STARPILOT].button_rect = header_rect
-
       # Back/Close button - hierarchical navigation
-      top_pad = tab_h + max(34.0, min(54.0, rect.height * 0.05))
-      bottom_pad = max(22.0, min(48.0, rect.height * 0.05))
+      top_pad = tab_h + max(22.0, min(28.0, rect.height * 0.03))
+      bottom_pad = max(22.0, min(28.0, rect.height * 0.035))
       close_size = min(float(CLOSE_BTN_SIZE), max(104.0, rect.height * 0.15))
       back_btn_rect = rl.Rectangle(rect.x + (rect.width - close_size) / 2, rect.y + rect.height - bottom_pad - close_size, close_size, close_size)
 
       # Navigation buttons: fit the available sidebar height instead of using
       # fixed desktop y positions that overflow on the comma display.
       y = rect.y + top_pad
-      close_gap_top = max(18.0, min(36.0, rect.height * 0.035))
+      close_gap_top = max(20.0, min(28.0, rect.height * 0.032))
       available_h = max(0.0, back_btn_rect.y - close_gap_top - y)
-      nav_items = [(panel_type, panel_info) for panel_type, panel_info in self._panels.items() if panel_type != PanelType.STARPILOT]
+      nav_items = list(self._panels.items())
       nav_count = max(1, len(nav_items))
-      nav_btn_h = min(float(NAV_BTN_HEIGHT), max(58.0, available_h / nav_count))
+      nav_btn_h = max(float(NAV_BTN_MIN_HEIGHT), available_h / nav_count)
       for panel_type, panel_info in nav_items:
         button_rect = rl.Rectangle(rect.x, y, rect.width, nav_btn_h)
 
@@ -245,9 +231,9 @@ class SettingsLayout(Widget):
         text_color = TEXT_SELECTED if is_selected else TEXT_NORMAL
         # Draw button text centered across the full sidebar width.
         panel_name = tr(panel_info.name)
-        font_size = int(min(float(NAV_TEXT_SIZE), max(34.0, nav_btn_h * 0.56)))
+        font_size = int(min(float(NAV_TEXT_SIZE), max(48.0, nav_btn_h * 0.74)))
         text_size = measure_text_cached(self._font_medium, panel_name, font_size)
-        while text_size.x > button_rect.width - 24 and font_size > 38:
+        while text_size.x > button_rect.width - 4 and font_size > 42:
           font_size -= 2
           text_size = measure_text_cached(self._font_medium, panel_name, font_size)
         text_pos = rl.Vector2(button_rect.x + (button_rect.width - text_size.x) / 2, button_rect.y + (button_rect.height - text_size.y) / 2)
