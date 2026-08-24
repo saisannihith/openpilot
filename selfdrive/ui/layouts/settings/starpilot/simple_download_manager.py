@@ -433,7 +433,7 @@ class SimpleDownloadManager(Widget):
         active_fill if is_active else inactive_fill,
         active_border if is_active else inactive_border,
         active_text if is_active else inactive_text,
-        font_size=28,
+        font_size=36,
         roundness=0.35,
       )
       if is_pressed:
@@ -464,7 +464,7 @@ class SimpleDownloadManager(Widget):
         scroll_rect,
         tr(empty_msg["title"]),
         tr(empty_msg["body"]),
-        title_size=38, body_size=26,
+        title_size=42, body_size=32,
         title_top_padding=50, body_height=80,
         fill=rl.Color(0, 0, 0, 0), border=rl.Color(0, 0, 0, 0),
       )
@@ -491,12 +491,12 @@ class SimpleDownloadManager(Widget):
         draw_text_fit_common(
           normal_font, progress_text,
           rl.Vector2(prog_rect.x + 130, prog_rect.y + 32),
-          prog_rect.width - 340, 32,
+          prog_rect.width - 340, 40,
           color=AetherListColors.HEADER,
         )
 
         # Cancel button
-        cancel_w, cancel_h = 180, 54
+        cancel_w, cancel_h = 210, 68
         cancel_y = prog_rect.y + (prog_h - cancel_h) / 2
         self._cancel_rect = snap_rect(rl.Rectangle(
           prog_rect.x + prog_rect.width - cancel_w - 24, cancel_y, float(cancel_w), float(cancel_h)))
@@ -505,7 +505,7 @@ class SimpleDownloadManager(Widget):
           self._cancel_rect, tr("CANCEL"),
           with_alpha(AetherListColors.DANGER, 50 if cancel_hovered else 30),
           with_alpha(AetherListColors.DANGER, 100),
-          AetherListColors.HEADER, font_size=24,
+          AetherListColors.HEADER, font_size=32,
         )
 
         item_y += prog_h + 40
@@ -527,13 +527,13 @@ class SimpleDownloadManager(Widget):
         draw_text_fit_common(
           confirm_font, confirm_msg,
           rl.Vector2(confirm_rect.x + 24, confirm_rect.y + 32),
-          confirm_rect.width - 48, 32,
+          confirm_rect.width - 48, 40,
           align_center=True, color=AetherListColors.HEADER,
         )
 
         btn_w = (confirm_rect.width - 60) / 2
-        btn_y = confirm_rect.y + confirm_rect.height - 76
-        btn_h = 52
+        btn_y = confirm_rect.y + confirm_rect.height - 86
+        btn_h = 68
 
         self._confirm_no_rect = snap_rect(rl.Rectangle(confirm_rect.x + 20, btn_y, btn_w, btn_h))
         self._confirm_yes_rect = snap_rect(rl.Rectangle(confirm_rect.x + confirm_rect.width - btn_w - 20, btn_y, btn_w, btn_h))
@@ -544,11 +544,11 @@ class SimpleDownloadManager(Widget):
         draw_action_pill(self._confirm_no_rect, tr("CANCEL"),
                          with_alpha(rl.Color(255, 255, 255, 14 if no_hovered else 8), 255),
                          with_alpha(rl.Color(255, 255, 255, 36), 255),
-                         AetherListColors.SUBTEXT, font_size=24)
+                         AetherListColors.SUBTEXT, font_size=32)
         draw_action_pill(self._confirm_yes_rect, tr("DELETE"),
                          with_alpha(AetherListColors.DANGER, 60 if yes_hovered else 36),
                          with_alpha(AetherListColors.DANGER, 120),
-                         AetherListColors.HEADER, font_size=24)
+                         AetherListColors.HEADER, font_size=32)
 
         item_y += confirm_h + 20
 
@@ -605,9 +605,9 @@ class SimpleDownloadManager(Widget):
           is_last=is_last,
           alpha=255,
           action_pill=True,
-          action_pill_height=54,
-          title_size=36,
-          action_text_size=26,
+          action_pill_height=74,
+          title_size=44,
+          action_text_size=32,
           title_color=AetherListColors.HEADER,
           subtitle_color=AetherListColors.SUBTEXT,
           action_fill=action_fill,

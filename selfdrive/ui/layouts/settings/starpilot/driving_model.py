@@ -76,8 +76,8 @@ TRANSITION_SECONDS = 0.24
 PANEL_STYLE = DEFAULT_PANEL_STYLE
 HEADER_BUTTON_HEIGHT = 106.0
 HEADER_BUTTON_GAP_Y = 16.0
-MANAGEMENT_STRIP_HEIGHT = 82.0
-MANAGEMENT_PILL_HEIGHT = 60.0
+MANAGEMENT_STRIP_HEIGHT = 96.0
+MANAGEMENT_PILL_HEIGHT = 74.0
 SEARCH_BOX_HEIGHT = 118.0
 SEARCH_BOX_GAP_Y = 16.0
 EMPTY_STATE_HEIGHT = 240.0
@@ -442,7 +442,7 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
       else:
         fill = rl.Color(255, 255, 255, 8)
       border = with_alpha(AetherListColors.PRIMARY, 80) if is_active else rl.Color(255, 255, 255, 24)
-      draw_action_pill(seg_rect, label, fill, border, AetherListColors.HEADER, font_size=34, roundness=0.3)
+      draw_action_pill(seg_rect, label, fill, border, AetherListColors.HEADER, font_size=38, roundness=0.3)
       self._interactive_rects[f"sortopt:{mode}"] = seg_rect
 
   def _draw_search_box(self, rect: rl.Rectangle):
@@ -486,7 +486,7 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
         rl.Color(AetherListColors.DANGER.r, AetherListColors.DANGER.g, AetherListColors.DANGER.b, 50 if hovered else 32),
         rl.Color(AetherListColors.DANGER.r, AetherListColors.DANGER.g, AetherListColors.DANGER.b, 80),
         AetherListColors.DANGER,
-        font_size=30,
+        font_size=34,
       )
       self._interactive_rects["search:clear"] = clear_rect
 
@@ -774,7 +774,7 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
         AetherListColors.DANGER_SOFT,
         rl.Color(AetherListColors.DANGER.r, AetherListColors.DANGER.g, AetherListColors.DANGER.b, min(AetherListColors.DANGER.a, 70)),
         AetherListColors.DANGER,
-        font_size=30,
+        font_size=34,
       )
 
       is_fav = entry.user_favorite
@@ -782,19 +782,19 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
       fav_border = rl.Color((210 if is_fav else PANEL_STYLE.accent.r), (100 if is_fav else PANEL_STYLE.accent.g), (130 if is_fav else PANEL_STYLE.accent.b), min((255 if is_fav else PANEL_STYLE.accent.a), 70))
       fav_text_color = rl.Color(210, 100, 130, 255) if is_fav else PANEL_STYLE.accent
       fav_label = tr("Unfavorite") if is_fav else tr("Favorite")
-      draw_action_pill(fav_rect, fav_label, fav_fill, fav_border, fav_text_color, font_size=30)
+      draw_action_pill(fav_rect, fav_label, fav_fill, fav_border, fav_text_color, font_size=34)
 
   def _draw_current_action(self, rect: rl.Rectangle):
     chip_h = 62
     chip_w = rect.width - 56
     chip_rect = rl.Rectangle(rect.x + 28, rect.y + (rect.height - chip_h) / 2, chip_w, chip_h)
-    AetherChip(tr("Current"), PANEL_STYLE.current_fill, PANEL_STYLE.current_border, AetherListColors.HEADER, font_size=32).render(chip_rect)
+    AetherChip(tr("Current"), PANEL_STYLE.current_fill, PANEL_STYLE.current_border, AetherListColors.HEADER, font_size=36).render(chip_rect)
 
   def _draw_protected_action(self, rect: rl.Rectangle):
     chip_h = 62
     chip_w = rect.width - 56
     chip_rect = rl.Rectangle(rect.x + 28, rect.y + (rect.height - chip_h) / 2, chip_w, chip_h)
-    AetherChip(tr("Protected"), rl.Color(255, 255, 255, 10), AetherListColors.MUTED, AetherListColors.SUBTEXT, font_size=32).render(chip_rect)
+    AetherChip(tr("Protected"), rl.Color(255, 255, 255, 10), AetherListColors.MUTED, AetherListColors.SUBTEXT, font_size=36).render(chip_rect)
 
   def _draw_scrollbar(self, rect: rl.Rectangle):
     self._scrollbar.render(rect, self._content_height, self._scroll_offset)

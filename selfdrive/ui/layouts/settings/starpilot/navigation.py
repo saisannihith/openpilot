@@ -226,9 +226,9 @@ NAV_INSET = 18.0
 NAV_GAP = 12.0
 NAV_SEARCH_HEIGHT = 110.0
 NAV_SUMMARY_HEIGHT = 124.0
-NAV_ACTION_HEIGHT = 78.0
+NAV_ACTION_HEIGHT = 92.0
 NAV_SECTION_HEIGHT = 72.0
-NAV_ROW_HEIGHT = 124.0
+NAV_ROW_HEIGHT = 148.0
 NAV_EMPTY_HEIGHT = 132.0
 NAV_ACTION_COLUMNS = 3
 NAV_ACTION_GAP = 12.0
@@ -633,7 +633,7 @@ class StarPilotNavigationLayout(_SettingsPage):
         fill = with_alpha(AetherListColors.PRIMARY, 54 if enabled and (hovered or pressed) else 24 if enabled else 8)
         border = with_alpha(AetherListColors.PRIMARY, 110 if enabled else 28)
         text_color = AetherListColors.HEADER if enabled else AetherListColors.MUTED
-      draw_action_pill(rect, label, fill, border, text_color, font_size=24)
+      draw_action_pill(rect, label, fill, border, text_color, font_size=32)
     return rows * NAV_ACTION_HEIGHT + max(0, rows - 1) * NAV_ACTION_GAP
 
   def _draw_summary_row(self, rect: rl.Rectangle, manager: NavigationManagerView) -> None:
@@ -664,11 +664,11 @@ class StarPilotNavigationLayout(_SettingsPage):
       pressed=pressed,
       action_width=action_width,
       action_pill=True,
-      action_pill_height=64,
+      action_pill_height=74,
       action_pill_width=220,
-      title_size=34,
-      subtitle_size=24,
-      action_text_size=24,
+      title_size=42,
+      subtitle_size=30,
+      action_text_size=32,
       action_fill=with_alpha(AetherListColors.DANGER if target_id == "action:cancel" else AetherListColors.SUCCESS, 38 if enabled else 10),
       action_border=with_alpha(AetherListColors.DANGER if target_id == "action:cancel" else AetherListColors.SUCCESS, 85 if enabled else 25),
       action_text_color=AetherListColors.HEADER if enabled else AetherListColors.MUTED,
@@ -694,11 +694,11 @@ class StarPilotNavigationLayout(_SettingsPage):
       is_last=False,
       action_width=220,
       action_pill=True,
-      action_pill_height=64,
+      action_pill_height=74,
       action_pill_width=180,
-      title_size=32,
-      subtitle_size=22,
-      action_text_size=24,
+      title_size=42,
+      subtitle_size=30,
+      action_text_size=32,
       row_separator=PANEL_STYLE.divider_color,
     )
     y += NAV_SEARCH_HEIGHT + NAV_GAP
@@ -708,8 +708,8 @@ class StarPilotNavigationLayout(_SettingsPage):
         rl.Rectangle(x, y, width, NAV_EMPTY_HEIGHT),
         tr("Searching…"),
         tr("Looking up destinations"),
-        title_size=30,
-        body_size=22,
+        title_size=40,
+        body_size=30,
         border=with_alpha(PANEL_STYLE.surface_border, 14),
         style=PANEL_STYLE,
       )
@@ -719,8 +719,8 @@ class StarPilotNavigationLayout(_SettingsPage):
         rl.Rectangle(x, y, width, NAV_EMPTY_HEIGHT),
         tr("Search unavailable"),
         self._search_error,
-        title_size=30,
-        body_size=22,
+        title_size=40,
+        body_size=30,
         border=with_alpha(AetherListColors.WARNING, 45),
         style=PANEL_STYLE,
       )
@@ -739,8 +739,8 @@ class StarPilotNavigationLayout(_SettingsPage):
         rl.Rectangle(x, y, width, NAV_SECTION_HEIGHT),
         tr("Search results"),
         trailing_text=str(len(self._search_results)),
-        title_size=30,
-        trailing_size=24,
+        title_size=40,
+        trailing_size=30,
         style=PANEL_STYLE,
       )
       y += NAV_SECTION_HEIGHT
@@ -759,11 +759,11 @@ class StarPilotNavigationLayout(_SettingsPage):
           is_last=index == len(self._search_results) - 1,
           action_width=190,
           action_pill=True,
-          action_pill_height=58,
+          action_pill_height=74,
           action_pill_width=150,
-          title_size=31,
-          subtitle_size=22,
-          action_text_size=23,
+          title_size=42,
+          subtitle_size=30,
+          action_text_size=30,
           row_separator=PANEL_STYLE.divider_color,
         )
         y += NAV_ROW_HEIGHT
@@ -774,8 +774,8 @@ class StarPilotNavigationLayout(_SettingsPage):
         rl.Rectangle(x, y, width, NAV_SECTION_HEIGHT),
         tr("Favorite destinations"),
         trailing_text=str(len(self._favorites)),
-        title_size=30,
-        trailing_size=24,
+        title_size=40,
+        trailing_size=30,
         style=PANEL_STYLE,
       )
       y += NAV_SECTION_HEIGHT
@@ -800,11 +800,11 @@ class StarPilotNavigationLayout(_SettingsPage):
           is_last=index == len(ordered_favorites) - 1,
           action_width=190,
           action_pill=True,
-          action_pill_height=58,
+          action_pill_height=74,
           action_pill_width=150,
-          title_size=31,
-          subtitle_size=22,
-          action_text_size=23,
+          title_size=42,
+          subtitle_size=30,
+          action_text_size=30,
           row_separator=PANEL_STYLE.divider_color,
         )
         y += NAV_ROW_HEIGHT
@@ -815,8 +815,8 @@ class StarPilotNavigationLayout(_SettingsPage):
         rl.Rectangle(x, y, width, NAV_SECTION_HEIGHT),
         tr("Recent destinations"),
         trailing_text=str(len(self._recent_destinations)),
-        title_size=30,
-        trailing_size=24,
+        title_size=40,
+        trailing_size=30,
         style=PANEL_STYLE,
       )
       y += NAV_SECTION_HEIGHT
@@ -835,11 +835,11 @@ class StarPilotNavigationLayout(_SettingsPage):
           is_last=index == len(self._recent_destinations) - 1,
           action_width=190,
           action_pill=True,
-          action_pill_height=58,
+          action_pill_height=74,
           action_pill_width=150,
-          title_size=31,
-          subtitle_size=22,
-          action_text_size=23,
+          title_size=42,
+          subtitle_size=30,
+          action_text_size=30,
           row_separator=PANEL_STYLE.divider_color,
         )
         y += NAV_ROW_HEIGHT
@@ -851,8 +851,8 @@ class StarPilotNavigationLayout(_SettingsPage):
         rl.Rectangle(x, y, width, NAV_EMPTY_HEIGHT),
         empty_title,
         empty_body,
-        title_size=30,
-        body_size=22,
+        title_size=40,
+        body_size=30,
         border=with_alpha(PANEL_STYLE.surface_border, 14),
         style=PANEL_STYLE,
       )

@@ -336,7 +336,7 @@ class StarPilotLayout(Widget):
       return
 
     prefix = tr("Current") + ":"
-    font_size = 32
+    font_size = 38
     prefix_font = gui_app.font(FontWeight.MEDIUM)
     model_font = gui_app.font(FontWeight.SEMI_BOLD)
     prefix_w = measure_text_cached(prefix_font, prefix, font_size).x

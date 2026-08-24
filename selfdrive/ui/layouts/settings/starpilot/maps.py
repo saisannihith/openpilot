@@ -90,10 +90,10 @@ REGIONAL_PACKAGES = {
   },
 }
 
-STATUS_CARD_HEIGHT = 232.0
+STATUS_CARD_HEIGHT = 256.0
 SEGMENTED_CONTROL_HEIGHT = 68.0
 BROWSER_SECTION_HEADER_HEIGHT = 56.0
-BROWSER_REGION_ROW_HEIGHT = 104.0
+BROWSER_REGION_ROW_HEIGHT = 148.0
 BROWSER_EMPTY_STATE_HEIGHT = 128.0
 BROWSER_INSET = 18.0
 
@@ -228,8 +228,8 @@ class MapsManagerView(PanelManagerView):
         rl.Rectangle(scroll_rect.x + BROWSER_INSET, rows_top_y + self._scroll_offset, content_width - BROWSER_INSET * 2, BROWSER_EMPTY_STATE_HEIGHT),
         title,
         body,
-        title_size=32,
-        body_size=24,
+        title_size=40,
+        body_size=30,
         border=with_alpha(PANEL_STYLE.surface_border, 10),
         style=PANEL_STYLE,
       )
@@ -257,11 +257,11 @@ class MapsManagerView(PanelManagerView):
           is_last=index == len(downloaded) - 1 and not downloadable,
           action_width=164,
           action_pill=True,
-          action_text_size=26,
-          action_pill_height=56,
+          action_text_size=30,
+          action_pill_height=74,
           action_pill_width=154,
-          title_size=32,
-          subtitle_size=22,
+          title_size=42,
+          subtitle_size=30,
           row_separator=PANEL_STYLE.divider_color,
           current_bg=PANEL_STYLE.current_fill,
           current_border=PANEL_STYLE.current_border,
@@ -278,8 +278,8 @@ class MapsManagerView(PanelManagerView):
           rl.Rectangle(scroll_rect.x + BROWSER_INSET, y, content_width - BROWSER_INSET * 2, BROWSER_SECTION_HEADER_HEIGHT),
           tr("Available for Download"),
           trailing_text=tr("{} available").format(len(downloadable)),
-          title_size=30,
-          trailing_size=22,
+          title_size=40,
+          trailing_size=30,
           style=PANEL_STYLE,
         )
         y += BROWSER_SECTION_HEADER_HEIGHT + 8.0
@@ -304,11 +304,11 @@ class MapsManagerView(PanelManagerView):
         is_last=index == len(downloadable) - 1,
         action_width=164,
         action_pill=True,
-        action_text_size=26,
-        action_pill_height=56,
+        action_text_size=30,
+        action_pill_height=74,
         action_pill_width=154 if selected else 128,
-        title_size=32,
-        subtitle_size=22,
+        title_size=42,
+        subtitle_size=30,
         row_separator=PANEL_STYLE.divider_color,
         current_bg=PANEL_STYLE.current_fill,
         current_border=PANEL_STYLE.current_border,
@@ -332,31 +332,31 @@ class MapsManagerView(PanelManagerView):
     content_x = rect.x + inset
     summary_w = max(240.0, actions_x - 20.0 - content_x)
 
-    # Title (32pt Bold)
     title_text = self._controller._progress_title()
-    gui_label(rl.Rectangle(content_x, rect.y + 18, summary_w, 34), title_text, 32, AetherListColors.HEADER, FontWeight.SEMI_BOLD)
+    title_size = 38
+    gui_label(rl.Rectangle(content_x, rect.y + 18, summary_w, 42), title_text, title_size, AetherListColors.HEADER, FontWeight.SEMI_BOLD)
 
     # Selection Summary Badge next to title if selected (24pt, height 38)
     if self._controller._selected_count() > 0:
       chip_text = self._controller._selected_summary_text()
-      title_measured_w = measure_text_cached(gui_app.font(FontWeight.SEMI_BOLD), title_text, 32, spacing=1).x
-      chip_width = measure_text_cached(gui_app.font(FontWeight.SEMI_BOLD), chip_text, 22, spacing=1).x + 30.0
+      title_measured_w = measure_text_cached(gui_app.font(FontWeight.SEMI_BOLD), title_text, title_size, spacing=1).x
+      chip_font = 30
+      chip_width = measure_text_cached(gui_app.font(FontWeight.SEMI_BOLD), chip_text, chip_font, spacing=1).x + 34.0
       chip_x = content_x + title_measured_w + 16.0
       if chip_x + chip_width <= content_x + summary_w:
         draw_action_pill(
-          rl.Rectangle(chip_x, rect.y + 16, chip_width, 38),
+          rl.Rectangle(chip_x, rect.y + 14, chip_width, 50),
           chip_text,
           with_alpha(AetherListColors.SUCCESS_SOFT, 30),
           AetherListColors.SUCCESS_SOFT,
           AetherListColors.HEADER,
-          font_size=24,
+          font_size=chip_font,
         )
 
-    # Subtitle / Body Progress Description (26pt)
     gui_text_box(
-      rl.Rectangle(content_x, rect.y + 58, summary_w, 54),
+      rl.Rectangle(content_x, rect.y + 70, summary_w, 66),
       self._controller._progress_body(),
-      26,
+      30,
       AetherListColors.SUBTEXT,
       font_weight=FontWeight.NORMAL,
       line_scale=0.95,
@@ -368,12 +368,12 @@ class MapsManagerView(PanelManagerView):
       (tr("Last Updated"), self._controller._last_updated_text()),
     ]
     draw_metric_strip(
-      rl.Rectangle(content_x, rect.y + 128, summary_w, 72),
+      rl.Rectangle(content_x, rect.y + 150, summary_w, 78),
       metrics,
       gap=36.0,
       min_col_width=140.0,
-      label_size=24,
-      value_size=32,
+      label_size=28,
+      value_size=36,
       style=PANEL_STYLE,
       label_top_offset=0,
       value_top_offset=30,
@@ -382,7 +382,7 @@ class MapsManagerView(PanelManagerView):
     )
 
     # Action Column
-    primary_h = 84.0
+    primary_h = 96.0
     primary_rect = rl.Rectangle(actions_x, rect.y + 20, actions_w, primary_h)
     self._controller._download_button.render(primary_rect)
 
@@ -391,8 +391,8 @@ class MapsManagerView(PanelManagerView):
       draw_busy_ring(center, rl.get_time() * 160, PANEL_STYLE.accent, inner_radius=10, outer_radius=14, sweep=210, thickness=20)
 
     # Bottom Row Actions: Schedule Button & Remove Maps Pill (64px height)
-    bottom_y = rect.y + 116.0
-    bottom_h = 64.0
+    bottom_y = rect.y + 136.0
+    bottom_h = 74.0
     col_gap = 10.0
     sched_w = (actions_w - col_gap) * 0.58
     remove_w = (actions_w - col_gap) * 0.42
@@ -412,7 +412,7 @@ class MapsManagerView(PanelManagerView):
       remove_bg,
       remove_border,
       AetherListColors.HEADER if enabled else AetherListColors.MUTED,
-      font_size=26,
+      font_size=32,
     )
 
   def _activate_target(self, target_id: str | None):

@@ -81,7 +81,7 @@ def _lock_doors_timer_labels():
 
 
 SECTION_GAP = AETHER_LIST_METRICS.section_gap
-ROW_HEIGHT = 125.0
+ROW_HEIGHT = 148.0
 PANEL_STYLE = DEFAULT_PANEL_STYLE
 
 
@@ -196,17 +196,17 @@ class VehicleSettingsManagerView(PanelManagerView):
 
     row_h = rect.height
     if row_h < 90:
-      title_size = 30
-      subtitle_size = 24
-      value_size = 26
-    elif row_h < 105:
-      title_size = 34
-      subtitle_size = 26
-      value_size = 28
-    else:
       title_size = 36
       subtitle_size = 28
-      value_size = 30
+      value_size = 32
+    elif row_h < 105:
+      title_size = 40
+      subtitle_size = 30
+      value_size = 34
+    else:
+      title_size = 44
+      subtitle_size = 32
+      value_size = 36
 
     if row.type == "value" or row.id.startswith("combo:"):
       value_text = row.get_value() if row.get_value else ""

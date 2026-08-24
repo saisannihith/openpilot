@@ -37,10 +37,10 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
 
 
 PANEL_STYLE = DEFAULT_PANEL_STYLE
-SEARCH_BOX_HEIGHT = 86
-SEARCH_ACTION_HEIGHT = 82
-SEARCH_ROW_HEIGHT = 122
-SEARCH_HEADER_HEIGHT = 54
+SEARCH_BOX_HEIGHT = 106
+SEARCH_ACTION_HEIGHT = 96
+SEARCH_ROW_HEIGHT = 148
+SEARCH_HEADER_HEIGHT = 64
 SEARCH_GAP = 16
 MAX_SEARCH_RESULTS = 80
 
@@ -52,7 +52,7 @@ class SearchInputBox(InputBox):
       color=rl.Color(4, 4, 8, 210),
       border_color=with_alpha(PANEL_STYLE.surface_border, 40),
       text_color=PANEL_STYLE.title_color,
-      font_size=34,
+      font_size=42,
     )
 
 
@@ -158,7 +158,7 @@ class SettingsSearchView(PanelManagerView):
     draw_rounded_fill(rect, rl.Color(12, 10, 18, 235), radius_px=18)
     draw_rounded_stroke(rect, with_alpha(PANEL_STYLE.surface_border, 38), radius_px=18)
     label_rect = rl.Rectangle(rect.x + 24, rect.y, 185, rect.height)
-    gui_label(label_rect, tr("Search"), 31, PANEL_STYLE.title_color, FontWeight.BOLD)
+    gui_label(label_rect, tr("Search"), 42, PANEL_STYLE.title_color, FontWeight.BOLD)
     input_rect = rl.Rectangle(rect.x + 205, rect.y + 12, rect.width - 230, rect.height - 24)
     self._interactive_state("action:keyboard", input_rect)
     self._query_box.render(input_rect)
@@ -176,9 +176,9 @@ class SettingsSearchView(PanelManagerView):
       action_pill=True,
       action_width=150,
       action_pill_width=110,
-      title_size=29,
-      subtitle_size=22,
-      action_text_size=22,
+      title_size=42,
+      subtitle_size=30,
+      action_text_size=30,
       row_separator=PANEL_STYLE.divider_color,
     )
 
@@ -218,9 +218,9 @@ class SettingsSearchView(PanelManagerView):
         pressed=pressed,
         is_last=is_last,
         show_chevron=row.on_click is not None,
-        title_size=34,
-        subtitle_size=22,
-        value_size=26,
+        title_size=42,
+        subtitle_size=30,
+        value_size=34,
         style=PANEL_STYLE,
       )
     else:
@@ -233,9 +233,9 @@ class SettingsSearchView(PanelManagerView):
         pressed=pressed,
         is_last=is_last,
         action_pill=True,
-        title_size=34,
-        subtitle_size=22,
-        action_text_size=23,
+        title_size=42,
+        subtitle_size=30,
+        action_text_size=30,
         row_separator=PANEL_STYLE.divider_color,
       )
 
@@ -274,8 +274,8 @@ class SettingsSearchView(PanelManagerView):
       rl.Rectangle(rect.x, y, content_width, SEARCH_HEADER_HEIGHT),
       tr("Results"),
       trailing_text=str(len(self._matches)),
-      title_size=32,
-      trailing_size=24,
+      title_size=40,
+      trailing_size=30,
       style=PANEL_STYLE,
     )
     y += SEARCH_HEADER_HEIGHT
