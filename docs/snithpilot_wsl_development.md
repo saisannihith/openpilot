@@ -14,6 +14,12 @@ Do not build or run openpilot from the Windows-mounted checkout under `/mnt/c` o
 
 ## Browser Preview
 
+One-time WSL setup:
+
+```bash
+./scripts/setup_wsl_ui_dev.sh
+```
+
 Start the browser bridge:
 
 ```bash

@@ -200,6 +200,20 @@ prepare_pandad_host_artifacts() {
   rm -f "${ROOT_DIR}/selfdrive/pandad/libcan_list_to_can_capnp.a"
 }
 
+clear_linux_acados_execstack() {
+  [[ "$(uname -s)" == "Linux" ]] || return
+  command -v patchelf >/dev/null 2>&1 || return
+
+  local rel=""
+  for rel in "third_party/acados/x86_64/lib/libblasfeo.so"; do
+    local path="${ROOT_DIR}/${rel}"
+    [[ -f "${path}" ]] || continue
+    if readelf -W -l "${path}" 2>/dev/null | grep -q "GNU_STACK.*RWE"; then
+      patchelf --clear-execstack "${path}" || true
+    fi
+  done
+}
+
 python_ui_runtime_ok() {
   "${PY_BIN}" - <<'PY'
 import pyray  # noqa: F401
@@ -277,6 +291,8 @@ seed_desktop_theme_assets()
 PY
 }
 
+clear_linux_acados_execstack
+
 if ! python_ui_runtime_ok >/dev/null 2>&1; then
   echo "Preparing host Python UI runtime extensions..."
   sync_deps
@@ -311,6 +327,8 @@ if ! python_ui_runtime_ok >/dev/null 2>&1; then
     fi
   )
 fi
+
+clear_linux_acados_execstack
 
 if ! python_ui_runtime_ok >/dev/null 2>&1; then
   "${PY_BIN}" - <<'PY'
