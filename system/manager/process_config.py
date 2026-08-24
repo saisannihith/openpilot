@@ -5,7 +5,7 @@ import sys
 
 from types import SimpleNamespace
 
-from cereal import car
+from cereal import car, messaging
 from openpilot.common.params import Params
 from openpilot.system.hardware import HARDWARE, PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
@@ -60,11 +60,23 @@ def always_run(started: bool, params: Params, CP: car.CarParams, starpilot_toggl
 def only_onroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started
 
+def is_carnival_4th_gen(params: Params, CP: car.CarParams) -> bool:
+  fingerprint = str(CP.carFingerprint)
+  if not fingerprint:
+    try:
+      persisted = params.get("CarParamsPersistent")
+      if persisted:
+        fingerprint = str(messaging.log_from_bytes(persisted, car.CarParams).carFingerprint)
+    except Exception:
+      fingerprint = ""
+  return fingerprint == "KIA_CARNIVAL_4TH_GEN"
+
+
 def carnival_only(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
-  return started and str(CP.carFingerprint) == "KIA_CARNIVAL_4TH_GEN"
+  return started and is_carnival_4th_gen(params, CP)
 
 def carnival_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
-  return not started and str(CP.carFingerprint) == "KIA_CARNIVAL_4TH_GEN"
+  return not started and is_carnival_4th_gen(params, CP)
 
 def only_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return not started
