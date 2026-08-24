@@ -58,7 +58,9 @@ class CarnivalLayout(Widget):
     )
     self._auto_analyze = toggle_item(
       lambda: tr("Analyze Every Completed Drive"),
-      description=lambda: tr("Optional heavy route replay. Off by default; long drives can take several minutes. Run Now is recommended."),
+      description=lambda: tr(
+        "Runs a compact qlog score after each completed drive while parked. Deep raw-radar replay stays PC-only."
+      ),
       initial_state=self._params.get_bool("CarnivalAutoAnalyze"),
       callback=lambda state: self._params.put_bool("CarnivalAutoAnalyze", state),
     )
