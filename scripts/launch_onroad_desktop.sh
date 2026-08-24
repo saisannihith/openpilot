@@ -438,6 +438,11 @@ PY
 }
 
 build_replay() {
+  if [[ "${SP_SKIP_REPLAY_BUILD_IF_PRESENT:-0}" =~ ^(1|true|yes|on)$ && -x "${ROOT_DIR}/tools/replay/replay" ]]; then
+    echo "Skipping replay build; using existing ${ROOT_DIR}/tools/replay/replay"
+    return
+  fi
+
   SP_DISABLE_AUTO_DEVICE_SCONS=1 "${ROOT_DIR}/.venv/bin/scons" --extras -j"${jobs}" tools/replay/replay
 }
 
