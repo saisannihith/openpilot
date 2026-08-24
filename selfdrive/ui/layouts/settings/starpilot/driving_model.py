@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from collections.abc import Callable
 import json
 import math
+import re
 import shutil
 import threading
 import time
@@ -75,6 +76,8 @@ TRANSITION_SECONDS = 0.24
 PANEL_STYLE = DEFAULT_PANEL_STYLE
 BANNER_HEIGHT = 128.0
 BANNER_GAP = 14.0
+CURRENT_STRIP_HEIGHT = 58.0
+CURRENT_STRIP_GAP_Y = 10.0
 HEADER_BUTTON_HEIGHT = 80.0
 HEADER_BUTTON_GAP_Y = 14.0
 MANAGEMENT_STRIP_HEIGHT = 64.0
@@ -141,6 +144,9 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
     self._transition_starts: dict[str, tuple[float, float]] = {}
     self._known_install_state: dict[str, bool] = {}
     self._active_download_key: str | None = None
+    self._display_download_key: str | None = None
+    self._display_download_percent = -1
+    self._display_download_text = ""
     self._shell_rect = rl.Rectangle(0, 0, 0, 0)
     self._scroll_rect = rl.Rectangle(0, 0, 0, 0)
     self._query_box = self._child(ModelSearchInputBox(max_text_size=64))
@@ -211,6 +217,8 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
     elif not self._controller._is_download_active():
       self._active_download_key = None
 
+    self._display_download_text = self._stable_download_progress_text(progress, self._active_download_key)
+
     latest_state = {key: entry.installed for key, entry in self._controller._catalog_entries.items()}
     for key, installed in latest_state.items():
       previous = self._known_install_state.get(key)
@@ -226,6 +234,28 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
       started_at, _direction = self._transition_starts[key]
       if time.monotonic() - started_at >= TRANSITION_SECONDS:
         self._transition_starts.pop(key, None)
+
+  def _stable_download_progress_text(self, progress: str, active_key: str | None) -> str:
+    progress = str(progress or "").strip()
+    if not self._controller._is_download_active():
+      self._display_download_key = None
+      self._display_download_percent = -1
+      return progress
+
+    if active_key != self._display_download_key:
+      self._display_download_key = active_key
+      self._display_download_percent = -1
+
+    match = re.search(r"(\d{1,3})%", progress)
+    if match is None:
+      return progress
+
+    percent = max(0, min(100, int(match.group(1))))
+    if self._display_download_percent >= 0 and percent < self._display_download_percent:
+      return f"{self._display_download_percent}%"
+
+    self._display_download_percent = percent
+    return f"{percent}%"
 
   def _target_at(self, mouse_pos: MousePos) -> str | None:
     for prefix in ("menu:", "action:", "row:"):
@@ -317,10 +347,10 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
 
     current_entry = self._controller.current_entry()
     if current_entry is not None:
-      banner_rect = rl.Rectangle(scroll_rect.x, scroll_rect.y, scroll_rect.width, BANNER_HEIGHT)
-      scroll_rect = rl.Rectangle(scroll_rect.x, scroll_rect.y + BANNER_HEIGHT + BANNER_GAP,
-                                 scroll_rect.width, scroll_rect.height - BANNER_HEIGHT - BANNER_GAP)
-      self._draw_current_banner(banner_rect, current_entry)
+      strip_rect = rl.Rectangle(scroll_rect.x + 8, scroll_rect.y, content_width - 16, CURRENT_STRIP_HEIGHT)
+      self._draw_current_strip(strip_rect, current_entry)
+      scroll_rect = rl.Rectangle(scroll_rect.x, scroll_rect.y + CURRENT_STRIP_HEIGHT + CURRENT_STRIP_GAP_Y,
+                                 scroll_rect.width, scroll_rect.height - CURRENT_STRIP_HEIGHT - CURRENT_STRIP_GAP_Y)
 
     header_y = scroll_rect.y
     self._draw_relocated_header(scroll_rect.x, header_y, content_width)
@@ -375,6 +405,29 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
     info_rect = rl.Rectangle(rect.x + 24, rect.y + 18, rect.width - ACTION_WIDTH - 42, rect.height - 36)
     self._draw_model_info(info_rect, entry, current=True)
     self._draw_current_action(action_rect)
+
+  def _draw_current_strip(self, rect: rl.Rectangle, entry: ModelCatalogEntry):
+    draw_action_pill(
+      rect,
+      "",
+      rl.Color(16, 13, 24, 210),
+      with_alpha(PANEL_STYLE.surface_border, 50),
+      AetherListColors.HEADER,
+      font_size=24,
+      roundness=0.26,
+    )
+
+    name_rect = rl.Rectangle(rect.x + 20, rect.y + 5, rect.width - 170, 28)
+    meta_rect = rl.Rectangle(rect.x + 20, rect.y + 31, rect.width - 170, 22)
+    gui_label(name_rect, entry.name, 26, AetherListColors.HEADER, FontWeight.SEMI_BOLD)
+
+    meta_parts = [part for part in (entry.series, entry.released) if part]
+    if entry.version:
+      meta_parts.append(entry.version)
+    gui_label(meta_rect, " • ".join(meta_parts), 20, AetherListColors.SUBTEXT, FontWeight.NORMAL)
+
+    chip_rect = rl.Rectangle(rect.x + rect.width - 132, rect.y + 10, 112, rect.height - 20)
+    AetherChip(tr("Current"), PANEL_STYLE.current_fill, PANEL_STYLE.current_border, AetherListColors.HEADER, font_size=22).render(chip_rect)
 
   def _draw_relocated_header(self, x: float, y: float, width: float):
     btn_gap = float(AETHER_LIST_METRICS.header_button_gap)
@@ -463,7 +516,7 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
       row_radius=0.18,
       separator_inset=22,
     )
-    label_width = 170.0
+    label_width = 118.0
     clear_width = 86.0 if self._query_box.text.strip() else 0.0
     gui_label(
       rl.Rectangle(rect.x + 24, rect.y, label_width, rect.height),
@@ -474,7 +527,7 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
     )
 
     input_right_pad = clear_width + 18.0
-    input_rect = rl.Rectangle(rect.x + label_width + 30, rect.y + 10, rect.width - label_width - input_right_pad - 44, rect.height - 20)
+    input_rect = rl.Rectangle(rect.x + label_width + 18, rect.y + 10, rect.width - label_width - input_right_pad - 32, rect.height - 20)
     self._interactive_rects["search:keyboard"] = input_rect
     self._query_box.render(input_rect)
 
@@ -668,7 +721,7 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
     else:
       self._interactive_rects[f"action:{entry.key}"] = action_rect
       if downloading:
-        self._draw_downloading_action(action_rect, self._controller.download_progress_text())
+        self._draw_downloading_action(action_rect, self._display_download_text or self._controller.download_progress_text())
       else:
         self._draw_download_action(action_rect)
 

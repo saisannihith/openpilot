@@ -817,12 +817,15 @@ class ModelManager:
       if self._is_model_downloaded(model_key, artifact_format):
         continue
 
+      self.params_memory.put(MODEL_DOWNLOAD_PARAM, model_key)
       self.params_memory.put(DOWNLOAD_PROGRESS_PARAM, f"Downloading \"{model_name}\"...")
       self.download_model(model_key)
       if self.params_memory.get_bool(CANCEL_DOWNLOAD_PARAM):
         return
+      self.params_memory.remove(MODEL_DOWNLOAD_PARAM)
 
     self.params_memory.put(DOWNLOAD_PROGRESS_PARAM, "All models downloaded!")
+    self.params_memory.remove(MODEL_DOWNLOAD_PARAM)
     self.params_memory.remove(MODEL_DOWNLOAD_ALL_PARAM)
     self.randomize_selected_model()
 
