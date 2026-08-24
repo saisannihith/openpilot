@@ -1,6 +1,24 @@
-# 2024 Kia Carnival Debug Automation
+# 2024 Kia Carnival Control Center
 
-One-command workflow for pulling comma logs and producing a SNITHPilot tuning report.
+The comma 3x now exposes a dedicated `Carnival` settings page between `StarPilot` and `Device`. It contains:
+
+- Carnival Confidence Governor live state and enable control.
+- Self-Tuning Drive Profile recommendations with guarded apply and one-tap revert.
+- Radar-Vision Lead Fusion HUD state and enable control.
+- Intersection Stop Controller live state and enable control.
+- EPS Fault Predictor live risk and enable control.
+- Route Replay Scorecard with on-device run status and scores.
+
+`CarnivalAutoAnalyze` defaults on. After an ignition route is finalized, the low-priority offroad `carnival_analyzerd` process writes:
+
+- `/data/media/0/carnival_reports/carnival-report-*.md`
+- `/data/media/0/carnival_reports/carnival-report-*.json`
+
+The latest scorecard, pending profile, applied snapshot, report path, and any error are also stored in Params for the native UI. Analysis never runs onroad.
+
+## Optional PC Workflow
+
+The original one-command workflow remains available for pulling comma logs and producing a local report.
 
 ## Common Use
 
@@ -34,5 +52,35 @@ python tools/carnival/collect_and_report.py --skip-pull --route 00000006--b531e9
 - Radar distance quality, coverage, and distance-derived velocity quality.
 - Lateral events: steer override, steering availability warnings, torque clipping, steering intervention rate.
 - Longitudinal events: lead source, min lead distance, min TTC, brake/gas intervention, harsh brake commands.
+- Route scorecard: lateral, longitudinal, radar, and overall scores.
+- Counts for interventions, uncorroborated brake events, missed-stop interventions, creep, and steering saturation.
+- Small evidence-bounded tuning recommendations. They are never applied while driving.
+
+## Live Carnival State
+
+`carnivald` publishes `carnivalState` at model rate. The on-road Carnival Fusion HUD shows:
+
+- vision versus radar-confirmed lead state and stale radar;
+- cut-in candidate count;
+- stop approach/hold state;
+- combined confidence and EPS risk.
+
+The confidence governor only softens positive acceleration for a low-confidence, vision-only lead. It cannot add braking. The EPS predictor is bounded to a 12% pre-taper before the existing platform guard, and the dedicated intersection controller only owns the final low-speed hold/release phase.
+
+## Self-Tuning Profile
+
+Preview bounded changes from a generated report:
+
+```bash
+python tools/carnival/self_tune_profile.py drive_reports/carnival-report-YYYYMMDD-HHMMSS.json --device 192.168.68.68
+```
+
+Apply only the allowlisted resolved changes and write a before/after snapshot:
+
+```bash
+python tools/carnival/self_tune_profile.py drive_reports/carnival-report-YYYYMMDD-HHMMSS.json --device 192.168.68.68 --apply
+```
+
+Automatic analysis is enabled by default; automatic application is disabled by default. When explicitly enabled in the Carnival UI, only tiny allowlisted follow-time and force-stop-offset changes can apply offroad. A before/after snapshot is always written for revert. Torque, lane offset, curve speed, radar velocity, and controller constants remain recommendation-only until directional and fault evidence is strong enough.
 
 The radar candidate remains shadow-only until lateral and raw velocity fields are decoded safely.

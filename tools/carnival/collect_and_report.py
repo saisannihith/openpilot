@@ -101,6 +101,21 @@ class LongitudinalMetrics:
 
 
 @dataclass
+class RouteScorecard:
+  overall_score: int = 0
+  lateral_score: int = 0
+  longitudinal_score: int = 0
+  radar_score: int = 0
+  intervention_events: int = 0
+  false_brake_events: int = 0
+  missed_stop_events: int = 0
+  low_speed_creep_samples: int = 0
+  torque_saturation_events: int = 0
+  mean_confidence: float | None = None
+  recommendations: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
 class SteeringEventWindow:
   event: str
   t: float
@@ -128,6 +143,7 @@ class RouteReport:
   radar: RadarMetrics = field(default_factory=RadarMetrics)
   lateral: LateralMetrics = field(default_factory=LateralMetrics)
   longitudinal: LongitudinalMetrics = field(default_factory=LongitudinalMetrics)
+  scorecard: RouteScorecard = field(default_factory=RouteScorecard)
   steering_windows: list[SteeringEventWindow] = field(default_factory=list)
   issues: list[str] = field(default_factory=list)
 
@@ -397,6 +413,9 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
   latest_car_control = None
   latest_car_output = None
   latest_controls_state = None
+  latest_radar_state = None
+  latest_starpilot_plan = None
+  latest_model = None
   curvature_errors = []
   torque_clip_samples = 0
   torque_clip_total = 0
@@ -413,6 +432,13 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
   accel_commands = []
   harsh_brake_samples = 0
   steering_window_last: dict[str, float] = {}
+  previous_brake_pressed = False
+  false_brake_active = False
+  driver_brake_events = 0
+  missed_stop_events = 0
+  false_brake_events = 0
+  low_speed_creep_samples = 0
+  confidence_samples: list[float] = []
 
   def capture_steering_window(event_name: str, t: float) -> None:
     if len(report.steering_windows) >= 80:
@@ -475,6 +501,32 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
           brake_pressed_samples += 1
         if safe_attr(latest_car_state, "gasPressed", False):
           gas_pressed_samples += 1
+        brake_pressed = bool(safe_attr(latest_car_state, "brakePressed", False))
+        if brake_pressed and not previous_brake_pressed:
+          driver_brake_events += 1
+          lead = safe_attr(latest_radar_state, "leadOne")
+          stop_context = bool(
+            safe_attr(latest_starpilot_plan, "redLight", False) or
+            safe_attr(latest_starpilot_plan, "forcingStop", False) or
+            safe_attr(safe_attr(latest_model, "action"), "shouldStop", False) or
+            (safe_attr(lead, "status", False) and safe_float(safe_attr(lead, "vLead", 99.0)) < 2.0)
+          )
+          if bool(safe_attr(latest_car_control, "longActive", False)) and stop_context:
+            missed_stop_events += 1
+        previous_brake_pressed = brake_pressed
+
+        lead = safe_attr(latest_radar_state, "leadOne")
+        stopped_lead = bool(
+          safe_attr(lead, "status", False) and safe_float(safe_attr(lead, "vLead", 99.0)) < 0.8 and
+          safe_float(safe_attr(lead, "dRel", 999.0)) < 18.0
+        )
+        stop_context = bool(
+          stopped_lead or safe_attr(latest_starpilot_plan, "redLight", False) or
+          safe_attr(latest_starpilot_plan, "forcingStop", False) or
+          safe_attr(safe_attr(latest_model, "action"), "shouldStop", False)
+        )
+        if stop_context and 0.10 < safe_float(safe_attr(latest_car_state, "vEgo", 0.0)) < 1.20 and not brake_pressed:
+          low_speed_creep_samples += 1
 
       elif which == "carControl":
         latest_car_control = event.carControl
@@ -500,6 +552,20 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
         accel_commands.append(accel)
         if accel < -2.0:
           harsh_brake_samples += 1
+        lead = safe_attr(latest_radar_state, "leadOne")
+        no_stop_evidence = not bool(
+          safe_attr(lead, "status", False) or safe_attr(latest_starpilot_plan, "redLight", False) or
+          safe_attr(latest_starpilot_plan, "forcingStop", False) or
+          safe_attr(safe_attr(latest_model, "action"), "shouldStop", False)
+        )
+        false_brake_now = bool(
+          accel < -1.25 and no_stop_evidence and
+          safe_float(safe_attr(latest_car_state, "vEgo", 0.0)) > 12.0 and
+          not bool(safe_attr(latest_car_state, "brakePressed", False))
+        )
+        if false_brake_now and not false_brake_active:
+          false_brake_events += 1
+        false_brake_active = false_brake_now
         if latest_car_state is not None:
           desired_curvature = safe_float(safe_attr(latest_controls_state, "desiredCurvature", 0.0))
           curvature = safe_float(safe_attr(latest_controls_state, "curvature", 0.0))
@@ -514,6 +580,7 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
             capture_steering_window(name, t)
 
       elif which == "radarState":
+        latest_radar_state = event.radarState
         lead = event.radarState.leadOne
         if lead.status and latest_car_state is not None and 1.0 < lead.dRel < 180.0:
           ref = RefLead(t, float(lead.dRel), float(lead.yRel), float(lead.vRel), float(latest_car_state.vEgo))
@@ -534,6 +601,15 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
           dat = bytes(msg.dat)
           if int(msg.src) == CARNIVAL_OBJECT_BUS and CARNIVAL_OBJECT_START <= addr <= CARNIVAL_OBJECT_END and len(dat) == CARNIVAL_OBJECT_LEN:
             objects_by_addr[addr].extend(decode_carnival_objects(t, addr, dat))
+
+      elif which == "starpilotPlan":
+        latest_starpilot_plan = event.starpilotPlan
+
+      elif which == "modelV2":
+        latest_model = event.modelV2
+
+      elif which == "carnivalState":
+        confidence_samples.append(safe_float(safe_attr(event.carnivalState, "overallConfidence", 0.0)))
 
   report.services = dict(services)
   report.events = dict(events.most_common(20))
@@ -600,6 +676,58 @@ def analyze_route(route: str, files: list[Path]) -> RouteReport:
   else:
     report.longitudinal.verdict = "no obvious logged longitudinal issue"
 
+  lateral_score = max(0, min(100, round(
+    100 - 18 * report.lateral.steering_temp_events - 5 * report.lateral.steer_saturated_events -
+    35 * min(report.lateral.steering_pressed_pct, 1.0) - 20 * min(report.lateral.torque_clip_pct, 1.0)
+  )))
+  longitudinal_score = max(0, min(100, round(
+    100 - 18 * missed_stop_events - 14 * false_brake_events -
+    min(25, report.longitudinal.harsh_brake_samples / max(report.longitudinal.enabled_samples, 1) * 500.0) -
+    min(20, low_speed_creep_samples / max(services["carState"], 1) * 600.0)
+  )))
+  distance_quality = 0.0 if report.radar.distance_mae is None else max(0.0, 1.0 - report.radar.distance_mae / 5.0)
+  velocity_quality = 0.0 if report.radar.derived_velocity_mae is None else max(0.0, 1.0 - report.radar.derived_velocity_mae / 4.0)
+  radar_score = max(0, min(100, round(100.0 * (
+    0.45 * report.radar.coverage + 0.35 * distance_quality + 0.20 * velocity_quality
+  ))))
+  recommendations: list[dict[str, Any]] = []
+  if missed_stop_events:
+    recommendations.append({"target": "stop-hold distance", "delta": "+0.1 m maximum", "confidence": "medium",
+                            "reason": f"{missed_stop_events} driver-brake stop interventions", "autoApply": False,
+                            "codePath": "selfdrive/controls/lib/carnival_intersection_controller.py"})
+  if low_speed_creep_samples:
+    recommendations.append({"target": "stop-hold brake", "delta": "+0.05 m/s^2 maximum", "confidence": "high",
+                            "reason": f"{low_speed_creep_samples} low-speed creep samples", "autoApply": False,
+                            "codePath": "selfdrive/controls/lib/carnival_intersection_controller.py"})
+  if report.lateral.steering_temp_events:
+    recommendations.append({"target": "EPS predictive risk onset", "delta": "-0.02 maximum", "confidence": "medium",
+                            "reason": f"{report.lateral.steering_temp_events} temporary steering events", "autoApply": False,
+                            "codePath": "opendbc/car/hyundai/carcontroller.py"})
+  elif report.lateral.steer_saturated_events and report.lateral.steering_temp_events == 0:
+    recommendations.append({"target": "curve speed", "delta": "-2% maximum", "confidence": "medium",
+                            "reason": f"{report.lateral.steer_saturated_events} saturation events without EPS faults", "autoApply": False,
+                            "codePath": "selfdrive/controls/lib/longitudinal_planner.py"})
+  if false_brake_events:
+    recommendations.append({"target": "radar confirmation gate", "delta": "+1 confirmation frame maximum", "confidence": "medium",
+                            "reason": f"{false_brake_events} uncorroborated hard-brake events", "autoApply": False,
+                            "codePath": "selfdrive/controls/lib/carnival_confidence.py"})
+  if not recommendations:
+    recommendations.append({"target": "none", "delta": "0", "confidence": "high",
+                            "reason": "no bounded change justified by this route", "autoApply": False, "codePath": ""})
+  report.scorecard = RouteScorecard(
+    overall_score=round(0.40 * lateral_score + 0.45 * longitudinal_score + 0.15 * radar_score),
+    lateral_score=lateral_score,
+    longitudinal_score=longitudinal_score,
+    radar_score=radar_score,
+    intervention_events=driver_brake_events + report.lateral.lateral_takeover_events,
+    false_brake_events=false_brake_events,
+    missed_stop_events=missed_stop_events,
+    low_speed_creep_samples=low_speed_creep_samples,
+    torque_saturation_events=report.lateral.steer_saturated_events,
+    mean_confidence=mean(confidence_samples) if confidence_samples else None,
+    recommendations=recommendations,
+  )
+
   add_issues(report)
   return report
 
@@ -658,9 +786,28 @@ def write_markdown(reports: list[RouteReport], output: Path, log_root: Path) -> 
     lines.append("- No high-signal issues found in parsed logs.")
 
   for report in reports:
+    route_scores = "/".join(str(score) for score in (
+      report.scorecard.overall_score,
+      report.scorecard.lateral_score,
+      report.scorecard.longitudinal_score,
+      report.scorecard.radar_score,
+    ))
+    route_events = "/".join(str(count) for count in (
+      report.scorecard.intervention_events,
+      report.scorecard.false_brake_events,
+      report.scorecard.missed_stop_events,
+    ))
     lines += [
       "",
       f"## `{report.route}`",
+      "",
+      "### Route Scorecard",
+      "",
+      f"- Overall/lateral/longitudinal/radar: {route_scores}",
+      f"- Interventions/false brakes/missed stops: {route_events}",
+      f"- Low-speed creep samples: {report.scorecard.low_speed_creep_samples}",
+      f"- Mean live confidence: {fmt(report.scorecard.mean_confidence)}",
+      f"- Recommendations: `{report.scorecard.recommendations}`",
       "",
       f"- Files: {report.files}",
       f"- Car params: `{report.car_params[0] if report.car_params else {}}`",

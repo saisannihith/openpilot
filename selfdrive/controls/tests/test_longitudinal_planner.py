@@ -2396,7 +2396,7 @@ def test_stationary_radar_lead_settles_excess_stop_gap_after_confirmation(model_
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
-def test_carnival_stationary_radar_gap_settle_uses_stronger_launch_floor(model_version):
+def test_carnival_intersection_hold_blocks_stationary_gap_settle_creep(model_version):
   CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
   planner = LongitudinalPlanner(CP, init_v=0.0)
   sm = make_sm(
@@ -2415,9 +2415,9 @@ def test_carnival_stationary_radar_gap_settle_uses_stronger_launch_floor(model_v
   for _ in range(max(frames, 1)):
     planner.update(sm, make_toggles(model_version))
 
-  assert not planner.output_should_stop
-  assert planner.output_a_target == pytest.approx(longitudinal_planner_module.CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL)
-  assert planner.output_a_target > longitudinal_planner_module.RADAR_STANDSTILL_GAP_SETTLE_ACCEL
+  assert planner.output_should_stop
+  assert planner.carnival_intersection_state == "hold"
+  assert planner.output_a_target <= -0.55
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
@@ -3262,6 +3262,62 @@ def test_carnival_radar_far_follow_does_not_change_other_vehicles():
   lead = make_lead(status=True, d_rel=70.8, v_lead=30.459, radar=True, model_prob=0.951)
 
   assert get_kia_carnival_4th_gen_radar_far_follow_cap(CP, lead, v_ego=31.26, accel_min=-3.5) is None
+
+
+def test_carnival_experimental_cruise_recovery_uses_confirmed_far_lead():
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
+  planner = LongitudinalPlanner(CP, init_v=14.0)
+  lead = make_lead(
+    status=True,
+    d_rel=50.0,
+    v_lead=15.0,
+    a_lead=0.0,
+    radar=True,
+    model_prob=0.99,
+    y_rel=0.0,
+  )
+  lead.radarTrackId = 0xC4101
+
+  accel = planner.get_carnival_experimental_cruise_recovery_accel(
+    (lead, make_lead(status=False)),
+    v_ego=14.0,
+    v_cruise=26.67,
+    t_follow=1.25,
+    output_a_target_mpc=0.8,
+    red_light=False,
+    forcing_stop=False,
+    model_should_stop=False,
+  )
+
+  assert accel == pytest.approx(longitudinal_planner_module.CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MAX_ACCEL)
+
+
+@pytest.mark.parametrize("stop_context", ["red_light", "forcing_stop", "model_should_stop"])
+def test_carnival_experimental_cruise_recovery_rejects_stop_context(stop_context):
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
+  planner = LongitudinalPlanner(CP, init_v=14.0)
+  lead = make_lead(status=True, d_rel=50.0, v_lead=15.0, a_lead=0.0, radar=True, model_prob=0.99, y_rel=0.0)
+  lead.radarTrackId = 0xC4101
+  contexts = {
+    "red_light": stop_context == "red_light",
+    "forcing_stop": stop_context == "forcing_stop",
+    "model_should_stop": stop_context == "model_should_stop",
+  }
+
+  assert planner.get_carnival_experimental_cruise_recovery_accel(
+    (lead, make_lead(status=False)), 14.0, 26.67, 1.25, 0.8,
+    contexts["red_light"], contexts["forcing_stop"], contexts["model_should_stop"],
+  ) is None
+
+
+def test_carnival_experimental_cruise_recovery_requires_confirmation_track():
+  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
+  planner = LongitudinalPlanner(CP, init_v=14.0)
+  lead = make_lead(status=True, d_rel=50.0, v_lead=15.0, a_lead=0.0, radar=True, model_prob=0.99, y_rel=0.0)
+
+  assert planner.get_carnival_experimental_cruise_recovery_accel(
+    (lead, make_lead(status=False)), 14.0, 26.67, 1.25, 0.8, False, False, False,
+  ) is None
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])

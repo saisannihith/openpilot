@@ -159,7 +159,6 @@ def evaluate_file(path: Path, mode: ReadMode, planner: LongitudinalPlanner) -> l
         v_ego,
         accel_min=-2.0,
         driver_gas=bool(safe_attr(car_state, "gasPressed", False)),
-        release_ready=False,
       )
       samples.append(EvalSample(
         route=route_name(path),
@@ -191,7 +190,7 @@ def evaluate_file(path: Path, mode: ReadMode, planner: LongitudinalPlanner) -> l
 def group_close_events(samples: list[EvalSample]) -> list[list[EvalSample]]:
   close = [
     sample for sample in sorted(samples, key=lambda s: (s.route, s.route_t, s.lead_index))
-    if sample.lead_d_rel <= 10.0 and abs(sample.lead_y_rel) <= 1.75 and sample.v_ego <= 4.0
+    if sample.lead_d_rel <= 12.0 and abs(sample.lead_y_rel) <= 1.75 and sample.v_ego <= 5.8
   ]
   events: list[list[EvalSample]] = []
   cur: list[EvalSample] = []

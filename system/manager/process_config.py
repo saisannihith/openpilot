@@ -60,6 +60,12 @@ def always_run(started: bool, params: Params, CP: car.CarParams, starpilot_toggl
 def only_onroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return started
 
+def carnival_only(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  return started and str(CP.carFingerprint) == "KIA_CARNIVAL_4TH_GEN"
+
+def carnival_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
+  return not started and str(CP.carFingerprint) == "KIA_CARNIVAL_4TH_GEN"
+
 def only_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return not started
 
@@ -158,6 +164,8 @@ procs = [
   PythonProcess("maneuversd", "tools.longitudinal_maneuvers.maneuversd", long_maneuver),
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
+  PythonProcess("carnivald", "selfdrive.controls.carnivald", carnival_only),
+  PythonProcess("carnival_analyzerd", "selfdrive.controls.carnival_analyzerd", carnival_offroad, nice=19),
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "system.updated.updated", always_run, enabled=not PC),

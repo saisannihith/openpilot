@@ -6,18 +6,22 @@ import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.starpilot.common.model_versions import is_tinygrad_model_version
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import desired_follow_distance
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_safe_obstacle_distance
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import should_trigger_planner_fcw
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.lead_behavior import is_radarless_matched_follow_window
 from openpilot.selfdrive.controls.lib.lead_follow_policy import apply as apply_follow_policy
 from openpilot.selfdrive.controls.lib.lead_follow_policy import is_nonurgent_duplicate_vision_follow
+from openpilot.selfdrive.controls.lib.carnival_intersection_controller import CarnivalIntersectionController
+from openpilot.selfdrive.controls.lib.carnival_confidence import get_vision_lead_accel_cap
 from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   get_far_follow_output_slew_rates,
   get_follow_prebrake_min_headway,
@@ -145,17 +149,30 @@ CARNIVAL_STOPPED_LEAD_GUARD_MIN_BRAKE = 0.45
 CARNIVAL_STOPPED_LEAD_GUARD_MAX_BRAKE = 0.85
 CARNIVAL_CONFIRMATION_TRACK_ID_MIN = 0xC4100
 CARNIVAL_CONFIRMATION_TRACK_ID_MAX = 0xC41FF
-CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_EGO_SPEED = 3.2
-CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_EGO_SPEED = 3.8
-CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_DISTANCE = 9.5
-CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_DISTANCE = 10.5
-CARNIVAL_RADAR_STOP_HOLD_MAX_LEAD_SPEED = 1.0
+CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_EGO_SPEED = 5.5
+CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_EGO_SPEED = 6.0
+CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_DISTANCE = 11.5
+CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_DISTANCE = 12.5
+CARNIVAL_RADAR_STOP_HOLD_DYNAMIC_DISTANCE_OFFSET = 3.5
+CARNIVAL_RADAR_STOP_HOLD_DYNAMIC_DISTANCE_TIME = 1.5
+CARNIVAL_RADAR_STOP_HOLD_DYNAMIC_DISTANCE_MAX = 13.0
+CARNIVAL_RADAR_STOP_HOLD_MIN_CLOSING_SPEED = 0.7
+CARNIVAL_RADAR_STOP_HOLD_MAX_LEAD_SPEED = 1.2
 CARNIVAL_RADAR_STOP_HOLD_MAX_LATERAL_OFFSET = 1.75
 CARNIVAL_RADAR_STOP_HOLD_MIN_BRAKE = 0.55
 CARNIVAL_RADAR_STOP_HOLD_MAX_BRAKE = 0.95
 CARNIVAL_RADAR_STOP_HOLD_RELEASE_MIN_DISTANCE = 8.0
 CARNIVAL_RADAR_STOP_HOLD_RELEASE_MIN_LEAD_SPEED = 1.2
 CARNIVAL_RADAR_STOP_HOLD_RELEASE_MIN_LEAD_DELTA = 0.8
+CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_SPEED = 13.0
+CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_CRUISE_ERROR = 4.0
+CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_DISTANCE = 45.0
+CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_GAP_ERROR = 12.0
+CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MAX_CLOSING_SPEED = 3.0
+CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MAX_LEAD_BRAKE = 0.25
+CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_MODEL_PROB = 0.85
+CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_LEAD_SPEED = 8.0
+CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MAX_ACCEL = 0.45
 LEAD_DEPART_ACCEL_HOLD_TIME = 1.2
 LEAD_DEPART_ACCEL_HOLD_MAX_EGO_SPEED = 2.0
 CLOSE_LEAD_BRAKE_CAP_MAX_TTC = 25.0
@@ -794,10 +811,14 @@ class LongitudinalPlanner:
     self.carnival_pre_red_stop_start_length = None
     self.carnival_pre_red_stop_start_t = 0.0
     self.carnival_radar_stop_hold_active = False
+    self.carnival_intersection_controller = CarnivalIntersectionController(str(CP.carFingerprint), dt)
+    self.carnival_intersection_state = "idle"
+    self._carnival_params = Params() if self.is_carnival_4th_gen() else None
+    self._carnival_feature_refresh_t = 0.0
+    self._carnival_intersection_enabled = True
 
     if self.is_preap:
       try:
-        from openpilot.common.params import Params
         self._preap_params = Params()
         self.nap_adaptive_accel = self._preap_params.get_bool("NAPAdaptiveAccel")
       except Exception:
@@ -1972,17 +1993,33 @@ class LongitudinalPlanner:
     ]
     confirmation_leads = [lead for lead in centered_leads if self.is_carnival_confirmation_lead(lead)]
 
-    def stopped_close(lead, max_distance, max_ego_speed):
+    def stopped_close(lead, max_distance, max_ego_speed, require_closing):
       lead_speed = max(float(getattr(lead, "vLead", 0.0)), 0.0)
+      closing_speed = float(v_ego) - lead_speed
+      distance_limit = min(
+        max_distance,
+        CARNIVAL_RADAR_STOP_HOLD_DYNAMIC_DISTANCE_MAX,
+        max(
+          CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_DISTANCE,
+          CARNIVAL_RADAR_STOP_HOLD_DYNAMIC_DISTANCE_OFFSET +
+          CARNIVAL_RADAR_STOP_HOLD_DYNAMIC_DISTANCE_TIME * float(v_ego),
+        ),
+      )
       return (
         float(v_ego) <= max_ego_speed and
-        float(getattr(lead, "dRel", float("inf"))) <= max_distance and
-        lead_speed <= CARNIVAL_RADAR_STOP_HOLD_MAX_LEAD_SPEED
+        float(getattr(lead, "dRel", float("inf"))) <= distance_limit and
+        lead_speed <= CARNIVAL_RADAR_STOP_HOLD_MAX_LEAD_SPEED and
+        (not require_closing or closing_speed >= CARNIVAL_RADAR_STOP_HOLD_MIN_CLOSING_SPEED)
       )
 
     enter_leads = [
       lead for lead in confirmation_leads
-      if stopped_close(lead, CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_DISTANCE, CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_EGO_SPEED)
+      if stopped_close(
+        lead,
+        CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_DISTANCE,
+        CARNIVAL_RADAR_STOP_HOLD_ENTER_MAX_EGO_SPEED,
+        True,
+      )
     ]
     if enter_leads:
       self.carnival_radar_stop_hold_active = True
@@ -1994,7 +2031,8 @@ class LongitudinalPlanner:
       lead for lead in centered_leads
       if (
         float(v_ego) <= CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_EGO_SPEED and
-        float(getattr(lead, "dRel", float("inf"))) <= CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_DISTANCE
+        float(getattr(lead, "dRel", float("inf"))) <= CARNIVAL_RADAR_STOP_HOLD_HOLD_MAX_DISTANCE and
+        max(float(getattr(lead, "vLead", 0.0)), 0.0) <= CARNIVAL_RADAR_STOP_HOLD_MAX_LEAD_SPEED + 0.6
       )
     ]
     if not hold_leads:
@@ -2022,6 +2060,43 @@ class LongitudinalPlanner:
     hold_brake = float(np.clip(hold_brake, CARNIVAL_RADAR_STOP_HOLD_MIN_BRAKE, CARNIVAL_RADAR_STOP_HOLD_MAX_BRAKE))
     brake_floor = -hold_brake
     return brake_floor if accel_min >= 0.0 else max(accel_min, brake_floor)
+
+  def get_carnival_experimental_cruise_recovery_accel(self, leads, v_ego, v_cruise, t_follow,
+                                                      output_a_target_mpc, red_light,
+                                                      forcing_stop, model_should_stop):
+    if (
+      not self.is_carnival_4th_gen() or
+      output_a_target_mpc is None or
+      float(output_a_target_mpc) <= 0.05 or
+      red_light or forcing_stop or model_should_stop or
+      float(v_ego) < CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_SPEED or
+      not np.isfinite(v_cruise) or
+      float(v_cruise) - float(v_ego) < CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_CRUISE_ERROR
+    ):
+      return None
+
+    for lead in leads:
+      if not self.is_carnival_confirmation_lead(lead):
+        continue
+      if abs(float(getattr(lead, "yRel", 0.0))) > CARNIVAL_RADAR_STOP_HOLD_MAX_LATERAL_OFFSET:
+        continue
+      lead_speed = max(float(getattr(lead, "vLead", 0.0)), 0.0)
+      lead_brake = max(0.0, -float(getattr(lead, "aLeadK", 0.0)))
+      closing_speed = max(float(v_ego) - lead_speed, 0.0)
+      distance = float(getattr(lead, "dRel", float("inf")))
+      model_prob = float(getattr(lead, "modelProb", 1.0))
+      desired_gap = float(desired_follow_distance(float(v_ego), lead_speed, float(t_follow)))
+      gap_error = distance - desired_gap
+      if (
+        lead_speed >= CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_LEAD_SPEED and
+        distance >= CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_DISTANCE and
+        gap_error >= CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_GAP_ERROR and
+        closing_speed <= CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MAX_CLOSING_SPEED and
+        lead_brake <= CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MAX_LEAD_BRAKE and
+        model_prob >= CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MIN_MODEL_PROB
+      ):
+        return min(float(output_a_target_mpc), CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MAX_ACCEL)
+    return None
 
   def post_departure_follow_settle_active(self, lead, v_ego, t_follow):
     if lead is None or not lead.status:
@@ -2319,7 +2394,7 @@ class LongitudinalPlanner:
     # Compute model v_ego error
     self.v_model_error = self.get_model_speed_error(sm['modelV2'], v_ego)
     x, v, a, j, throttle_prob = self.parse_model(sm['modelV2'], self.v_model_error, v_ego, starpilot_toggles)
-    current_desired_curvature = sm['controlsState'].desiredCurvature if bool(sm['carControl'].latActive) else None
+    current_desired_curvature = sm['controlsState'].desiredCurvature if bool(getattr(sm['carControl'], 'latActive', False)) else None
     v, a, j = apply_carnival_lateral_feasibility_speed_cap(self.CP, sm['modelV2'], scene_v_ego, v, a, j, current_desired_curvature)
     if bool(sm['carState'].standstill):
       self.model_launch_armed = True
@@ -2418,8 +2493,9 @@ class LongitudinalPlanner:
       d_rel_dot = (lead_dist - self.prev_lead_dist) / max(self.dt, 1e-3)
     self.prev_lead_dist = lead_dist
 
-    # Remember time of last non-trivial model brake risk
-    if 'raw_brake_max' in locals() and raw_brake_max is not None and raw_brake_max > 0.02:
+    brake_probs = getattr(getattr(sm['modelV2'].meta, 'disengagePredictions', None), 'brakePressProbs', [])
+    raw_brake_max = float(np.max(brake_probs)) if len(brake_probs) else -1.0
+    if raw_brake_max > 0.02:
       self.last_big_brake_t = now_t
 
     # Stable lead heuristic (short window, cheap to compute)
@@ -2451,23 +2527,19 @@ class LongitudinalPlanner:
 
       # Disengage prediction risk (intervention likelihood)
       disengage_risk = 0.0
-      raw_brake_max = -1.0
       lam = -1.0
-      if hasattr(sm['modelV2'].meta, 'disengagePredictions'):
+      if len(brake_probs):
         # Use brake press probabilities as primary risk indicator
-        brake_probs = sm['modelV2'].meta.disengagePredictions.brakePressProbs
-        if len(brake_probs) > 0:
-          # Exponentially decayed max over the full horizon
-          probs = np.asarray(brake_probs, dtype=float)
-          # Clip tiny brake blips so they don't inflate uncertainty
-          if float(np.max(probs)) < 0.015:
-            probs = probs * 0.5
-          raw_brake_max = float(np.max(probs))
-          # Time vector assuming model horizon step = DT_MDL
-          t = np.arange(len(probs), dtype=float) * DT_MDL
-          lam = 0.6  # decay rate per second (tunable: 0.5–0.9 typical)
-          weights = np.exp(-lam * t)
-          disengage_risk = float(np.max(probs * weights))
+        # Exponentially decayed max over the full horizon
+        probs = np.asarray(brake_probs, dtype=float)
+        # Clip tiny brake blips so they don't inflate uncertainty
+        if raw_brake_max < 0.015:
+          probs = probs * 0.5
+        # Time vector assuming model horizon step = DT_MDL
+        t = np.arange(len(probs), dtype=float) * DT_MDL
+        lam = 0.6  # decay rate per second (tunable: 0.5–0.9 typical)
+        weights = np.exp(-lam * t)
+        disengage_risk = float(np.max(probs * weights))
 
       # Combined uncertainty metric (range roughly 0..2), with dual-track filtering
       raw_uncertainty = desire_entropy + disengage_risk
@@ -2659,6 +2731,7 @@ class LongitudinalPlanner:
     action_t = self.CP.longitudinalActuatorDelay + DT_MDL
     prev_output_a_target = float(self.output_a_target)
     model_launch_accel = None
+    output_a_target_mpc = None
     if self.model_launch_armed and not bool(sm['modelV2'].action.shouldStop):
       model_launch_accel = self.get_model_launch_accel(model_launch_v, model_launch_a, action_t, scene_v_ego)
 
@@ -3151,6 +3224,20 @@ class LongitudinalPlanner:
       self.a_desired = max(self.a_desired, follow_result.target)
     output_a_target = follow_result.target
 
+    carnival_experimental_cruise_recovery_accel = self.get_carnival_experimental_cruise_recovery_accel(
+      (self.lead_one, self.lead_two),
+      scene_v_ego,
+      v_cruise,
+      effective_t_follow,
+      output_a_target_mpc,
+      bool(getattr(sm['starpilotPlan'], 'redLight', False)),
+      bool(getattr(sm['starpilotPlan'], 'forcingStop', False)),
+      bool(getattr(sm['modelV2'].action, 'shouldStop', False)),
+    )
+    if carnival_experimental_cruise_recovery_accel is not None:
+      self.a_desired = max(self.a_desired, carnival_experimental_cruise_recovery_accel)
+      output_a_target = max(output_a_target, carnival_experimental_cruise_recovery_accel)
+
     # Model-backed braking remains outside the ordinary follow policy. These
     # floors are safety responses, not comfort arbitration.
     if comfort_follow_lead is not None and not panic_bypass and not output_should_stop and not vision_low_speed_stop_active:
@@ -3390,6 +3477,42 @@ class LongitudinalPlanner:
       self.a_desired = min(self.a_desired, low_speed_stop_context_hold_cap)
       output_a_target = min(output_a_target, low_speed_stop_context_hold_cap)
       output_should_stop = True
+
+    if self._carnival_params is not None and time.monotonic() - self._carnival_feature_refresh_t >= 1.0:
+      self._carnival_intersection_enabled = self._carnival_params.get_bool("CarnivalIntersectionController")
+      self._carnival_feature_refresh_t = time.monotonic()
+
+    selected_stop_lead = self.lead_two if self.mpc.source == "lead1" else self.lead_one
+    intersection_output = self.carnival_intersection_controller.update(
+      v_ego=scene_v_ego,
+      lead=selected_stop_lead,
+      red_light=starpilot_red_light,
+      model_should_stop=bool(getattr(sm['modelV2'].action, 'shouldStop', False)),
+      forcing_stop=starpilot_forcing_stop,
+      driver_gas=bool(getattr(sm['carState'], 'gasPressed', False)) or bool(getattr(sm['starpilotCarState'], 'accelPressed', False)),
+      feature_enabled=self._carnival_intersection_enabled,
+    )
+    self.carnival_intersection_state = intersection_output.state
+    if intersection_output.accel_cap is not None:
+      self.a_desired = min(self.a_desired, intersection_output.accel_cap)
+      output_a_target = min(output_a_target, intersection_output.accel_cap)
+    output_should_stop |= intersection_output.should_stop
+
+    # Confidence may soften positive acceleration for an unconfirmed vision
+    # lead, but it never adds braking or overrides model-led stop behavior.
+    sm_valid = getattr(sm, 'valid', {})
+    carnival_state = sm['carnivalState'] if sm_valid.get('carnivalState', False) else None
+    governor_active = carnival_state is not None and str(getattr(carnival_state, 'governorState', 'monitor')) != 'monitor'
+    confidence_accel_cap = get_vision_lead_accel_cap(
+      str(self.CP.carFingerprint),
+      float(getattr(carnival_state, 'longitudinalConfidence', 1.0)) if carnival_state is not None else 1.0,
+      governor_active and bool(selected_stop_lead is not None and getattr(selected_stop_lead, 'status', False)),
+      bool(selected_stop_lead is not None and getattr(selected_stop_lead, 'radar', False)),
+      output_a_target,
+    )
+    if confidence_accel_cap is not None:
+      output_a_target = min(output_a_target, confidence_accel_cap)
+      self.a_desired = min(self.a_desired, confidence_accel_cap)
 
     self.output_a_target = output_a_target
     self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)

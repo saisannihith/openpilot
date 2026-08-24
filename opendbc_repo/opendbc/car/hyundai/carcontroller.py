@@ -31,15 +31,18 @@ CARNIVAL_4TH_GEN_HIGH_ANGLE_TORQUE_MIN_SCALE = 0.35
 CARNIVAL_4TH_GEN_EPS_GUARD_MIN_SPEED = 8.0
 CARNIVAL_4TH_GEN_EPS_GUARD_MIN_ANGLE = 3.0
 CARNIVAL_4TH_GEN_EPS_GUARD_TORQUE_FRACTION = 0.88
-CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES = 35
+CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES = 24
 CARNIVAL_4TH_GEN_EPS_GUARD_HOLD_FRAMES = 120
-CARNIVAL_4TH_GEN_EPS_GUARD_RELEASE_FRAMES = 24
-CARNIVAL_4TH_GEN_EPS_GUARD_CAP_LOW = 0.86
-CARNIVAL_4TH_GEN_EPS_GUARD_CAP_HIGH = 0.78
+CARNIVAL_4TH_GEN_EPS_GUARD_RELEASE_FRAMES = 64
+CARNIVAL_4TH_GEN_EPS_GUARD_CAP_LOW = 0.82
+CARNIVAL_4TH_GEN_EPS_GUARD_CAP_HIGH = 0.70
+CARNIVAL_4TH_GEN_EPS_PREDICT_START = 0.58
+CARNIVAL_4TH_GEN_EPS_PREDICT_MIN_SCALE = 0.88
 CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED = 10.5
 CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE = 60.0
 CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_FULL_ANGLE = 90.0
 CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE = 120.0
+CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_TOUCH_ANGLE = 35.0
 CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_ANGLE = 35.0
 CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_MIN_DRIVER_TORQUE = 80.0
 CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_SCALE = 0.0
@@ -503,14 +506,18 @@ def apply_carnival_4th_gen_manual_turn_torque_guard(car_fingerprint, apply_torqu
     angle >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_ANGLE and
     abs(steering_torque) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_MIN_DRIVER_TORQUE
   )
-  if high_angle_entry or driver_yield_entry:
+  driver_touch_entry = (
+    v_ego <= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED and
+    angle >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_TOUCH_ANGLE
+  )
+  if high_angle_entry or driver_yield_entry or driver_touch_entry:
     guard_frames = CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_HOLD_FRAMES
   elif guard_frames > 0 and v_ego <= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED:
     guard_frames -= 1
   else:
     return apply_torque, False, 0
 
-  if high_angle_entry:
+  if high_angle_entry and not driver_touch_entry:
     cap_fraction = np.interp(
       angle,
       [CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE, CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_FULL_ANGLE],
@@ -531,7 +538,7 @@ def apply_carnival_4th_gen_eps_fault_guard(car_fingerprint, apply_torque: int, s
                                            v_ego: float, steering_angle_deg: float, lat_active: bool,
                                            steering_pressed: bool, apply_torque_last: int, high_torque_frames: int,
                                            guard_frames: int) -> tuple[int, int, int, bool, bool]:
-  if car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN or not lat_active or steering_pressed:
+  if car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN or not lat_active:
     return apply_torque, 0, max(guard_frames - 1, 0), False, False
 
   torque_fraction = abs(apply_torque) / max(float(steer_max), 1.0)
@@ -562,6 +569,28 @@ def apply_carnival_4th_gen_eps_fault_guard(car_fingerprint, apply_torque: int, s
     limited_torque = int(rate_limit(limited_torque, apply_torque_last, -release_delta, release_delta))
 
   return limited_torque, high_torque_frames, guard_frames, True, near_limit
+
+
+def apply_carnival_4th_gen_eps_predictive_taper(car_fingerprint, apply_torque: int, steer_max: int,
+                                                 v_ego: float, steering_angle_deg: float, lat_active: bool,
+                                                 high_torque_frames: int) -> tuple[int, float]:
+  if car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN or not lat_active:
+    return apply_torque, 0.0
+
+  torque_fraction = abs(apply_torque) / max(float(steer_max), 1.0)
+  torque_risk = float(np.clip((torque_fraction - 0.72) / 0.26, 0.0, 1.0))
+  duration_risk = float(np.clip(high_torque_frames / max(CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES, 1), 0.0, 1.0))
+  angle_risk = float(np.clip((abs(steering_angle_deg) - 4.0) / 28.0, 0.0, 1.0))
+  speed_risk = float(np.clip((v_ego - CARNIVAL_4TH_GEN_EPS_GUARD_MIN_SPEED) / 14.0, 0.0, 1.0))
+  risk = 0.48 * torque_risk + 0.27 * duration_risk + 0.15 * angle_risk + 0.10 * speed_risk
+  if risk <= CARNIVAL_4TH_GEN_EPS_PREDICT_START:
+    return apply_torque, risk
+
+  severity = float(np.clip((risk - CARNIVAL_4TH_GEN_EPS_PREDICT_START) /
+                           (1.0 - CARNIVAL_4TH_GEN_EPS_PREDICT_START), 0.0, 1.0))
+  scale = 1.0 - (1.0 - CARNIVAL_4TH_GEN_EPS_PREDICT_MIN_SCALE) * severity
+  cap = int(round(steer_max * scale))
+  return int(np.clip(apply_torque, -cap, cap)), risk
 
 
 def suppress_redundant_gv70_brake_cancel(CP, brake_pressed: bool, lat_active: bool) -> bool:
@@ -609,7 +638,9 @@ class CarController(CarControllerBase):
     self._carnival_4th_gen_eps_guard_frames = 0
     self._carnival_4th_gen_manual_turn_guard_frames = 0
     self._carnival_4th_gen_eps_guard_active_last = False
+    self._carnival_4th_gen_eps_predictive_active_last = False
     self._carnival_4th_gen_steer_fault_temporary_last = False
+    self._carnival_eps_predictor_enabled = self._params.get_bool("CarnivalEPSPredictor")
 
   def _update_dash_icon_state(self, CC):
     if CC.latActive:
@@ -767,6 +798,23 @@ class CarController(CarControllerBase):
           CS.out.vEgoRaw, CS.out.steeringAngleDeg, CS.out.steeringTorque, apply_torque,
         )
       requested_torque_before_eps_guard = apply_torque
+      if self.frame % 100 == 0:
+        self._carnival_eps_predictor_enabled = self._params.get_bool("CarnivalEPSPredictor")
+      if self._carnival_eps_predictor_enabled:
+        apply_torque, carnival_eps_predictive_risk = apply_carnival_4th_gen_eps_predictive_taper(
+          self.CP.carFingerprint, apply_torque, self.params.STEER_MAX, CS.out.vEgoRaw,
+          CS.out.steeringAngleDeg, CC.latActive, self._carnival_4th_gen_high_torque_frames,
+        )
+      else:
+        carnival_eps_predictive_risk = 0.0
+      carnival_eps_predictive_active = apply_torque != requested_torque_before_eps_guard
+      if carnival_eps_predictive_active != self._carnival_4th_gen_eps_predictive_active_last:
+        cloudlog.warning(
+          "Carnival 4th gen predictive EPS taper active=%s risk=%.3f vEgo=%.2f angle=%.2f requestedTorque=%d applyTorque=%d",
+          carnival_eps_predictive_active, carnival_eps_predictive_risk, CS.out.vEgoRaw,
+          CS.out.steeringAngleDeg, requested_torque_before_eps_guard, apply_torque,
+        )
+      self._carnival_4th_gen_eps_predictive_active_last = carnival_eps_predictive_active
       apply_torque, self._carnival_4th_gen_high_torque_frames, self._carnival_4th_gen_eps_guard_frames, \
         carnival_eps_guard_active, carnival_eps_near_limit = apply_carnival_4th_gen_eps_fault_guard(
           self.CP.carFingerprint, apply_torque, self.params.STEER_MAX, CS.out.vEgoRaw, CS.out.steeringAngleDeg,

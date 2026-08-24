@@ -20,6 +20,7 @@ from opendbc.car.hyundai.carcontroller import (
   CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE,
   CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_RELEASE_FRAMES,
   CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE,
+  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_TOUCH_ANGLE,
   CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_ANGLE,
   CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_MIN_DRIVER_TORQUE,
   apply_carnival_4th_gen_eps_fault_guard,
@@ -168,12 +169,14 @@ def read_lateral_samples(path: Path, mode: ReadMode, include_lat_active_frames: 
         (
           abs(steering_angle) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_ANGLE and
           abs(steering_torque) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_MIN_DRIVER_TORQUE
+        ) or
+        (
+          abs(steering_angle) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_TOUCH_ANGLE
         )
       )
     )
     eps_near_limit = (
       lat_active and
-      not steering_pressed and
       v_ego >= CARNIVAL_4TH_GEN_EPS_GUARD_MIN_SPEED and
       abs(steering_angle) >= CARNIVAL_4TH_GEN_EPS_GUARD_MIN_ANGLE and
       torque_fraction >= CARNIVAL_4TH_GEN_EPS_GUARD_TORQUE_FRACTION
@@ -395,6 +398,9 @@ def console_summary(report: dict[str, Any]) -> dict[str, Any]:
     "coveredByStrongDriverOverrideFrames",
     "partialDriverOverrideFrames",
     "uncoveredLatActiveTempFaultFrames",
+    "manualTurnGuardSimCoveredTempFaultFrames",
+    "zeroOutputTempFaultFrames",
+    "uncoveredAfterManualTurnGuardSimFrames",
     "manualTurnGuardCandidateFrames",
     "epsNearLimitFrames",
   )
