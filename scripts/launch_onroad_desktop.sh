@@ -397,7 +397,9 @@ prepare_env() {
   export USE_WEBCAM=1
   export SP_C3_FAKE_WIFI=0
   export SP_C4_FAKE_WIFI=0
-  export SP_ALLOW_DESKTOP_FAKE_WIFI=0
+  export SP_ALLOW_DESKTOP_FAKE_WIFI="${SP_ALLOW_DESKTOP_FAKE_WIFI:-0}"
+  export FPS="${FPS:-30}"
+  export SCALE="${SCALE:-1.0}"
   export SP_ONROAD_NAV_DEMO="${NAV_DEMO}"
   export SP_ONROAD_OFFROAD_DEMO="${OFFROAD_DEMO}"
   export SP_CEM_DEMO="${CEM_DEMO}"

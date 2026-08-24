@@ -41,6 +41,7 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
   with_alpha,
 )
 from openpilot.selfdrive.ui.lib.starpilot_state import starpilot_state
+from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.starpilot.common.longitudinal_mode import set_openpilot_long_disabled
 from openpilot.selfdrive.ui.lib.fingerprint_catalog import (
   FingerprintModelOption,
@@ -666,7 +667,7 @@ class StarPilotVehicleSettingsLayout(_SettingsPage):
           if res == DialogResult.CONFIRM:
             set_openpilot_long_disabled(self._params, True)
             starpilot_state.update(force=True)
-            if starpilot_state.started:
+            if ui_state.started:
               HARDWARE.reboot()
         gui_app.push_widget(ConfirmDialog(tr("Disable openpilot longitudinal control?"), tr("Disable"), callback=on_confirm))
       else:

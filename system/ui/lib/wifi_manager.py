@@ -184,15 +184,18 @@ class WifiManager:
     has_nmcli = shutil.which("nmcli") is not None
 
     # DBus connections
-    if not JEEPNY_AVAILABLE:
+    if allow_desktop_fake:
+      cloudlog.warning("Using desktop fake Wi-Fi backend")
+      self._fake_networking = True
+      self._router_main = None
+      self._conn_monitor = None
+      self._nm = None
+    elif not JEEPNY_AVAILABLE:
       cloudlog.warning("jeepney unavailable")
       self._router_main = None
       self._conn_monitor = None
       self._nm = None
-      if allow_desktop_fake:
-        cloudlog.warning("Using desktop fake Wi-Fi backend")
-        self._fake_networking = True
-      elif has_nmcli:
+      if has_nmcli:
         cloudlog.warning("Using nmcli Wi-Fi backend")
         self._nmcli_networking = True
       else:
