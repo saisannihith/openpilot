@@ -15,8 +15,8 @@ METRIC_WIDTH = 240
 METRIC_MARGIN = 30
 FONT_SIZE = 35
 
-SETTINGS_BTN = rl.Rectangle(50, 35, 200, 117)
-HOME_BTN = rl.Rectangle(60, 860, 180, 180)
+HOME_BTN = rl.Rectangle(75, 35, 150, 150)
+SETTINGS_BTN = rl.Rectangle(50, 895, 200, 117)
 
 ThermalStatus = log.DeviceState.ThermalStatus
 NetworkType = log.DeviceState.NetworkType
