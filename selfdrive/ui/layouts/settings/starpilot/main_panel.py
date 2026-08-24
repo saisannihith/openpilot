@@ -291,15 +291,17 @@ class StarPilotLayout(Widget):
 
   def _render(self, rect: rl.Rectangle):
     TOP_BAR_HEIGHT = 72
+    TOP_BAR_INSET = 8
     BOTTOM_BAR_HEIGHT = 2
-    content_rect = rl.Rectangle(rect.x, rect.y + TOP_BAR_HEIGHT, rect.width, rect.height - TOP_BAR_HEIGHT - BOTTOM_BAR_HEIGHT)
+    content_rect = rl.Rectangle(rect.x, rect.y + TOP_BAR_INSET + TOP_BAR_HEIGHT, rect.width,
+                                rect.height - TOP_BAR_INSET - TOP_BAR_HEIGHT - BOTTOM_BAR_HEIGHT)
 
     shell_margin = 4.0
     shell_w = min(rect.width - shell_margin * 2, AETHER_LIST_METRICS.max_content_width)
     shell_x = rect.x + (rect.width - shell_w) / 2
 
     # 0. Draw top bar with HubTile-style purple glow
-    glass_rect = rl.Rectangle(shell_x, rect.y, shell_w, TOP_BAR_HEIGHT)
+    glass_rect = rl.Rectangle(shell_x, rect.y + TOP_BAR_INSET, shell_w, TOP_BAR_HEIGHT)
     draw_hud_background(glass_rect, AetherListColors.PRIMARY, radius_px=26)
 
     accessory_width = min(self._header_accessory_width(), max(0.0, glass_rect.width - 360.0))

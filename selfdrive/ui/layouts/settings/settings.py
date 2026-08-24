@@ -16,7 +16,7 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NetworkUI
 
 # Constants
-COLLAPSED_WIDTH = 0
+COLLAPSED_WIDTH = 72
 EXPANDED_WIDTH = 420
 SWIPE_THRESHOLD = 80
 CLOSE_BTN_SIZE = 118
@@ -149,8 +149,10 @@ class SettingsLayout(Widget):
 
   def _sidebar_tab_hit_zone(self, rect: rl.Rectangle) -> rl.Rectangle:
     tab_h = 72
-    tab_y = rect.y + 16
-    return rl.Rectangle(rect.x, tab_y, 40, tab_h)
+    tab_w = 52
+    tab_x = rect.x + (COLLAPSED_WIDTH - tab_w) / 2
+    tab_y = rect.y + 18
+    return rl.Rectangle(tab_x, tab_y, tab_w, tab_h)
 
   def _draw_sidebar(self, rect: rl.Rectangle):
     rl.draw_rectangle_rec(rect, SIDEBAR_COLOR)
@@ -170,16 +172,15 @@ class SettingsLayout(Widget):
       chevron_x = int(tab_x + tab_w / 2)
     else:
       tab_h = 72
-      tab_w = 70
-      tab_x = rect.x - 30  # Leaves exactly 40px protruding onto the screen
-      tab_y = rect.y + 16
+      tab_w = 52
+      tab_x = rect.x + (rect.width - tab_w) / 2
+      tab_y = rect.y + 18
       tab_cy = int(tab_y + tab_h / 2)
-      chevron_x = rect.x + 20
+      chevron_x = int(tab_x + tab_w / 2)
     tab_rect = rl.Rectangle(tab_x, tab_y, tab_w, tab_h)
 
-    # Hit zone is the visible portion on screen when collapsed, and the full
-    # top control when expanded.
-    self._collapse_btn_rect = tab_rect if self._sidebar_expanded else rl.Rectangle(rect.x, tab_y, 40, tab_h)
+    # Hit zone matches the visible control in both collapsed and expanded mode.
+    self._collapse_btn_rect = tab_rect
 
     # Interaction state
     is_pressed = False
@@ -276,8 +277,8 @@ class SettingsLayout(Widget):
 
   def _handle_mouse_press(self, mouse_pos: MousePos) -> None:
     if not self._sidebar_expanded:
-      # Only record swipe/tap start when touch is within the 10px left margin OR directly on the protruding tab
-      gesture_zone = rl.Rectangle(self._rect.x, self._rect.y, 10, self._rect.height)
+      # Only record swipe/tap start when touch is within the collapsed rail.
+      gesture_zone = rl.Rectangle(self._rect.x, self._rect.y, COLLAPSED_WIDTH, self._rect.height)
       tab_zone = self._sidebar_tab_hit_zone(self._rect)
       if rl.check_collision_point_rec(mouse_pos, gesture_zone) or rl.check_collision_point_rec(mouse_pos, tab_zone):
         self._swipe_start = mouse_pos
