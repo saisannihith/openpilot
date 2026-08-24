@@ -21,7 +21,7 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.vehicle import StarPilotV
 from openpilot.selfdrive.ui.layouts.settings.starpilot.quick_controls import StarPilotQuickControlsLayout
 from openpilot.selfdrive.ui.layouts.settings.starpilot.search import StarPilotSearchLayout
 
-from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import TileGrid, HubTile, SPACING, BreadcrumbController, AETHER_LIST_METRICS, AetherListColors, draw_hud_background
+from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import TileGrid, HubTile, SPACING, BreadcrumbController, AETHER_LIST_METRICS, AetherListColors, draw_hud_background, draw_text_fit_common
 
 class StarPilotLayout(Widget):
   CATEGORIES = [
@@ -321,7 +321,7 @@ class StarPilotLayout(Widget):
 
   def _header_accessory_width(self) -> float:
     if self._current_panel == StarPilotPanelType.DRIVING_MODEL:
-      return 540.0
+      return 680.0
     return 0.0
 
   def _draw_header_accessory(self, rect: rl.Rectangle):
@@ -334,16 +334,26 @@ class StarPilotLayout(Widget):
       return
 
     prefix = tr("Current") + ":"
-    font_size = 24
+    font_size = 32
     prefix_font = gui_app.font(FontWeight.MEDIUM)
+    model_font = gui_app.font(FontWeight.SEMI_BOLD)
     prefix_w = measure_text_cached(prefix_font, prefix, font_size).x
-    label_rect = rl.Rectangle(rect.x + 12, rect.y, prefix_w + 8, rect.height)
-    model_rect = rl.Rectangle(label_rect.x + label_rect.width, rect.y, max(0.0, rect.width - label_rect.width - 28), rect.height)
+    model_w = min(measure_text_cached(model_font, current_entry.name, font_size).x, max(0.0, rect.width - prefix_w - 34))
+    right_pad = 22.0
+    gap = 10.0
+    model_rect = rl.Rectangle(rect.x + rect.width - right_pad - model_w, rect.y, model_w, rect.height)
+    label_rect = rl.Rectangle(model_rect.x - gap - prefix_w, rect.y, prefix_w, rect.height)
 
     gui_label(label_rect, prefix, font_size, AetherListColors.SUBTEXT, FontWeight.MEDIUM,
-              alignment=rl.GuiTextAlignment.TEXT_ALIGN_LEFT)
-    gui_label(model_rect, current_entry.name, font_size, AetherListColors.SUCCESS, FontWeight.SEMI_BOLD,
-              alignment=rl.GuiTextAlignment.TEXT_ALIGN_LEFT)
+              alignment=rl.GuiTextAlignment.TEXT_ALIGN_RIGHT)
+    draw_text_fit_common(
+      model_font,
+      current_entry.name,
+      rl.Vector2(model_rect.x, model_rect.y + (model_rect.height - font_size) / 2),
+      model_rect.width,
+      font_size,
+      color=AetherListColors.SUCCESS,
+    )
 
   def _handle_mouse_press(self, mouse_pos: MousePos):
     self._breadcrumbs.init_interaction(mouse_pos)
