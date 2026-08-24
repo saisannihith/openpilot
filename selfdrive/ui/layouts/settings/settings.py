@@ -16,11 +16,12 @@ from openpilot.system.ui.widgets.network import NetworkUI
 
 # Constants
 COLLAPSED_WIDTH = 0
-EXPANDED_WIDTH = 500
+EXPANDED_WIDTH = 420
 SWIPE_THRESHOLD = 80
-CLOSE_BTN_SIZE = 200
-CLOSE_ICON_SIZE = 70
-NAV_BTN_HEIGHT = 110
+CLOSE_BTN_SIZE = 154
+CLOSE_ICON_SIZE = 58
+NAV_BTN_HEIGHT = 96
+NAV_TEXT_SIZE = 56
 PANEL_MARGIN = 10
 
 # Colors
@@ -193,7 +194,7 @@ class SettingsLayout(Widget):
       # ── EXPANDED ──
 
       # Back/Close button - hierarchical navigation
-      back_btn_rect = rl.Rectangle(rect.x + (rect.width - CLOSE_BTN_SIZE) / 2, rect.y + 60, CLOSE_BTN_SIZE, CLOSE_BTN_SIZE)
+      back_btn_rect = rl.Rectangle(rect.x + (rect.width - CLOSE_BTN_SIZE) / 2, rect.y + 54, CLOSE_BTN_SIZE, CLOSE_BTN_SIZE)
       pressed = gui_app.last_mouse_event.left_down and rl.check_collision_point_rec(gui_app.last_mouse_event.pos, back_btn_rect)
       close_color = CLOSE_BTN_PRESSED if pressed else CLOSE_BTN_COLOR
       rl.draw_rectangle_rounded(back_btn_rect, 1.0, 20, close_color)
@@ -218,18 +219,18 @@ class SettingsLayout(Widget):
       self._back_btn_rect = back_btn_rect
 
       # Navigation buttons
-      y = rect.y + 300
+      y = rect.y + 258
       for panel_type, panel_info in self._panels.items():
-        button_rect = rl.Rectangle(rect.x + 50, y, rect.width - 150, NAV_BTN_HEIGHT)
+        button_rect = rl.Rectangle(rect.x + 36, y, rect.width - 96, NAV_BTN_HEIGHT)
 
         # Button styling
         is_selected = panel_type == self._current_panel
         text_color = TEXT_SELECTED if is_selected else TEXT_NORMAL
         # Draw button text (right-aligned)
         panel_name = tr(panel_info.name)
-        text_size = measure_text_cached(self._font_medium, panel_name, 65)
+        text_size = measure_text_cached(self._font_medium, panel_name, NAV_TEXT_SIZE)
         text_pos = rl.Vector2(button_rect.x + button_rect.width - text_size.x, button_rect.y + (button_rect.height - text_size.y) / 2)
-        rl.draw_text_ex(self._font_medium, panel_name, rl.Vector2(round(text_pos.x), round(text_pos.y)), 65, 0, text_color)
+        rl.draw_text_ex(self._font_medium, panel_name, rl.Vector2(round(text_pos.x), round(text_pos.y)), NAV_TEXT_SIZE, 0, text_color)
 
         # Store button rect for click detection
         panel_info.button_rect = button_rect
