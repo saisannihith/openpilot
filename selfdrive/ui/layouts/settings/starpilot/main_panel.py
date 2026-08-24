@@ -17,6 +17,7 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.system_settings import St
 from openpilot.selfdrive.ui.layouts.settings.starpilot.appearance import StarPilotAppearanceLayout
 from openpilot.selfdrive.ui.layouts.settings.starpilot.vehicle import StarPilotVehicleSettingsLayout
 from openpilot.selfdrive.ui.layouts.settings.starpilot.quick_controls import StarPilotQuickControlsLayout
+from openpilot.selfdrive.ui.layouts.settings.starpilot.search import StarPilotSearchLayout
 
 from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import TileGrid, HubTile, SPACING, BreadcrumbController, AETHER_LIST_METRICS, AetherListColors, draw_hud_background
 
@@ -26,6 +27,11 @@ class StarPilotLayout(Widget):
       "title": "Quick Controls",
       "icon": "system",
       "panel": "QUICK_CONTROLS",
+    },
+    {
+      "title": "Search Settings",
+      "icon": "display",
+      "panel": "SEARCH",
     },
     {
       "title": "Sounds & Alerts",
@@ -72,6 +78,7 @@ class StarPilotLayout(Widget):
 
   PANEL_TYPE_MAP = {
     "QUICK_CONTROLS": StarPilotPanelType.QUICK_CONTROLS,
+    "SEARCH": StarPilotPanelType.SEARCH,
     "SOUNDS": StarPilotPanelType.SOUNDS,
     "SYSTEM": StarPilotPanelType.SYSTEM,
     "DRIVING_MODEL": StarPilotPanelType.DRIVING_MODEL,
@@ -104,6 +111,7 @@ class StarPilotLayout(Widget):
     self._panels = {
       StarPilotPanelType.MAIN: StarPilotPanelInfo("", None),
       StarPilotPanelType.QUICK_CONTROLS: StarPilotPanelInfo(tr_noop("Quick Controls"), StarPilotQuickControlsLayout()),
+      StarPilotPanelType.SEARCH: StarPilotPanelInfo(tr_noop("Search Settings"), StarPilotSearchLayout(lambda: self._panels)),
       StarPilotPanelType.SOUNDS: StarPilotPanelInfo(tr_noop("Sounds"), StarPilotSoundsLayout()),
       StarPilotPanelType.SYSTEM: StarPilotPanelInfo(tr_noop("System Settings"), StarPilotSystemLayout()),
       StarPilotPanelType.DRIVING_MODEL: StarPilotPanelInfo(tr_noop("Driving Model"), StarPilotDrivingModelLayout()),
@@ -118,6 +126,7 @@ class StarPilotLayout(Widget):
     self._setup_sub_panels(
       StarPilotPanelType.LONGITUDINAL,
       StarPilotPanelType.QUICK_CONTROLS,
+      StarPilotPanelType.SEARCH,
       StarPilotPanelType.SOUNDS,
       StarPilotPanelType.SYSTEM,
       StarPilotPanelType.LATERAL,

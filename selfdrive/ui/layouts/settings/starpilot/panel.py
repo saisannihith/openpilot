@@ -63,6 +63,7 @@ class FrameCachedParams:
 class StarPilotPanelType(IntEnum):
     MAIN = 0
     QUICK_CONTROLS = 14
+    SEARCH = 15
     SOUNDS = 1
     DRIVING_MODEL = 2
     LONGITUDINAL = 3
