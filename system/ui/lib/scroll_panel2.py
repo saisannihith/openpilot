@@ -8,15 +8,16 @@ from openpilot.system.ui.lib.application import gui_app, MouseEvent
 from openpilot.system.hardware import TICI
 from collections import deque
 
-MOUSE_WHEEL_SCROLL_SPEED = 50
+MOUSE_WHEEL_SCROLL_SPEED = 80
 MIN_VELOCITY = 10  # px/s, changes from auto scroll to steady state
 MIN_VELOCITY_FOR_CLICKING = 2 * 60  # px/s, accepts clicks while auto scrolling below this velocity
-MIN_DRAG_PIXELS = 12
+MIN_DRAG_PIXELS = 8
 AUTO_SCROLL_TC_SNAP = 0.025
 AUTO_SCROLL_TC = 0.18
 BOUNCE_RETURN_RATE = 10.0
 REJECT_DECELERATION_FACTOR = 3
 MAX_SPEED = 10000.0  # px/s
+STALE_TOUCH_RECOVERY_SECONDS = 0.45
 
 DEBUG = os.getenv("DEBUG_SCROLL", "0") == "1"
 
@@ -58,6 +59,7 @@ class GuiScrollPanel2:
     self._enabled: bool | Callable[[], bool] = True
     self.snap_interval: float | None = None
     self._snap_target: float | None = None
+    self._last_touch_t = 0.0
 
   def set_enabled(self, enabled: bool | Callable[[], bool]) -> None:
     self._enabled = enabled
@@ -71,10 +73,35 @@ class GuiScrollPanel2:
       print('Old state:', self._state)
 
     bounds_size = bounds.width if self._horizontal else bounds.height
+    if content_size <= bounds_size:
+      self.set_offset(0.0)
+      self._velocity = 0.0
+      self._velocity_buffer.clear()
+      self._state = ScrollState.STEADY
+      self._initial_click_event = None
+      self._previous_mouse_event = None
+      return self.get_offset()
+
+    saw_left_down = False
 
     for mouse_event in gui_app.mouse_events:
+      if mouse_event.left_down:
+        saw_left_down = True
+        self._last_touch_t = mouse_event.t
       self._handle_mouse_event(mouse_event, bounds, bounds_size, content_size)
       self._previous_mouse_event = mouse_event
+
+    now = rl.get_time()
+    if (
+      not saw_left_down
+      and self._state in (ScrollState.PRESSED, ScrollState.MANUAL_SCROLL)
+      and self._last_touch_t > 0.0
+      and now - self._last_touch_t > STALE_TOUCH_RECOVERY_SECONDS
+    ):
+      self._velocity = 0.0
+      self._velocity_buffer.clear()
+      self._initial_click_event = None
+      self._state = ScrollState.STEADY
 
     wheel_move = rl.get_mouse_wheel_move()
     if wheel_move != 0 and self.enabled and rl.check_collision_point_rec(rl.get_mouse_position(), bounds):

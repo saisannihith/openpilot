@@ -30,6 +30,8 @@ from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.scroll_panel2 import GuiScrollPanel2
 from openpilot.system.ui.widgets import DialogResult, Widget
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
+from openpilot.system.ui.widgets.inputbox import InputBox
+from openpilot.system.ui.widgets.keyboard import Keyboard
 from openpilot.system.ui.widgets.label import gui_label
 from openpilot.system.ui.widgets.option_dialog import MultiOptionDialog
 from openpilot.selfdrive.ui.layouts.settings.starpilot.panel import _SettingsPage
@@ -77,6 +79,8 @@ HEADER_BUTTON_HEIGHT = 80.0
 HEADER_BUTTON_GAP_Y = 14.0
 MANAGEMENT_STRIP_HEIGHT = 64.0
 MANAGEMENT_PILL_HEIGHT = 44.0
+SEARCH_BOX_HEIGHT = 78.0
+SEARCH_BOX_GAP_Y = 12.0
 EMPTY_STATE_HEIGHT = 240.0
 _SORT_MODES = ("alphabetical", "date", "date_oldest", "favorites", "community_picks")
 _SORT_LABELS = {
@@ -87,6 +91,17 @@ _SORT_LABELS = {
   "community_picks":  "Community Picks",
 }
 _SORT_PILLS = ("alphabetical", "date", "favorites", "community_picks")
+
+
+class ModelSearchInputBox(InputBox):
+  def _render(self, rect: rl.Rectangle):
+    super()._render(
+      rect,
+      color=rl.Color(4, 4, 8, 210),
+      border_color=with_alpha(PANEL_STYLE.surface_border, 42),
+      text_color=PANEL_STYLE.title_color,
+      font_size=32,
+    )
 
 
 @dataclass
@@ -128,6 +143,7 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
     self._active_download_key: str | None = None
     self._shell_rect = rl.Rectangle(0, 0, 0, 0)
     self._scroll_rect = rl.Rectangle(0, 0, 0, 0)
+    self._query_box = self._child(ModelSearchInputBox(max_text_size=64))
     self._metric_font = gui_app.font(FontWeight.BOLD)
     self._primary_header_button = self._child(
       AetherButton(
@@ -157,6 +173,10 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
     self._primary_header_button.set_touch_valid_callback(lambda: self._scroll_panel.is_touch_valid())
     self._secondary_header_button.set_touch_valid_callback(lambda: self._scroll_panel.is_touch_valid())
     self._random_model_button.set_touch_valid_callback(lambda: self._scroll_panel.is_touch_valid())
+
+  def set_query(self, query: str) -> None:
+    self._query_box.text = query
+    self._scroll_panel.set_offset(0.0)
 
   def _clear_ephemeral_state(self):
     self._pressed_target = None
@@ -215,7 +235,7 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
           if point_hits(mouse_pos, rect, self._scroll_rect, pad_x=6, pad_y=pad_y):
             return target_id
     for target_id, rect in self._interactive_rects.items():
-      if target_id.startswith("sortopt:") or target_id.startswith("mgmt:"):
+      if target_id.startswith("sortopt:") or target_id.startswith("mgmt:") or target_id.startswith("search:"):
         if point_hits(mouse_pos, rect, self._shell_rect, pad_x=6, pad_y=6):
           return target_id
     return None
@@ -271,12 +291,21 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
         self._controller._on_scores_clicked()
       return
 
+    if target == "search:keyboard":
+      self._controller.open_search_keyboard(self._query_box.text)
+      return
+
+    if target == "search:clear":
+      self.set_query("")
+      return
+
     if target.startswith("sortopt:"):
       mode = target.split(":", 1)[1]
       if mode == "date":
         current = self._controller._get_sort_mode()
         mode = "date_oldest" if current == "date" else "date"
       self._controller._params.put("ModelSortMode", mode)
+      self._scroll_panel.set_offset(0.0)
       return
 
   def _render(self, rect: rl.Rectangle):
@@ -303,6 +332,11 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
     self._draw_sort_strip(scroll_rect.x, mgmt_y, content_width, randomizer_on)
     scroll_rect = rl.Rectangle(scroll_rect.x, scroll_rect.y + MANAGEMENT_STRIP_HEIGHT,
                                scroll_rect.width, scroll_rect.height - MANAGEMENT_STRIP_HEIGHT)
+
+    search_rect = rl.Rectangle(scroll_rect.x + 8, scroll_rect.y, content_width - 16, SEARCH_BOX_HEIGHT)
+    self._draw_search_box(search_rect)
+    scroll_rect = rl.Rectangle(scroll_rect.x, scroll_rect.y + SEARCH_BOX_HEIGHT + SEARCH_BOX_GAP_Y,
+                               scroll_rect.width, scroll_rect.height - SEARCH_BOX_HEIGHT - SEARCH_BOX_GAP_Y)
 
     self._scroll_rect = scroll_rect
 
@@ -412,6 +446,51 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
       draw_action_pill(seg_rect, label, fill, border, AetherListColors.HEADER, font_size=28, roundness=0.3)
       self._interactive_rects[f"sortopt:{mode}"] = seg_rect
 
+  def _draw_search_box(self, rect: rl.Rectangle):
+    draw_list_row_shell(
+      rect,
+      current=False,
+      hovered=False,
+      pressed=False,
+      is_last=True,
+      alpha=255,
+      row_bg=rl.Color(12, 10, 18, 235),
+      row_border=with_alpha(PANEL_STYLE.surface_border, 38),
+      row_separator=AetherListColors.ROW_SEPARATOR,
+      row_hover=AetherListColors.ROW_HOVER,
+      current_bg=AetherListColors.CURRENT_BG,
+      current_border=AetherListColors.CURRENT_BORDER,
+      row_radius=0.18,
+      separator_inset=22,
+    )
+    label_width = 170.0
+    clear_width = 86.0 if self._query_box.text.strip() else 0.0
+    gui_label(
+      rl.Rectangle(rect.x + 24, rect.y, label_width, rect.height),
+      tr("Search"),
+      30,
+      AetherListColors.HEADER,
+      FontWeight.BOLD,
+    )
+
+    input_right_pad = clear_width + 18.0
+    input_rect = rl.Rectangle(rect.x + label_width + 30, rect.y + 10, rect.width - label_width - input_right_pad - 44, rect.height - 20)
+    self._interactive_rects["search:keyboard"] = input_rect
+    self._query_box.render(input_rect)
+
+    if clear_width:
+      clear_rect = rl.Rectangle(rect.x + rect.width - clear_width - 16, rect.y + 13, clear_width, rect.height - 26)
+      hovered = self._pressed_target == "search:clear"
+      draw_action_pill(
+        clear_rect,
+        tr("Clear"),
+        rl.Color(AetherListColors.DANGER.r, AetherListColors.DANGER.g, AetherListColors.DANGER.b, 50 if hovered else 32),
+        rl.Color(AetherListColors.DANGER.r, AetherListColors.DANGER.g, AetherListColors.DANGER.b, 80),
+        AetherListColors.DANGER,
+        font_size=24,
+      )
+      self._interactive_rects["search:clear"] = clear_rect
+
   def _get_sections(self) -> list[tuple[str, list[ModelCatalogEntry]]]:
     sort_mode = self._controller._get_sort_mode()
 
@@ -425,12 +504,12 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
         sections.append((tr("Favorites"), fav_entries))
       if other_installed:
         sections.append((tr("Downloaded"), other_installed))
-      return sections
+      return self._filter_sections(sections)
 
     if sort_mode == "community_picks":
       entries = [e for e in self._controller.community_picks_entries() if not self._controller.is_current_model(e.key)]
       if entries:
-        return [(tr("Community Picks"), entries)]
+        return self._filter_sections([(tr("Community Picks"), entries)])
       return []
 
     # Standard sort modes (alphabetical, date, date_oldest)
@@ -442,7 +521,48 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
       sections.append((tr("On Device"), installed))
     if available:
       sections.append((tr("Available to Download"), available))
-    return sections
+    return self._filter_sections(sections)
+
+  def _filter_sections(self, sections: list[tuple[str, list[ModelCatalogEntry]]]) -> list[tuple[str, list[ModelCatalogEntry]]]:
+    query = self._query_box.text.strip().lower()
+    if len(query) < 2:
+      return sections
+
+    tokens = [token for token in query.split() if token]
+    filtered: list[tuple[str, list[ModelCatalogEntry]]] = []
+    for title, entries in sections:
+      matches = [entry for entry in entries if self._entry_matches_query(entry, tokens)]
+      if matches:
+        filtered.append((title, matches))
+    return filtered
+
+  def _entry_matches_query(self, entry: ModelCatalogEntry, tokens: list[str]) -> bool:
+    status_terms = []
+    if entry.installed:
+      status_terms.append("downloaded installed on device")
+    else:
+      status_terms.append("available download")
+    if entry.builtin:
+      status_terms.append("built in default")
+    if entry.user_favorite or entry.community_favorite:
+      status_terms.append("favorite popular")
+    if entry.requires_external_gpu:
+      status_terms.append("gpu external")
+    if entry.partial:
+      status_terms.append("partial incomplete")
+
+    terms = " ".join(
+      str(part) for part in (
+        entry.key,
+        entry.name,
+        _clean_model_name(entry.name),
+        entry.series,
+        entry.version,
+        entry.released,
+        " ".join(status_terms),
+      ) if part
+    ).lower()
+    return all(token in terms for token in tokens)
 
   def _measure_content_height(self, width: float) -> float:
     sections = self._get_sections()
@@ -465,10 +585,16 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
       y = self._draw_model_section(rect.x, y, width, title, entries)
 
   def _draw_empty_state(self, rect: rl.Rectangle):
+    if len(self._query_box.text.strip()) >= 2:
+      title = tr("No matching models")
+      body = tr("Try another model name, key, series, or release date.")
+    else:
+      title = self._controller.empty_state_title()
+      body = self._controller.empty_state_body()
     draw_empty_state_card(
       rl.Rectangle(rect.x, rect.y, rect.width, rect.height),
-      self._controller.empty_state_title(),
-      self._controller.empty_state_body(),
+      title,
+      body,
       title_size=34,
       body_size=26,
       body_inset_x=48,
@@ -711,6 +837,7 @@ class StarPilotDrivingModelLayout(_SettingsPage):
     self._manifest_fetched = False
     self._transient_status_text = ""
     self._transient_status_until = 0.0
+    self._keyboard: Keyboard | None = None
     self._manager_view = DrivingModelManagerView(self)
 
     self._fetch_manifest_async()
@@ -724,6 +851,19 @@ class StarPilotDrivingModelLayout(_SettingsPage):
     super().show_event()
     self._fetch_manifest_async()
     self._update_model_metadata()
+
+  def open_search_keyboard(self, current_text: str):
+    if self._keyboard is None:
+      self._keyboard = Keyboard(min_text_size=0)
+    self._keyboard.clear()
+    self._keyboard.set_text(current_text)
+    self._keyboard.set_title(tr("Search Driving Models"), tr("Type a model name, key, series, or date."))
+    self._keyboard.set_callback(self._on_search_keyboard_result)
+    gui_app.push_widget(self._keyboard)
+
+  def _on_search_keyboard_result(self, result: DialogResult):
+    if result == DialogResult.CONFIRM and isinstance(self._manager_view, DrivingModelManagerView):
+      self._manager_view.set_query(self._keyboard.text)
 
   def _fetch_manifest_async(self):
     if self._manifest_fetch_thread is not None and self._manifest_fetch_thread.is_alive():

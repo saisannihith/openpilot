@@ -408,12 +408,12 @@ class ModelRenderer(Widget):
 
     use_rainbow = self._use_rainbow
     use_accel_path = not use_rainbow and self._use_accel_path
-    if use_rainbow:
-      if len(self._exp_gradient.colors) > 1:
-        draw_polygon(self._rect, self._path.projected_points, gradient=self._exp_gradient)
-      else:
-        draw_polygon(self._rect, self._path.projected_points, rl.Color(48, 255, 156, 90))
-    elif use_accel_path:
+    lateral_ui_active = ui_state.status == UIStatus.ENGAGED or ui_state.always_on_lateral_active
+    if use_rainbow and lateral_ui_active:
+      self._rainbow_path.draw_rainbow_path(self._rect, self._path)
+      return
+
+    if use_accel_path:
       if self._experimental_mode:
         if len(self._exp_gradient.colors) > 1:
           draw_polygon(self._rect, self._path.projected_points, gradient=self._exp_gradient)
