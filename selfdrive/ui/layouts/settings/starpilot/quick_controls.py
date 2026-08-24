@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pyray as rl
@@ -48,6 +49,7 @@ from openpilot.starpilot.common.longitudinal_mode import (
 
 
 PANEL_STYLE = DEFAULT_PANEL_STYLE
+CUSTOMIZE_PANEL_METRICS = replace(AETHER_LIST_METRICS, header_height=108)
 QUICK_CONTROL_ORDER_PARAM = "StarPilotQuickControlOrder"
 STOCK_ID_PREFIX = "stock:"
 ADD_SEARCH_BOX_HEIGHT = 86
@@ -499,11 +501,11 @@ class QuickControlsCustomizeLayout(_SettingsPage):
 
 
 class QuickControlsCustomizeView(PanelManagerView):
-  METRICS = AETHER_LIST_METRICS
+  METRICS = CUSTOMIZE_PANEL_METRICS
   PANEL_STYLE = PANEL_STYLE
 
   ROW_HEIGHT = 96
-  HEADER_EXTRA = 88
+  HEADER_EXTRA = 0
   SECTION_GAP = 28
   HANDLE_WIDTH = 74
   REMOVE_WIDTH = 74
