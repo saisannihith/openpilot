@@ -160,35 +160,13 @@ class SettingsSearchView(PanelManagerView):
     label_rect = rl.Rectangle(rect.x + 24, rect.y, 185, rect.height)
     gui_label(label_rect, tr("Search"), 31, PANEL_STYLE.title_color, FontWeight.BOLD)
     input_rect = rl.Rectangle(rect.x + 205, rect.y + 12, rect.width - 230, rect.height - 24)
+    self._interactive_state("action:keyboard", input_rect)
     self._query_box.render(input_rect)
 
   def _draw_actions(self, rect: rl.Rectangle) -> None:
-    col_gap = 14
-    col_w = (rect.width - col_gap) / 2
-    keyboard_rect = rl.Rectangle(rect.x, rect.y, col_w, rect.height)
-    clear_rect = rl.Rectangle(rect.x + col_w + col_gap, rect.y, col_w, rect.height)
-
-    hovered, pressed = self._interactive_state("action:keyboard", keyboard_rect)
+    hovered, pressed = self._interactive_state("action:clear", rect)
     draw_selection_list_row(
-      keyboard_rect,
-      title=tr("Touch Keyboard"),
-      subtitle=tr("Open the on-device keyboard for search text."),
-      action_text=tr("Open"),
-      hovered=hovered,
-      pressed=pressed,
-      is_last=True,
-      action_pill=True,
-      action_width=150,
-      action_pill_width=110,
-      title_size=29,
-      subtitle_size=22,
-      action_text_size=22,
-      row_separator=PANEL_STYLE.divider_color,
-    )
-
-    hovered, pressed = self._interactive_state("action:clear", clear_rect)
-    draw_selection_list_row(
-      clear_rect,
+      rect,
       title=tr("Clear Search"),
       subtitle=tr("Reset results and show the full search box."),
       action_text=tr("Clear"),
