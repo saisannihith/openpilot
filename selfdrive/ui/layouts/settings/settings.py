@@ -23,14 +23,15 @@ CLOSE_BTN_SIZE = 154
 CLOSE_ICON_SIZE = 58
 NAV_BTN_HEIGHT = 96
 NAV_TEXT_SIZE = 56
+HEADER_TEXT_SIZE = 64
 PANEL_MARGIN = 0
 
 # Colors
 SIDEBAR_COLOR = rl.BLACK
 ACCENT_LINE_COLOR = rl.Color(139, 92, 246, 55)
 PANEL_COLOR = rl.BLACK
-CLOSE_BTN_COLOR = rl.Color(41, 41, 41, 255)
-CLOSE_BTN_PRESSED = rl.Color(59, 59, 59, 255)
+CLOSE_BTN_COLOR = rl.Color(70, 18, 24, 255)
+CLOSE_BTN_PRESSED = rl.Color(105, 25, 34, 255)
 TEXT_NORMAL = rl.Color(128, 128, 128, 255)
 TEXT_SELECTED = rl.WHITE
 DARK_CORE_COLOR = rl.Color(12, 10, 18, 190)
@@ -85,7 +86,7 @@ class SettingsLayout(Widget):
     self._panels[PanelType.STARPILOT].instance.set_settings_layout(self)
 
     self._font_medium = gui_app.font(FontWeight.MEDIUM)
-    self._close_icon = gui_app.texture("icons/backspace.png", CLOSE_ICON_SIZE, CLOSE_ICON_SIZE)
+    self._close_icon = gui_app.texture("icons/close.png", CLOSE_ICON_SIZE, CLOSE_ICON_SIZE)
 
     # Callbacks
     self._close_callback: Callable | None = None
@@ -162,9 +163,9 @@ class SettingsLayout(Widget):
     # Unified expand/collapse control. It stays in the header area so the
     # collapsed handle does not cover the StarPilot navigation label.
     if self._sidebar_expanded:
-      tab_h = 64
-      tab_w = min(180.0, max(132.0, rect.width - 96.0))
-      tab_x = rect.x + (rect.width - tab_w) / 2
+      tab_h = 72
+      tab_w = 72
+      tab_x = rect.x + rect.width - tab_w - 16
       tab_y = rect.y + 16
       tab_cy = int(tab_y + tab_h / 2)
       chevron_x = int(tab_x + tab_w / 2)
@@ -209,6 +210,19 @@ class SettingsLayout(Widget):
     if self._sidebar_expanded:
       # ── EXPANDED ──
 
+      # Header row: StarPilot title plus the top collapse control.
+      header_rect = rl.Rectangle(rect.x + 8, tab_y, max(0.0, tab_x - rect.x - 16), tab_h)
+      header_text = tr(self._panels[PanelType.STARPILOT].name)
+      header_font_size = HEADER_TEXT_SIZE
+      header_text_size = measure_text_cached(self._font_medium, header_text, header_font_size)
+      while header_text_size.x > header_rect.width - 8 and header_font_size > 44:
+        header_font_size -= 2
+        header_text_size = measure_text_cached(self._font_medium, header_text, header_font_size)
+      header_pos = rl.Vector2(header_rect.x + (header_rect.width - header_text_size.x) / 2, header_rect.y + (header_rect.height - header_text_size.y) / 2)
+      header_color = TEXT_SELECTED if self._current_panel == PanelType.STARPILOT else TEXT_NORMAL
+      rl.draw_text_ex(self._font_medium, header_text, rl.Vector2(floor(header_pos.x), floor(header_pos.y)), header_font_size, 0, header_color)
+      self._panels[PanelType.STARPILOT].button_rect = header_rect
+
       # Back/Close button - hierarchical navigation
       top_pad = tab_h + max(34.0, min(54.0, rect.height * 0.05))
       bottom_pad = max(22.0, min(48.0, rect.height * 0.05))
@@ -218,12 +232,13 @@ class SettingsLayout(Widget):
       # Navigation buttons: fit the available sidebar height instead of using
       # fixed desktop y positions that overflow on the comma display.
       y = rect.y + top_pad
-      nav_count = max(1, len(self._panels))
       close_gap_top = max(18.0, min(36.0, rect.height * 0.035))
       available_h = max(0.0, back_btn_rect.y - close_gap_top - y)
+      nav_items = [(panel_type, panel_info) for panel_type, panel_info in self._panels.items() if panel_type != PanelType.STARPILOT]
+      nav_count = max(1, len(nav_items))
       nav_btn_h = min(float(NAV_BTN_HEIGHT), max(58.0, available_h / nav_count))
-      for panel_type, panel_info in self._panels.items():
-        button_rect = rl.Rectangle(rect.x + 8, y, rect.width - 16, nav_btn_h)
+      for panel_type, panel_info in nav_items:
+        button_rect = rl.Rectangle(rect.x, y, rect.width, nav_btn_h)
 
         # Button styling
         is_selected = panel_type == self._current_panel
@@ -232,7 +247,7 @@ class SettingsLayout(Widget):
         panel_name = tr(panel_info.name)
         font_size = int(min(float(NAV_TEXT_SIZE), max(34.0, nav_btn_h * 0.56)))
         text_size = measure_text_cached(self._font_medium, panel_name, font_size)
-        while text_size.x > button_rect.width - 16 and font_size > 38:
+        while text_size.x > button_rect.width - 24 and font_size > 38:
           font_size -= 2
           text_size = measure_text_cached(self._font_medium, panel_name, font_size)
         text_pos = rl.Vector2(button_rect.x + (button_rect.width - text_size.x) / 2, button_rect.y + (button_rect.height - text_size.y) / 2)
@@ -247,7 +262,7 @@ class SettingsLayout(Widget):
       close_color = CLOSE_BTN_PRESSED if pressed else CLOSE_BTN_COLOR
       rl.draw_rectangle_rounded(back_btn_rect, 1.0, 20, close_color)
 
-      icon_color = rl.Color(255, 255, 255, 255) if not pressed else rl.Color(220, 220, 220, 255)
+      icon_color = rl.Color(255, 92, 105, 255) if not pressed else rl.Color(255, 130, 140, 255)
       icon_dest = rl.Rectangle(
         back_btn_rect.x + (back_btn_rect.width - self._close_icon.width) / 2,
         back_btn_rect.y + (back_btn_rect.height - self._close_icon.height) / 2,
