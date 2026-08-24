@@ -174,11 +174,12 @@ class SettingsSearchView(PanelManagerView):
       pressed=pressed,
       is_last=True,
       action_pill=True,
-      action_width=150,
-      action_pill_width=110,
+      action_width=220,
+      action_pill_height=84,
+      action_pill_width=160,
       title_size=42,
       subtitle_size=30,
-      action_text_size=30,
+      action_text_size=36,
       row_separator=PANEL_STYLE.divider_color,
     )
 
@@ -233,9 +234,12 @@ class SettingsSearchView(PanelManagerView):
         pressed=pressed,
         is_last=is_last,
         action_pill=True,
+        action_width=260,
+        action_pill_height=84,
+        action_pill_width=180,
         title_size=42,
         subtitle_size=30,
-        action_text_size=30,
+        action_text_size=36,
         row_separator=PANEL_STYLE.divider_color,
       )
 

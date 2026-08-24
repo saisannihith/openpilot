@@ -32,6 +32,8 @@ _HUD_TEXT_DIM = rl.Color(220, 220, 230, 220)
 _CONST_PRIMARY = rl.Color(235, 240, 255, 255)
 _CONST_SECONDARY = rl.Color(180, 195, 220, 255)
 _CONST_TERTIARY = rl.Color(145, 155, 175, 255)
+_TOGGLE_KNOB_OFF = rl.Color(226, 74, 83, 255)
+_TOGGLE_KNOB_ON = rl.Color(55, 205, 114, 255)
 
 _NODE_NUM_MIN = 3
 _NODE_NUM_MAX = 5
@@ -1712,7 +1714,7 @@ def draw_toggle_switch(
   knob_progress: float | None = None,
   is_enabled: bool = True,
   track_color: rl.Color = AetherListColors.PRIMARY,
-  knob_color: rl.Color = rl.WHITE,
+  knob_color: rl.Color | None = None,
   width: int = AETHER_LIST_METRICS.toggle_width,
   height: int = AETHER_LIST_METRICS.toggle_height,
   right_inset: int = AETHER_LIST_METRICS.toggle_right_inset,
@@ -1725,6 +1727,9 @@ def draw_toggle_switch(
 
   if knob_progress is None:
     knob_progress = 1.0 if enabled else 0.0
+
+  if knob_color is None:
+    knob_color = mix_colors(_TOGGLE_KNOB_OFF, _TOGGLE_KNOB_ON, knob_progress, alpha=255)
 
   if not is_enabled:
     knob_color = with_alpha(knob_color, 132)
@@ -3571,8 +3576,11 @@ class AetherSettingsView(PanelManagerView):
         pressed=pressed,
         is_last=is_last,
         action_pill=True,
+        action_width=270,
+        action_pill_height=84,
+        action_pill_width=190,
         title_size=44, subtitle_size=32,
-        action_pill_height=AETHER_LIST_METRICS.toggle_height, action_text_size=32,
+        action_text_size=36,
         action_text_color=action_text_color,
         action_fill=action_fill,
         action_border=action_border,
