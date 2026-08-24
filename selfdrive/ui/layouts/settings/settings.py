@@ -122,7 +122,7 @@ class SettingsLayout(Widget):
 
     original_events = list(gui_app.mouse_events)
     if not self._sidebar_expanded:
-      tab_zone = rl.Rectangle(rect.x, rect.y + 581 - 70, 40, 140)
+      tab_zone = self._sidebar_tab_hit_zone(rect)
       gui_app.mouse_events[:] = [e for e in original_events if not rl.check_collision_point_rec(e.pos, tab_zone)]
 
     self._draw_current_panel(panel_rect)
@@ -147,6 +147,11 @@ class SettingsLayout(Widget):
     rl.draw_line_ex(p1, p2, 2.8, color)
     rl.draw_line_ex(p2, p3, 2.8, color)
 
+  def _sidebar_tab_hit_zone(self, rect: rl.Rectangle) -> rl.Rectangle:
+    tab_h = min(140.0, max(96.0, rect.height * 0.22))
+    tab_y = rect.y + (rect.height - tab_h) / 2
+    return rl.Rectangle(rect.x, tab_y, 40, tab_h)
+
   def _draw_sidebar(self, rect: rl.Rectangle):
     rl.draw_rectangle_rec(rect, SIDEBAR_COLOR)
 
@@ -155,9 +160,9 @@ class SettingsLayout(Widget):
     rl.draw_rectangle_rec(line_rect, ACCENT_LINE_COLOR)
 
     # Unified Protruding Edge Tab (Expand/Collapse toggle)
-    tab_cy = int(rect.y + 581)
-    tab_h = 140
+    tab_h = min(140.0, max(96.0, rect.height * 0.22))
     tab_w = 70
+    tab_cy = int(rect.y + rect.height / 2)
     tab_x = rect.x - 30  # Leaves exactly 40px protruding onto the screen
     tab_y = tab_cy - (tab_h / 2)
     tab_rect = rl.Rectangle(tab_x, tab_y, tab_w, tab_h)
@@ -195,7 +200,10 @@ class SettingsLayout(Widget):
       # ── EXPANDED ──
 
       # Back/Close button - hierarchical navigation
-      back_btn_rect = rl.Rectangle(rect.x + (rect.width - CLOSE_BTN_SIZE) / 2, rect.y + 54, CLOSE_BTN_SIZE, CLOSE_BTN_SIZE)
+      top_pad = max(24.0, min(54.0, rect.height * 0.05))
+      bottom_pad = max(22.0, min(48.0, rect.height * 0.05))
+      close_size = min(float(CLOSE_BTN_SIZE), max(104.0, rect.height * 0.15))
+      back_btn_rect = rl.Rectangle(rect.x + (rect.width - close_size) / 2, rect.y + top_pad, close_size, close_size)
       pressed = gui_app.last_mouse_event.left_down and rl.check_collision_point_rec(gui_app.last_mouse_event.pos, back_btn_rect)
       close_color = CLOSE_BTN_PRESSED if pressed else CLOSE_BTN_COLOR
       rl.draw_rectangle_rounded(back_btn_rect, 1.0, 20, close_color)
@@ -219,17 +227,22 @@ class SettingsLayout(Widget):
       # Store back button rect for click detection
       self._back_btn_rect = back_btn_rect
 
-      # Navigation buttons
-      y = rect.y + 232
+      # Navigation buttons: fit the available sidebar height instead of using
+      # fixed desktop y positions that overflow on the comma display.
+      nav_gap_top = max(18.0, min(44.0, rect.height * 0.04))
+      y = back_btn_rect.y + back_btn_rect.height + nav_gap_top
+      nav_count = max(1, len(self._panels))
+      available_h = max(0.0, rect.y + rect.height - bottom_pad - y)
+      nav_btn_h = min(float(NAV_BTN_HEIGHT), max(58.0, available_h / nav_count))
       for panel_type, panel_info in self._panels.items():
-        button_rect = rl.Rectangle(rect.x + 28, y, rect.width - 70, NAV_BTN_HEIGHT)
+        button_rect = rl.Rectangle(rect.x + 28, y, rect.width - 70, nav_btn_h)
 
         # Button styling
         is_selected = panel_type == self._current_panel
         text_color = TEXT_SELECTED if is_selected else TEXT_NORMAL
         # Draw button text (right-aligned)
         panel_name = tr(panel_info.name)
-        font_size = NAV_TEXT_SIZE
+        font_size = int(min(float(NAV_TEXT_SIZE), max(34.0, nav_btn_h * 0.56)))
         text_size = measure_text_cached(self._font_medium, panel_name, font_size)
         while text_size.x > button_rect.width and font_size > 38:
           font_size -= 2
@@ -240,7 +253,7 @@ class SettingsLayout(Widget):
         # Store button rect for click detection
         panel_info.button_rect = button_rect
 
-        y += NAV_BTN_HEIGHT
+        y += nav_btn_h
 
   def _draw_current_panel(self, rect: rl.Rectangle):
     rl.draw_rectangle_rounded(rl.Rectangle(rect.x + 10, rect.y + 10, rect.width - 20, rect.height - 20), 0.04, 30, PANEL_COLOR)
@@ -253,7 +266,7 @@ class SettingsLayout(Widget):
     if not self._sidebar_expanded:
       # Only record swipe/tap start when touch is within the 10px left margin OR directly on the protruding tab
       gesture_zone = rl.Rectangle(self._rect.x, self._rect.y, 10, self._rect.height)
-      tab_zone = rl.Rectangle(self._rect.x, self._rect.y + 581 - 70, 40, 140)
+      tab_zone = self._sidebar_tab_hit_zone(self._rect)
       if rl.check_collision_point_rec(mouse_pos, gesture_zone) or rl.check_collision_point_rec(mouse_pos, tab_zone):
         self._swipe_start = mouse_pos
       else:
