@@ -4,7 +4,9 @@ import pyray as rl
 
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.lib.multilang import tr, tr_noop
-from openpilot.system.ui.lib.application import MousePos
+from openpilot.system.ui.lib.application import FontWeight, MousePos, gui_app
+from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.system.ui.widgets.label import gui_label
 
 from openpilot.selfdrive.ui.layouts.settings.starpilot.panel import StarPilotPanelType, StarPilotPanelInfo, FrameCachedParams
 from openpilot.selfdrive.ui.layouts.settings.starpilot.sounds import StarPilotSoundsLayout
@@ -300,9 +302,13 @@ class StarPilotLayout(Widget):
     glass_rect = rl.Rectangle(shell_x, rect.y + 2, shell_w, TOP_BAR_HEIGHT - 4)
     draw_hud_background(glass_rect, AetherListColors.PRIMARY, radius_px=34)
 
+    accessory_width = min(self._header_accessory_width(), max(0.0, glass_rect.width - 360.0))
+
     # 1. Draw breadcrumbs in top bar
-    crumb_rect = rl.Rectangle(glass_rect.x, glass_rect.y, glass_rect.width, glass_rect.height)
+    crumb_rect = rl.Rectangle(glass_rect.x, glass_rect.y, glass_rect.width - accessory_width, glass_rect.height)
     self._breadcrumbs.draw(crumb_rect)
+    self._draw_header_accessory(rl.Rectangle(glass_rect.x + glass_rect.width - accessory_width, glass_rect.y,
+                                             accessory_width, glass_rect.height))
 
     # 4. Render active content panel
     if self._current_panel == StarPilotPanelType.MAIN:
@@ -312,6 +318,32 @@ class StarPilotLayout(Widget):
       panel = self._panels[self._current_panel]
       if panel.instance:
         panel.instance.render(content_rect)
+
+  def _header_accessory_width(self) -> float:
+    if self._current_panel == StarPilotPanelType.DRIVING_MODEL:
+      return 540.0
+    return 0.0
+
+  def _draw_header_accessory(self, rect: rl.Rectangle):
+    if self._current_panel != StarPilotPanelType.DRIVING_MODEL or rect.width <= 0:
+      return
+
+    panel = self._panels[self._current_panel].instance
+    current_entry = panel.current_entry() if hasattr(panel, "current_entry") else None
+    if current_entry is None:
+      return
+
+    prefix = tr("Current") + ":"
+    font_size = 24
+    prefix_font = gui_app.font(FontWeight.MEDIUM)
+    prefix_w = measure_text_cached(prefix_font, prefix, font_size).x
+    label_rect = rl.Rectangle(rect.x + 12, rect.y, prefix_w + 8, rect.height)
+    model_rect = rl.Rectangle(label_rect.x + label_rect.width, rect.y, max(0.0, rect.width - label_rect.width - 28), rect.height)
+
+    gui_label(label_rect, prefix, font_size, AetherListColors.SUBTEXT, FontWeight.MEDIUM,
+              alignment=rl.GuiTextAlignment.TEXT_ALIGN_LEFT)
+    gui_label(model_rect, current_entry.name, font_size, AetherListColors.SUCCESS, FontWeight.SEMI_BOLD,
+              alignment=rl.GuiTextAlignment.TEXT_ALIGN_LEFT)
 
   def _handle_mouse_press(self, mouse_pos: MousePos):
     self._breadcrumbs.init_interaction(mouse_pos)

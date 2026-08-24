@@ -74,15 +74,11 @@ DRIVING_MODEL_METRICS = replace(AETHER_LIST_METRICS, header_height=0)
 CONFIRM_TIMEOUT_SECONDS = 3.0
 TRANSITION_SECONDS = 0.24
 PANEL_STYLE = DEFAULT_PANEL_STYLE
-BANNER_HEIGHT = 128.0
-BANNER_GAP = 14.0
-CURRENT_STRIP_HEIGHT = 58.0
-CURRENT_STRIP_GAP_Y = 10.0
 HEADER_BUTTON_HEIGHT = 80.0
 HEADER_BUTTON_GAP_Y = 14.0
 MANAGEMENT_STRIP_HEIGHT = 64.0
 MANAGEMENT_PILL_HEIGHT = 44.0
-SEARCH_BOX_HEIGHT = 78.0
+SEARCH_BOX_HEIGHT = 94.0
 SEARCH_BOX_GAP_Y = 12.0
 EMPTY_STATE_HEIGHT = 240.0
 _SORT_MODES = ("alphabetical", "date", "date_oldest", "favorites", "community_picks")
@@ -103,7 +99,7 @@ class ModelSearchInputBox(InputBox):
       color=rl.Color(4, 4, 8, 210),
       border_color=with_alpha(PANEL_STYLE.surface_border, 42),
       text_color=PANEL_STYLE.title_color,
-      font_size=32,
+      font_size=38,
     )
 
 
@@ -345,13 +341,6 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
     frame, scroll_rect, content_width = init_list_panel(rect, PANEL_STYLE, metrics=DRIVING_MODEL_METRICS)
     self._shell_rect = frame.shell
 
-    current_entry = self._controller.current_entry()
-    if current_entry is not None:
-      strip_rect = rl.Rectangle(scroll_rect.x + 8, scroll_rect.y, content_width - 16, CURRENT_STRIP_HEIGHT)
-      self._draw_current_strip(strip_rect, current_entry)
-      scroll_rect = rl.Rectangle(scroll_rect.x, scroll_rect.y + CURRENT_STRIP_HEIGHT + CURRENT_STRIP_GAP_Y,
-                                 scroll_rect.width, scroll_rect.height - CURRENT_STRIP_HEIGHT - CURRENT_STRIP_GAP_Y)
-
     header_y = scroll_rect.y
     self._draw_relocated_header(scroll_rect.x, header_y, content_width)
     scroll_rect = rl.Rectangle(scroll_rect.x, scroll_rect.y + HEADER_BUTTON_HEIGHT + HEADER_BUTTON_GAP_Y,
@@ -382,52 +371,6 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
       self._draw_scrollbar(scroll_rect)
 
     draw_list_scroll_fades(scroll_rect, self._content_height, self._scroll_offset, AetherListColors.PANEL_BG, fade_height=FADE_HEIGHT)
-
-  def _draw_current_banner(self, rect: rl.Rectangle, entry: ModelCatalogEntry):
-    draw_list_row_shell(
-      rect,
-      current=True,
-      hovered=False,
-      pressed=False,
-      is_last=False,
-      alpha=255,
-      row_bg=AetherListColors.ROW_BG,
-      row_border=AetherListColors.ROW_BORDER,
-      row_separator=AetherListColors.ROW_SEPARATOR,
-      row_hover=AetherListColors.ROW_HOVER,
-      current_bg=AetherListColors.CURRENT_BG,
-      current_border=AetherListColors.CURRENT_BORDER,
-      row_radius=ROW_RADIUS,
-      separator_inset=22,
-    )
-
-    action_rect = draw_action_rail(rect, ACTION_WIDTH, current=True, alpha=255, fill=AetherListColors.ACTION_BG, separator=AetherListColors.ACTION_SEPARATOR, inset_y=18)
-    info_rect = rl.Rectangle(rect.x + 24, rect.y + 18, rect.width - ACTION_WIDTH - 42, rect.height - 36)
-    self._draw_model_info(info_rect, entry, current=True)
-    self._draw_current_action(action_rect)
-
-  def _draw_current_strip(self, rect: rl.Rectangle, entry: ModelCatalogEntry):
-    draw_action_pill(
-      rect,
-      "",
-      rl.Color(16, 13, 24, 210),
-      with_alpha(PANEL_STYLE.surface_border, 50),
-      AetherListColors.HEADER,
-      font_size=24,
-      roundness=0.26,
-    )
-
-    name_rect = rl.Rectangle(rect.x + 20, rect.y + 5, rect.width - 170, 28)
-    meta_rect = rl.Rectangle(rect.x + 20, rect.y + 31, rect.width - 170, 22)
-    gui_label(name_rect, entry.name, 26, AetherListColors.HEADER, FontWeight.SEMI_BOLD)
-
-    meta_parts = [part for part in (entry.series, entry.released) if part]
-    if entry.version:
-      meta_parts.append(entry.version)
-    gui_label(meta_rect, " • ".join(meta_parts), 20, AetherListColors.SUBTEXT, FontWeight.NORMAL)
-
-    chip_rect = rl.Rectangle(rect.x + rect.width - 132, rect.y + 10, 112, rect.height - 20)
-    AetherChip(tr("Current"), PANEL_STYLE.current_fill, PANEL_STYLE.current_border, AetherListColors.HEADER, font_size=22).render(chip_rect)
 
   def _draw_relocated_header(self, x: float, y: float, width: float):
     btn_gap = float(AETHER_LIST_METRICS.header_button_gap)
@@ -516,18 +459,18 @@ class DrivingModelManagerView(AetherInteractiveMixin, Widget):
       row_radius=0.18,
       separator_inset=22,
     )
-    label_width = 118.0
+    label_width = 128.0
     clear_width = 86.0 if self._query_box.text.strip() else 0.0
     gui_label(
       rl.Rectangle(rect.x + 24, rect.y, label_width, rect.height),
       tr("Search"),
-      30,
+      34,
       AetherListColors.HEADER,
       FontWeight.BOLD,
     )
 
     input_right_pad = clear_width + 18.0
-    input_rect = rl.Rectangle(rect.x + label_width + 18, rect.y + 10, rect.width - label_width - input_right_pad - 32, rect.height - 20)
+    input_rect = rl.Rectangle(rect.x + label_width + 18, rect.y + 12, rect.width - label_width - input_right_pad - 32, rect.height - 24)
     self._interactive_rects["search:keyboard"] = input_rect
     self._query_box.render(input_rect)
 
