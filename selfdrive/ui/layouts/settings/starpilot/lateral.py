@@ -157,6 +157,35 @@ class StarPilotLateralLayout(_SettingsPage):
         get_state=lambda: p.get_bool("NavDesiresAllowed"),
         set_state=lambda s: p.put_bool("NavDesiresAllowed", s),
       ),
+      SettingRow(
+        "LaneCentering", "toggle", tr_noop("Lane Centering"),
+        subtitle=tr_noop("Bias the model command toward the detected lane center."),
+        get_state=lambda: p.get_bool("LaneCentering"),
+        set_state=lambda s: p.put_bool("LaneCentering", s),
+      ),
+      SettingRow(
+        "LaneCenterOffset", "value", tr_noop("Lane Center Offset"),
+        subtitle=tr_noop("Shift the lane target left or right in meters."),
+        get_value=self._get_lane_center_offset_display,
+        on_click=lambda: self._show_slider("LaneCenterOffset", -0.3, 0.3, step=0.01, unit=" m",
+                                           value_type="float", title="Lane Center Offset"),
+        visible=lambda: p.get_bool("LaneCentering"),
+      ),
+      SettingRow(
+        "LaneCenteringPauseOnSignal", "toggle", tr_noop("Pause Lane Centering On Signal"),
+        subtitle=tr_noop("Fade lane-centering correction out while a turn signal is active."),
+        get_state=lambda: p.get_bool("LaneCenteringPauseOnSignal"),
+        set_state=lambda s: p.put_bool("LaneCenteringPauseOnSignal", s),
+        visible=lambda: p.get_bool("LaneCentering"),
+      ),
+      SettingRow(
+        "LaneCenteringE2EAuthority", "value", tr_noop("Lane Center E2E Authority"),
+        subtitle=tr_noop("Set how strongly the model can override lane-centering bias."),
+        get_value=self._get_lane_center_e2e_authority_display,
+        on_click=lambda: self._show_slider("LaneCenteringE2EAuthority", 0.0, 1.0, step=0.05,
+                                           value_type="float", title="Lane Center E2E Authority"),
+        visible=lambda: p.get_bool("LaneCentering"),
+      ),
     ]
 
     # ── 2. Lane Changes ──
@@ -501,6 +530,16 @@ class StarPilotLateralLayout(_SettingsPage):
 
   def _get_lane_change_close_gap_display(self) -> str:
     return f"{self._params.get_float('LaneChangeCloseGapSeconds'):.2f}s"
+
+  def _get_lane_center_offset_display(self) -> str:
+    val = self._params.get_float("LaneCenterOffset")
+    if abs(val) < 0.005:
+      return tr("Centered")
+    direction = tr("right") if val > 0.0 else tr("left")
+    return f"{abs(val):.2f} m {direction}"
+
+  def _get_lane_center_e2e_authority_display(self) -> str:
+    return f"{self._params.get_float('LaneCenteringE2EAuthority') * 100:.0f}%"
 
   def _show_lane_smoothing(self):
     def on_close(res, val):
