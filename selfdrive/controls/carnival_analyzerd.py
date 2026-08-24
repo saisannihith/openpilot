@@ -155,6 +155,9 @@ def main() -> None:
     handle_profile_requests(params)
     force = params.get_bool("CarnivalAnalyzeNow")
     if force:
+      # Keep manager's on-demand process gate latched while route discovery is
+      # in progress, before analyze_completed_route takes ownership of it.
+      params.put_bool("CarnivalAnalysisRunning", True)
       params.put_bool("CarnivalAnalyzeNow", False)
 
     if force or params.get_bool("CarnivalAutoAnalyze"):
@@ -165,6 +168,9 @@ def main() -> None:
         settled = (datetime.now().timestamp() - newest) >= ROUTE_SETTLE_SECONDS
         if force or (not already_done and settled):
           analyze_completed_route(params, route, files)
+      elif force:
+        params.put("CarnivalAnalysisError", "No completed routes are available.")
+        params.put_bool("CarnivalAnalysisRunning", False)
     time.sleep(POLL_SECONDS)
 
 

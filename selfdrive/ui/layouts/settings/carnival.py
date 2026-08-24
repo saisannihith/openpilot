@@ -58,7 +58,7 @@ class CarnivalLayout(Widget):
     )
     self._auto_analyze = toggle_item(
       lambda: tr("Analyze Every Completed Drive"),
-      description=lambda: tr("Runs offroad after the route is finalized and stores the report on this device."),
+      description=lambda: tr("Optional heavy route replay. Off by default; long drives can take several minutes. Run Now is recommended."),
       initial_state=self._params.get_bool("CarnivalAutoAnalyze"),
       callback=lambda state: self._params.put_bool("CarnivalAutoAnalyze", state),
     )
@@ -155,7 +155,7 @@ class CarnivalLayout(Widget):
     if error:
       return tr("Last analysis error: {error}").format(error=error)
     if not card:
-      return tr("No completed route has been scored yet. Analysis runs offroad after logs finish writing.")
+      return tr("No route has been scored yet. Run analysis while parked; live Carnival telemetry is logged automatically while driving.")
     return tr(
       "Overall {overall} | Lateral {lateral} | Longitudinal {longitudinal} | Radar {radar}<br>" +
       "Interventions {interventions} | False brakes {false_brakes} | Missed stops {missed} | Torque saturation {saturation}"

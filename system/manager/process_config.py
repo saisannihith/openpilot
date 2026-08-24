@@ -76,7 +76,11 @@ def carnival_only(started: bool, params: Params, CP: car.CarParams, starpilot_to
   return started and is_carnival_4th_gen(params, CP)
 
 def carnival_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
-  return not started and is_carnival_4th_gen(params, CP)
+  requested = any(params.get_bool(key) for key in (
+    "CarnivalAutoAnalyze", "CarnivalAnalyzeNow", "CarnivalAnalysisRunning",
+    "CarnivalApplyProfile", "CarnivalRevertProfile",
+  ))
+  return not started and requested and is_carnival_4th_gen(params, CP)
 
 def only_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
   return not started

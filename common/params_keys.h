@@ -533,7 +533,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CarnivalConfidenceGovernor", {PERSISTENT, BOOL, "1", "0", 2}},
     {"CarnivalIntersectionController", {PERSISTENT, BOOL, "1", "0", 2}},
     {"CarnivalEPSPredictor", {PERSISTENT, BOOL, "1", "0", 2}},
-    {"CarnivalAutoAnalyze", {PERSISTENT, BOOL, "1", "0", 2}},
+    {"CarnivalAutoAnalyze", {PERSISTENT, BOOL, "0", "0", 2}},
     {"CarnivalAutoTuneApply", {PERSISTENT, BOOL, "0", "0", 2}},
     {"CarnivalAnalyzeNow", {CLEAR_ON_MANAGER_START, BOOL, "0", "0", 2}},
     {"CarnivalApplyProfile", {CLEAR_ON_MANAGER_START, BOOL, "0", "0", 2}},

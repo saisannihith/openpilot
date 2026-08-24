@@ -9,7 +9,7 @@ The comma 3x now exposes a dedicated `Carnival` settings page between `StarPilot
 - EPS Fault Predictor live risk and enable control.
 - Route Replay Scorecard with on-device run status and scores.
 
-`CarnivalAutoAnalyze` defaults on. After an ignition route is finalized, the low-priority offroad `carnival_analyzerd` process writes:
+Route replay is on demand by default. Press `Run Now`, or explicitly enable `CarnivalAutoAnalyze`, and the low-priority offroad `carnival_analyzerd` process writes:
 
 - `/data/media/0/carnival_reports/carnival-report-*.md`
 - `/data/media/0/carnival_reports/carnival-report-*.json`
@@ -82,6 +82,6 @@ Apply only the allowlisted resolved changes and write a before/after snapshot:
 python tools/carnival/self_tune_profile.py drive_reports/carnival-report-YYYYMMDD-HHMMSS.json --device 192.168.68.68 --apply
 ```
 
-Automatic analysis is enabled by default; automatic application is disabled by default. When explicitly enabled in the Carnival UI, only tiny allowlisted follow-time and force-stop-offset changes can apply offroad. A before/after snapshot is always written for revert. Torque, lane offset, curve speed, radar velocity, and controller constants remain recommendation-only until directional and fault evidence is strong enough.
+Automatic analysis and automatic application are disabled by default. When explicitly enabled in the Carnival UI, only tiny allowlisted follow-time and force-stop-offset changes can apply offroad. A before/after snapshot is always written for revert. Torque, lane offset, curve speed, radar velocity, and controller constants remain recommendation-only until directional and fault evidence is strong enough.
 
 The radar candidate remains shadow-only until lateral and raw velocity fields are decoded safely.
