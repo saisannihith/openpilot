@@ -1662,13 +1662,13 @@ class TestLatControl:
     assert controller.is_kia_carnival
     assert lac_log.active
 
-  def test_kia_carnival_2024_preserves_proven_generic_torque_path(self):
+  def test_kia_carnival_2024_uses_carnival_torque_path(self):
     controller, VM, CS, params, starpilot_toggles = self._build_torque_controller(HYUNDAI.KIA_CARNIVAL_4TH_GEN)
     CS.vEgo = 8.5
 
     _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0025, False, 0.2, None, None, starpilot_toggles)
 
-    assert not controller.is_kia_carnival
+    assert controller.is_kia_carnival
     assert lac_log.active
 
   def test_kia_stinger_2022_near_center_stabilization(self):

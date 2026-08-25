@@ -396,6 +396,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"KonikMinutes", {PERSISTENT, INT, "0", "0", 0}},
     {"LaneCentering", {PERSISTENT, BOOL, "0", "0", 2}},
     {"LaneCenteringPauseOnSignal", {PERSISTENT, BOOL, "1", "1", 2}},
+    {"LaneCenteringRoadAware", {PERSISTENT, BOOL, "0", "0", 3}},
+    {"LaneCenteringRoadEdgeOffset", {PERSISTENT, FLOAT, "0.15", "0.15", 3}},
     {"LaneCenteringE2EAuthority", {PERSISTENT, FLOAT, "1.0", "1.0", 3}},
     {"LaneCenterOffset", {PERSISTENT, FLOAT, "0.0", "0.0", 3}},
     {"LaneChanges", {PERSISTENT, BOOL, "1", "1", 0, SETTINGS_SIMPLE}},

@@ -230,7 +230,7 @@ def track_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: 
 
 
 def carnival_confirmation_matches_vision(track: Track, lead: capnp._DynamicStructReader) -> bool:
-  if not track.confirmationOnly or track.cnt < 1:
+  if not getattr(track, "confirmationOnly", False) or track.cnt < 1:
     return False
 
   offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA

@@ -708,6 +708,9 @@ class StarPilotVariables:
     toggle.lane_centering_pause_on_signal = self.get_value(
       "LaneCenteringPauseOnSignal", condition=toggle.lane_centering, default=True,
     )
+    toggle.lane_centering_road_aware = self.get_value(
+      "LaneCenteringRoadAware", condition=toggle.lane_centering,
+    )
     toggle.force_auto_tune = self.get_value("ForceAutoTune", condition=advanced_lateral_tuning and not has_auto_tune and is_torque_car and not is_angle_car)
     # Force-off is also meaningful on manually tuned torque cars: it locks the
     # vehicle-model parameters instead of allowing paramsd to learn over them.
@@ -733,6 +736,11 @@ class StarPilotVariables:
     toggle.honda_lateral_pid_kp_scale = self.get_value("HondaLateralPidKpScale", cast=float, condition=honda_pid_lateral, default=1.0, min=0.1, max=4.0)
     toggle.honda_lateral_pid_ki_scale = self.get_value("HondaLateralPidKiScale", cast=float, condition=honda_pid_lateral, default=1.0, min=0.1, max=4.0)
     toggle.lane_center_offset = self.get_value("LaneCenterOffset", cast=float, condition=toggle.lane_centering, default=0.0, min=-0.3, max=0.3)
+    toggle.lane_centering_road_edge_offset = self.get_value(
+      "LaneCenteringRoadEdgeOffset", cast=float,
+      condition=toggle.lane_centering and toggle.lane_centering_road_aware,
+      default=0.15, min=0.0, max=0.2,
+    )
     toggle.lane_centering_e2e_authority = self.get_value(
       "LaneCenteringE2EAuthority", cast=float, condition=toggle.lane_centering,
       default=1.0, min=0.0, max=1.0,

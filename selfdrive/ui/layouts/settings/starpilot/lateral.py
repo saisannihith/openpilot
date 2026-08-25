@@ -108,6 +108,11 @@ class StarPilotLateralLayout(_SettingsPage):
     def alt_on():
       return p.get_bool("AdvancedLateralTune")
 
+    def set_road_aware(state: bool):
+      if state:
+        p.put_float("LaneCenterOffset", 0.0)
+      p.put_bool("LaneCenteringRoadAware", state)
+
     def aol_on():
       return p.get_bool("AlwaysOnLateral")
 
@@ -170,6 +175,21 @@ class StarPilotLateralLayout(_SettingsPage):
         on_click=lambda: self._show_slider("LaneCenterOffset", -0.3, 0.3, step=0.01, unit=" m",
                                            value_type="float", title="Lane Center Offset"),
         visible=lambda: p.get_bool("LaneCentering"),
+      ),
+      SettingRow(
+        "LaneCenteringRoadAware", "toggle", tr_noop("Road-Aware Lane Position"),
+        subtitle=tr_noop("Add a small outer-lane offset only after sustained multi-distance agreement. Enabling resets the manual offset."),
+        get_state=lambda: p.get_bool("LaneCenteringRoadAware"),
+        set_state=set_road_aware,
+        visible=lambda: p.get_bool("LaneCentering"),
+      ),
+      SettingRow(
+        "LaneCenteringRoadEdgeOffset", "value", tr_noop("Outer-Lane Offset"),
+        subtitle=tr_noop("Set the maximum offset toward an outside edge with verified lane and shoulder clearance."),
+        get_value=self._get_lane_center_road_edge_offset_display,
+        on_click=lambda: self._show_slider("LaneCenteringRoadEdgeOffset", 0.0, 0.2, step=0.01, unit=" m",
+                                           value_type="float", title="Outer-Lane Offset"),
+        visible=lambda: p.get_bool("LaneCentering") and p.get_bool("LaneCenteringRoadAware"),
       ),
       SettingRow(
         "LaneCenteringPauseOnSignal", "toggle", tr_noop("Pause Lane Centering On Signal"),
@@ -537,6 +557,9 @@ class StarPilotLateralLayout(_SettingsPage):
       return tr("Centered")
     direction = tr("right") if val > 0.0 else tr("left")
     return f"{abs(val):.2f} m {direction}"
+
+  def _get_lane_center_road_edge_offset_display(self) -> str:
+    return f"{self._params.get_float('LaneCenteringRoadEdgeOffset'):.2f} m"
 
   def _get_lane_center_e2e_authority_display(self) -> str:
     return f"{self._params.get_float('LaneCenteringE2EAuthority') * 100:.0f}%"
