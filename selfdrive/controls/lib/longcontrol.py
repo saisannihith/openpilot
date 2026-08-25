@@ -20,6 +20,12 @@ NEGATIVE_TARGET_CREEP_GUARD_DECEL = 0.40
 MODE_TRANSITION_MAX_DECEL = 4.0
 TESLA_PEDAL_RELEASE_GUARD_TIME = 0.15
 TESLA_PEDAL_RELEASE_GUARD_MAX_DECEL = 0.35
+CARNIVAL_FINGERPRINT = "KIA_CARNIVAL_4TH_GEN"
+CARNIVAL_STOP_HOLD_MAX_EGO_SPEED = 0.5
+CARNIVAL_STOP_HOLD_MAX_LEAD_SPEED = 0.5
+CARNIVAL_STOP_HOLD_MAX_DISTANCE = 18.0
+CARNIVAL_STOP_HOLD_MAX_LATERAL = 1.75
+CARNIVAL_STOP_HOLD_ACCEL = -3.0
 
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
@@ -127,6 +133,7 @@ class LongControl:
     self._mode_setup()
     self.last_output_accel = 0.0
     self.stop_release_counter = 0
+    self.carnival_stop_hold_latched = False
     self.pedal_override_active = False
     self.pedal_override_release_frames = 0
     self.vehicle_tuning = LongControlVehicleTuning(CP)
@@ -193,6 +200,27 @@ class LongControl:
 
     return self.stop_release_counter >= int(round(STOPPING_RELEASE_HYSTERESIS / DT_CTRL))
 
+  def _update_carnival_stop_hold(self, CS, should_stop, leads):
+    if str(self.CP.carFingerprint) != CARNIVAL_FINGERPRINT or not should_stop or CS.brakePressed:
+      self.carnival_stop_hold_latched = False
+      return False
+
+    stopped_lead = any(
+      bool(getattr(lead, "status", False)) and
+      bool(getattr(lead, "radar", False)) and
+      float(getattr(lead, "vLead", float("inf"))) <= CARNIVAL_STOP_HOLD_MAX_LEAD_SPEED and
+      0.0 < float(getattr(lead, "dRel", float("inf"))) <= CARNIVAL_STOP_HOLD_MAX_DISTANCE and
+      abs(float(getattr(lead, "yRel", 0.0))) <= CARNIVAL_STOP_HOLD_MAX_LATERAL
+      for lead in (leads or ())
+    )
+    if not stopped_lead:
+      self.carnival_stop_hold_latched = False
+      return False
+
+    if CS.standstill:
+      self.carnival_stop_hold_latched = True
+    return self.carnival_stop_hold_latched and CS.vEgo <= CARNIVAL_STOP_HOLD_MAX_EGO_SPEED
+
   @staticmethod
   def _apply_moving_stop_target_follow(output_accel, a_target, should_stop, CS, starpilot_toggles):
     follow_min_speed = max(1.5, starpilot_toggles.vEgoStopping + 1.0)
@@ -250,6 +278,7 @@ class LongControl:
       )
 
     previous_long_control_state = self.long_control_state
+    carnival_stop_hold_active = self._update_carnival_stop_hold(CS, active and should_stop, leads)
     allow_stopping_release = self._stop_release_ready(CS, a_target, should_stop, has_lead, starpilot_toggles)
     self.long_control_state = long_control_state_trans(self.CP, active, self.long_control_state, CS.vEgo,
                                                        should_stop, CS.brakePressed,
@@ -268,6 +297,8 @@ class LongControl:
         output_accel, a_target, should_stop, CS.vEgo, has_lead, starpilot_toggles.stopAccel,
       )
       output_accel = self._apply_moving_stop_target_follow(output_accel, a_target, should_stop, CS, starpilot_toggles)
+      if carnival_stop_hold_active:
+        output_accel = min(output_accel, CARNIVAL_STOP_HOLD_ACCEL)
       self.reset(preserve_stop_release=True)
 
     elif self.long_control_state == LongCtrlState.starting:

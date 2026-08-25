@@ -6,6 +6,7 @@ import pytest
 import openpilot.selfdrive.controls.lib.longcontrol as longcontrol
 import openpilot.selfdrive.controls.lib.longcontrol_vehicle_tunes as vehicle_tunes
 from opendbc.car.gm.values import CAR, GMFlags
+from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR
 from opendbc.car.subaru.values import CAR as SUBARU_CAR
 from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 from openpilot.selfdrive.controls.lib.longcontrol import (
@@ -793,6 +794,75 @@ def test_stopping_state_follows_stronger_moving_stop_target():
 
   assert lc.long_control_state == LongCtrlState.stopping
   assert output_accel < -1.43
+
+
+def test_carnival_stopped_radar_lead_hold_prevents_post_stop_creep():
+  CP = make_longcontrol_cp(
+    brand="hyundai",
+    carFingerprint=HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN,
+    startingState=True,
+    vEgoStarting=0.5,
+  )
+  lc = LongControl(CP)
+  lc.long_control_state = LongCtrlState.stopping
+  lc.last_output_accel = -2.0
+  CS = car.CarState.new_message(vEgo=0.03, aEgo=0.0, standstill=True, brakePressed=False)
+  CS.cruiseState.standstill = True
+  stopped_lead = SimpleNamespace(status=True, radar=True, dRel=9.7, yRel=0.1, vLead=0.0)
+
+  output_accel = lc.update(
+    active=True,
+    CS=CS,
+    a_target=-0.55,
+    should_stop=True,
+    accel_limits=(-3.5, 2.0),
+    starpilot_toggles=make_toggles(stopAccel=-2.0),
+    has_lead=True,
+    leads=(stopped_lead,),
+  )
+  assert output_accel == pytest.approx(longcontrol.CARNIVAL_STOP_HOLD_ACCEL)
+  assert lc.carnival_stop_hold_latched
+
+  # Keep the stronger hold if standstill flickers while the van starts creeping.
+  CS.standstill = False
+  CS.cruiseState.standstill = False
+  CS.vEgo = 0.25
+  output_accel = lc.update(
+    active=True,
+    CS=CS,
+    a_target=-0.55,
+    should_stop=True,
+    accel_limits=(-3.5, 2.0),
+    starpilot_toggles=make_toggles(stopAccel=-2.0),
+    has_lead=True,
+    leads=(stopped_lead,),
+  )
+  assert output_accel == pytest.approx(longcontrol.CARNIVAL_STOP_HOLD_ACCEL)
+
+
+def test_carnival_stop_hold_releases_when_radar_lead_departs():
+  CP = make_longcontrol_cp(
+    brand="hyundai",
+    carFingerprint=HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN,
+    startingState=True,
+    vEgoStarting=0.5,
+  )
+  lc = LongControl(CP)
+  lc.long_control_state = LongCtrlState.stopping
+  lc.last_output_accel = -3.0
+  CS = car.CarState.new_message(vEgo=0.0, aEgo=0.0, standstill=True, brakePressed=False)
+  CS.cruiseState.standstill = True
+  stopped_lead = SimpleNamespace(status=True, radar=True, dRel=9.7, yRel=0.1, vLead=0.0)
+  moving_lead = SimpleNamespace(status=True, radar=True, dRel=11.0, yRel=0.1, vLead=3.5)
+
+  lc.update(True, CS, -0.55, True, (-3.5, 2.0), make_toggles(stopAccel=-2.0),
+            has_lead=True, leads=(stopped_lead,))
+  output_accel = lc.update(True, CS, 1.0, False, (-3.5, 2.0), make_toggles(stopAccel=-2.0),
+                           has_lead=True, leads=(moving_lead,))
+
+  assert not lc.carnival_stop_hold_latched
+  assert lc.long_control_state == LongCtrlState.starting
+  assert output_accel > 0.0
 
 
 def test_elantra_lead_stop_releases_stale_hard_brake_after_target_eases():

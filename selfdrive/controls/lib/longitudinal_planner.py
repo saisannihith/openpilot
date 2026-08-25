@@ -3544,8 +3544,11 @@ class LongitudinalPlanner:
     longitudinalPlan.leadTrajectoryV1 = self.mpc.lead_xv_1[:, 1].tolist()
 
     longitudinalPlan.aTarget = float(self.output_a_target)
+    # Match update()'s active-lead veto. The former publish-only recomputation
+    # could re-latch braking after a confirmed lead departure.
     force_stop_handoff = bool(
-      sm['starpilotPlan'].forcingStop and (
+      sm['starpilotPlan'].forcingStop and
+      not longitudinalPlan.hasLead and (
         sm['starpilotPlan'].forcingStopLength < 1.0 or
         sm['starpilotPlan'].vCruise <= FORCE_STOP_HANDOFF_MAX_VCRUISE
       )

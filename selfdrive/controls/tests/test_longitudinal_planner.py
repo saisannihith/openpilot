@@ -3741,6 +3741,45 @@ def test_publish_force_stop_handoff_sets_should_stop_when_vcruise_zero():
   assert pm.sent["longitudinalPlan"].longitudinalPlan.shouldStop
 
 
+def test_publish_force_stop_handoff_does_not_relatch_confirmed_lead_departure():
+  class FakePM:
+    def __init__(self):
+      self.sent = {}
+
+    def send(self, name, msg):
+      self.sent[name] = msg
+
+  class FakeSM(dict):
+    def all_checks(self, service_list=None):
+      return True
+
+    logMonoTime = {"modelV2": int(1e9)}
+
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+  planner.output_a_target = 1.0
+  planner.output_should_stop = False
+  planner.v_desired_trajectory = np.zeros(CONTROL_N)
+  planner.a_desired_trajectory = np.zeros(CONTROL_N)
+  planner.j_desired_trajectory = np.zeros(CONTROL_N)
+  planner.fcw = False
+  planner.mpc.source = "lead0"
+  planner.mpc.solve_time = 0.0
+
+  sm = FakeSM(make_sm(0.0, desired_accel=1.0, min_accel=-1.0, experimental_mode=False))
+  sm["radarState"].leadOne = make_lead(status=True, d_rel=11.0, v_lead=3.5, radar=True)
+  sm["starpilotPlan"].forcingStop = True
+  sm["starpilotPlan"].forcingStopLength = 0.0
+  sm["starpilotPlan"].vCruise = 0.0
+  pm = FakePM()
+
+  planner.publish(sm, pm)
+
+  plan = pm.sent["longitudinalPlan"].longitudinalPlan
+  assert plan.hasLead
+  assert not plan.shouldStop
+
+
 def test_publish_has_lead_includes_second_mpc_lead():
   class FakePM:
     def __init__(self):
