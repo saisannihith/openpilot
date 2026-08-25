@@ -81,7 +81,7 @@ def is_carnival_4th_gen(params: Params, CP: car.CarParams) -> bool:
 
 
 def carnival_only(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
-  return started and is_carnival_4th_gen(params, CP)
+  return started and params.get_bool("CarnivalFeaturesEnabled") and is_carnival_4th_gen(params, CP)
 
 def newest_carnival_route(root: str = CARNIVAL_LOG_ROOT) -> tuple[str, float] | None:
   newest_by_route: dict[str, float] = {}
@@ -119,7 +119,7 @@ def carnival_new_route_ready(params: Params, root: str, now: float) -> str:
 
 def carnival_auto_analysis_requested(params: Params) -> bool:
   global _carnival_last_requested_route, _carnival_next_route_scan
-  if not params.get_bool("CarnivalAutoAnalyze"):
+  if not params.get_bool("CarnivalFeaturesEnabled") or not params.get_bool("CarnivalAutoAnalyze"):
     return False
   now_monotonic = time.monotonic()
   if now_monotonic < _carnival_next_route_scan:
@@ -133,7 +133,7 @@ def carnival_auto_analysis_requested(params: Params) -> bool:
   return False
 
 def carnival_offroad(started: bool, params: Params, CP: car.CarParams, starpilot_toggles: SimpleNamespace) -> bool:
-  if started or not is_carnival_4th_gen(params, CP):
+  if started or not params.get_bool("CarnivalFeaturesEnabled") or not is_carnival_4th_gen(params, CP):
     return False
   requested = any(params.get_bool(key) for key in (
     "CarnivalAnalyzeNow", "CarnivalAnalysisRunning",

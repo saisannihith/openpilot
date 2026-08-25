@@ -640,7 +640,7 @@ class CarController(CarControllerBase):
     self._carnival_4th_gen_eps_guard_active_last = False
     self._carnival_4th_gen_eps_predictive_active_last = False
     self._carnival_4th_gen_steer_fault_temporary_last = False
-    self._carnival_eps_predictor_enabled = self._params.get_bool("CarnivalEPSPredictor")
+    self._carnival_eps_predictor_enabled = self._params.get_bool("CarnivalFeaturesEnabled") and self._params.get_bool("CarnivalEPSPredictor")
 
   def _update_dash_icon_state(self, CC):
     if CC.latActive:
@@ -799,7 +799,7 @@ class CarController(CarControllerBase):
         )
       requested_torque_before_eps_guard = apply_torque
       if self.frame % 100 == 0:
-        self._carnival_eps_predictor_enabled = self._params.get_bool("CarnivalEPSPredictor")
+        self._carnival_eps_predictor_enabled = self._params.get_bool("CarnivalFeaturesEnabled") and self._params.get_bool("CarnivalEPSPredictor")
       if self._carnival_eps_predictor_enabled:
         apply_torque, carnival_eps_predictive_risk = apply_carnival_4th_gen_eps_predictive_taper(
           self.CP.carFingerprint, apply_torque, self.params.STEER_MAX, CS.out.vEgoRaw,

@@ -78,7 +78,8 @@ def main() -> None:
   pm = messaging.PubMaster(["carnivalState"])
   governor = CarnivalConfidenceGovernor()
   frame = 0
-  governor_enabled = params.get_bool("CarnivalConfidenceGovernor")
+  features_enabled = params.get_bool("CarnivalFeaturesEnabled")
+  governor_enabled = features_enabled and params.get_bool("CarnivalConfidenceGovernor")
 
   while True:
     sm.update()
@@ -86,7 +87,8 @@ def main() -> None:
       continue
     frame += 1
     if frame % 20 == 1:
-      governor_enabled = params.get_bool("CarnivalConfidenceGovernor")
+      features_enabled = params.get_bool("CarnivalFeaturesEnabled")
+      governor_enabled = features_enabled and params.get_bool("CarnivalConfidenceGovernor")
 
     active_car = str(CP.carFingerprint) == CARNIVAL
     lead = _lead(sm["radarState"])
@@ -112,7 +114,7 @@ def main() -> None:
     msg = messaging.new_message("carnivalState")
     msg.valid = _message_valid(active_car, sm)
     state = msg.carnivalState
-    state.active = active_car
+    state.active = active_car and features_enabled
     state.overallConfidence = output.overall
     state.lateralConfidence = output.lateral
     state.longitudinalConfidence = output.longitudinal
@@ -133,7 +135,7 @@ def main() -> None:
     state.governorState = output.governor_state if governor_enabled else "monitor"
     state.recommendedSpeedScale = output.recommended_speed_scale
     state.torqueScale = output.torque_scale
-    state.reason = output.reason if governor_enabled else "governor disabled; logging only"
+    state.reason = output.reason if governor_enabled else "governor disabled; logging only" if features_enabled else "Carnival enhancements disabled"
     state.visionLeadPresent = lead is not None
     state.radarLeadPresent = bool(lead is not None and getattr(lead, "radar", False))
     state.cutInCandidateCount = _cut_in_candidates(sm["liveTracks"])

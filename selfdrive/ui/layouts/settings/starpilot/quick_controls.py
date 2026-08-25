@@ -218,8 +218,10 @@ class StarPilotQuickControlsLayout(_SettingsPage):
       SettingRow(
         "CarnivalFusionHUD", "toggle", tr_noop("Carnival Fusion HUD"),
         subtitle=tr_noop("Explain lead fusion, stop hold, confidence, and EPS risk."),
-        get_state=lambda: self._params.get_bool("CarnivalFusionHUD"),
-        set_state=lambda s: self._params.put_bool("CarnivalFusionHUD", s),
+        get_state=lambda: self._params.get_bool("CarnivalFeaturesEnabled") and self._params.get_bool("CarnivalFusionHUD"),
+        set_state=lambda s: self._params.put_bool("CarnivalFusionHUD", s) if self._params.get_bool("CarnivalFeaturesEnabled") else None,
+        enabled=lambda: self._params.get_bool("CarnivalFeaturesEnabled"),
+        disabled_label=tr_noop("Carnival Enhancements is off"),
       ),
       SettingRow(
         "LeadInfo", "toggle", tr_noop("Lead Vehicle Metrics"),

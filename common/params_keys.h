@@ -531,6 +531,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"QOLVisuals", {PERSISTENT, BOOL, "1", "0", 0, SETTINGS_SIMPLE}},
     {"RadarTakeoffs", {PERSISTENT, BOOL, "0", "0", 2, SETTINGS_SIMPLE}},
     {"RadarTracksUI", {PERSISTENT, BOOL, "1", "0", 3}},
+    {"CarnivalFeaturesEnabled", {PERSISTENT, BOOL, "1", "0", 2}},
     {"CarnivalFusionHUD", {PERSISTENT, BOOL, "1", "0", 2}},
     {"CarnivalConfidenceGovernor", {PERSISTENT, BOOL, "0", "0", 2}},
     {"CarnivalIntersectionController", {PERSISTENT, BOOL, "1", "0", 2}},

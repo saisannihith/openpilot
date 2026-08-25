@@ -32,15 +32,15 @@ def _cp(fingerprint: str) -> car.CarParams:
 def test_carnival_process_gate_uses_live_fingerprint_onroad():
   cp = _cp("KIA_CARNIVAL_4TH_GEN")
   assert is_carnival_4th_gen(_Params(None), cp)
-  assert carnival_only(True, _Params(None), cp, None)
-  assert not carnival_offroad(True, _Params(None, {"CarnivalAutoAnalyze"}), cp, None)
+  assert carnival_only(True, _Params(None, {"CarnivalFeaturesEnabled"}), cp, None)
+  assert not carnival_offroad(True, _Params(None, {"CarnivalFeaturesEnabled", "CarnivalAutoAnalyze"}), cp, None)
 
 
 def test_carnival_process_gate_uses_persisted_fingerprint_offroad():
   persisted = _cp("KIA_CARNIVAL_4TH_GEN").to_bytes()
   blank_cp = _cp("")
   assert is_carnival_4th_gen(_Params(persisted), blank_cp)
-  assert carnival_offroad(False, _Params(persisted, {"CarnivalAnalyzeNow"}), blank_cp, None)
+  assert carnival_offroad(False, _Params(persisted, {"CarnivalFeaturesEnabled", "CarnivalAnalyzeNow"}), blank_cp, None)
   assert not carnival_only(False, _Params(persisted), blank_cp, None)
 
 
@@ -52,6 +52,13 @@ def test_carnival_analyzer_stays_stopped_without_a_request():
 def test_carnival_process_gate_rejects_other_cars():
   persisted = _cp("HYUNDAI_SONATA").to_bytes()
   assert not is_carnival_4th_gen(_Params(persisted), _cp(""))
+
+
+def test_carnival_master_disables_both_runtime_processes():
+  persisted = _cp("KIA_CARNIVAL_4TH_GEN").to_bytes()
+  params = _Params(persisted, {"CarnivalAutoAnalyze", "CarnivalAnalyzeNow"})
+  assert not carnival_only(True, params, _cp(""), None)
+  assert not carnival_offroad(False, params, _cp(""), None)
 
 
 def test_carnival_new_route_ready_uses_settled_latest_route(tmp_path):

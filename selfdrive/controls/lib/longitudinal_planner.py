@@ -815,7 +815,8 @@ class LongitudinalPlanner:
     self.carnival_intersection_state = "idle"
     self._carnival_params = Params() if self.is_carnival_4th_gen() else None
     self._carnival_feature_refresh_t = 0.0
-    self._carnival_intersection_enabled = True
+    self._carnival_features_enabled = self._carnival_params is not None and self._carnival_params.get_bool("CarnivalFeaturesEnabled")
+    self._carnival_intersection_enabled = self._carnival_features_enabled and self._carnival_params.get_bool("CarnivalIntersectionController")
 
     if self.is_preap:
       try:
@@ -3487,7 +3488,8 @@ class LongitudinalPlanner:
       output_should_stop = True
 
     if self._carnival_params is not None and time.monotonic() - self._carnival_feature_refresh_t >= 1.0:
-      self._carnival_intersection_enabled = self._carnival_params.get_bool("CarnivalIntersectionController")
+      self._carnival_features_enabled = self._carnival_params.get_bool("CarnivalFeaturesEnabled")
+      self._carnival_intersection_enabled = self._carnival_features_enabled and self._carnival_params.get_bool("CarnivalIntersectionController")
       self._carnival_feature_refresh_t = time.monotonic()
 
     selected_stop_lead = self.lead_two if self.mpc.source == "lead1" else self.lead_one
@@ -3510,7 +3512,7 @@ class LongitudinalPlanner:
     # lead, but it never adds braking or overrides model-led stop behavior.
     sm_valid = getattr(sm, 'valid', {})
     carnival_state = sm['carnivalState'] if sm_valid.get('carnivalState', False) else None
-    governor_active = carnival_state is not None and str(getattr(carnival_state, 'governorState', 'monitor')) != 'monitor'
+    governor_active = self._carnival_features_enabled and carnival_state is not None and str(getattr(carnival_state, 'governorState', 'monitor')) != 'monitor'
     confidence_accel_cap = get_vision_lead_accel_cap(
       str(self.CP.carFingerprint),
       float(getattr(carnival_state, 'longitudinalConfidence', 1.0)) if carnival_state is not None else 1.0,

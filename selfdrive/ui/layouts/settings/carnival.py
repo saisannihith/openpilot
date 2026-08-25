@@ -23,38 +23,52 @@ class CarnivalLayout(Widget):
     super().__init__()
     self._params = Params()
 
+    self._master = toggle_item(
+      lambda: tr("Carnival Enhancements"),
+      description=lambda: tr(
+        "Master switch for the six optional Carnival systems below. Saved child choices are restored when re-enabled. "
+        "Vehicle identification, CAN safety, steering limits, and the base EPS fault guard always remain active."
+      ),
+      initial_state=self._features_enabled(),
+      callback=self._set_master,
+    )
     self._confidence = toggle_item(
       lambda: tr("Carnival Confidence Governor"),
       description=self._confidence_description,
       initial_state=self._params.get_bool("CarnivalConfidenceGovernor"),
-      callback=lambda state: self._params.put_bool("CarnivalConfidenceGovernor", state),
+      callback=lambda state: self._set_feature("CarnivalConfidenceGovernor", state),
+      enabled=self._features_enabled,
     )
     self._self_tuning = button_item(
       lambda: tr("Self-Tuning Drive Profiles"), lambda: tr("REVIEW"),
       description=self._profile_description, callback=self._show_profile,
+      enabled=self._features_enabled,
     )
     self._fusion_hud = toggle_item(
       lambda: tr("Radar-Vision Lead Fusion HUD"),
       description=self._fusion_description,
       initial_state=self._params.get_bool("CarnivalFusionHUD"),
-      callback=lambda state: self._params.put_bool("CarnivalFusionHUD", state),
+      callback=lambda state: self._set_feature("CarnivalFusionHUD", state),
+      enabled=self._features_enabled,
     )
     self._intersection = toggle_item(
       lambda: tr("Intersection Stop Controller"),
       description=self._intersection_description,
       initial_state=self._params.get_bool("CarnivalIntersectionController"),
-      callback=lambda state: self._params.put_bool("CarnivalIntersectionController", state),
+      callback=lambda state: self._set_feature("CarnivalIntersectionController", state),
+      enabled=self._features_enabled,
     )
     self._eps = toggle_item(
       lambda: tr("EPS Fault Predictor"),
       description=self._eps_description,
       initial_state=self._params.get_bool("CarnivalEPSPredictor"),
-      callback=lambda state: self._params.put_bool("CarnivalEPSPredictor", state),
+      callback=lambda state: self._set_feature("CarnivalEPSPredictor", state),
+      enabled=self._features_enabled,
     )
     self._scorecard = button_item(
       lambda: tr("Route Replay Scorecard"), self._scorecard_button,
       description=self._scorecard_description, callback=self._run_analysis,
-      enabled=ui_state.is_offroad,
+      enabled=lambda: self._features_enabled() and ui_state.is_offroad(),
     )
     self._auto_analyze = toggle_item(
       lambda: tr("Analyze Every Completed Drive"),
@@ -62,7 +76,8 @@ class CarnivalLayout(Widget):
         "Runs a compact qlog score after each completed drive while parked. Deep raw-radar replay stays PC-only."
       ),
       initial_state=self._params.get_bool("CarnivalAutoAnalyze"),
-      callback=lambda state: self._params.put_bool("CarnivalAutoAnalyze", state),
+      callback=lambda state: self._set_feature("CarnivalAutoAnalyze", state),
+      enabled=self._features_enabled,
     )
     self._auto_apply = toggle_item(
       lambda: tr("Automatically Apply Bounded Suggestions"),
@@ -72,14 +87,15 @@ class CarnivalLayout(Widget):
       ),
       initial_state=self._params.get_bool("CarnivalAutoTuneApply"),
       callback=self._set_auto_apply,
-      enabled=ui_state.is_offroad,
+      enabled=lambda: self._features_enabled() and ui_state.is_offroad(),
     )
     self._profile_actions = dual_button_item(
       lambda: tr("APPLY SUGGESTION"), lambda: tr("REVERT LAST"),
       left_callback=self._apply_profile, right_callback=self._revert_profile,
-      enabled=ui_state.is_offroad,
+      enabled=lambda: self._features_enabled() and ui_state.is_offroad(),
     )
     self._scroller = Scroller([
+      self._master,
       self._confidence,
       self._self_tuning,
       self._fusion_hud,
@@ -91,6 +107,20 @@ class CarnivalLayout(Widget):
       self._profile_actions,
     ], line_separator=True, spacing=0)
     ui_state.add_offroad_transition_callback(self._refresh)
+
+  def _features_enabled(self) -> bool:
+    return self._params.get_bool("CarnivalFeaturesEnabled")
+
+  def _set_feature(self, key: str, state: bool) -> None:
+    if self._features_enabled():
+      self._params.put_bool(key, state)
+
+  def _set_master(self, state: bool) -> None:
+    self._params.put_bool("CarnivalFeaturesEnabled", state)
+    if not state:
+      for key in ("CarnivalAnalyzeNow", "CarnivalApplyProfile", "CarnivalRevertProfile", "CarnivalAnalysisRunning"):
+        self._params.put_bool(key, False)
+    self._refresh()
 
   def _json_param(self, key: str) -> dict:
     try:
@@ -187,11 +217,11 @@ class CarnivalLayout(Widget):
     gui_app.push_widget(ConfirmDialog(content, tr("OK"), cancel_text="", rich=True))
 
   def _run_analysis(self):
-    if ui_state.is_offroad():
+    if self._features_enabled() and ui_state.is_offroad():
       self._params.put_bool("CarnivalAnalyzeNow", True)
 
   def _apply_profile(self):
-    if not ui_state.is_offroad():
+    if not self._features_enabled() or not ui_state.is_offroad():
       return
     profile = self._json_param("CarnivalPendingProfile")
     if not profile.get("resolved"):
@@ -208,7 +238,7 @@ class CarnivalLayout(Widget):
     ))
 
   def _revert_profile(self):
-    if not ui_state.is_offroad():
+    if not self._features_enabled() or not ui_state.is_offroad():
       return
     if not self._json_param("CarnivalProfileSnapshot"):
       gui_app.push_widget(alert_dialog(tr("There is no applied Carnival profile to revert.")))
@@ -216,6 +246,8 @@ class CarnivalLayout(Widget):
     self._params.put_bool("CarnivalRevertProfile", True)
 
   def _set_auto_apply(self, state: bool):
+    if not self._features_enabled():
+      return
     if not state:
       self._params.put_bool("CarnivalAutoTuneApply", False)
       return
@@ -234,6 +266,8 @@ class CarnivalLayout(Widget):
     ))
 
   def _refresh(self):
+    enabled = self._features_enabled()
+    self._master.action_item.set_state(enabled)
     for key, item in (
       ("CarnivalConfidenceGovernor", self._confidence),
       ("CarnivalFusionHUD", self._fusion_hud),
@@ -242,7 +276,7 @@ class CarnivalLayout(Widget):
       ("CarnivalAutoAnalyze", self._auto_analyze),
       ("CarnivalAutoTuneApply", self._auto_apply),
     ):
-      item.action_item.set_state(self._params.get_bool(key))
+      item.action_item.set_state(enabled and self._params.get_bool(key))
 
   def show_event(self):
     self._refresh()

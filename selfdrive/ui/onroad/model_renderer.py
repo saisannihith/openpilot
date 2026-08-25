@@ -188,7 +188,7 @@ class ModelRenderer(Widget):
 
   def _draw_carnival_fusion_hud(self, rect: rl.Rectangle):
     sm = ui_state.sm
-    if not self._params.get_bool("CarnivalFusionHUD") or not sm.valid.get("carnivalState", False):
+    if not self._params.get_bool("CarnivalFeaturesEnabled") or not self._params.get_bool("CarnivalFusionHUD") or not sm.valid.get("carnivalState", False):
       return
     state = sm["carnivalState"]
     if not bool(getattr(state, "active", False)):
