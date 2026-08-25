@@ -2356,6 +2356,14 @@ class LongitudinalPlanner:
 
     v_ego = get_planner_v_ego(self.CP, sm['carState'])
     scene_v_ego = float(sm['carState'].vEgo)
+    try:
+      starpilot_car_state = sm['starpilotCarState']
+    except KeyError:
+      starpilot_car_state = None
+    driver_accel_pressed = bool(
+      getattr(sm['carState'], 'gasPressed', False) or
+      getattr(starpilot_car_state, 'accelPressed', False)
+    )
     v_cruise = sm['starpilotPlan'].vCruise
     if not np.isfinite(v_cruise):
       cloudlog.error(f"Longitudinal planner received non-finite vCruise={v_cruise}, falling back to v_ego={v_ego:.2f}")
@@ -2996,7 +3004,7 @@ class LongitudinalPlanner:
       (self.lead_one, self.lead_two),
       float(sm['carState'].vEgo),
       output_accel_min,
-      bool(getattr(sm['carState'], 'gasPressed', False)) or bool(getattr(sm['starpilotCarState'], 'accelPressed', False)),
+      driver_accel_pressed,
     )
     carnival_close_stop_hold_active = carnival_radar_stop_hold_cap is not None
     carnival_stop_hold_active = self.is_carnival_4th_gen() and (
@@ -3471,7 +3479,7 @@ class LongitudinalPlanner:
       starpilot_red_light,
       bool(getattr(sm['modelV2'].action, 'shouldStop', False)),
       starpilot_forcing_stop,
-      bool(getattr(sm['carState'], 'gasPressed', False)) or bool(getattr(sm['starpilotCarState'], 'accelPressed', False)),
+      driver_accel_pressed,
     )
     if low_speed_stop_context_hold_cap is not None:
       self.a_desired = min(self.a_desired, low_speed_stop_context_hold_cap)
@@ -3489,7 +3497,7 @@ class LongitudinalPlanner:
       red_light=starpilot_red_light,
       model_should_stop=bool(getattr(sm['modelV2'].action, 'shouldStop', False)),
       forcing_stop=starpilot_forcing_stop,
-      driver_gas=bool(getattr(sm['carState'], 'gasPressed', False)) or bool(getattr(sm['starpilotCarState'], 'accelPressed', False)),
+      driver_gas=driver_accel_pressed,
       feature_enabled=self._carnival_intersection_enabled,
     )
     self.carnival_intersection_state = intersection_output.state

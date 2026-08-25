@@ -2399,6 +2399,8 @@ def test_stationary_radar_lead_settles_excess_stop_gap_after_confirmation(model_
 def test_carnival_intersection_hold_blocks_stationary_gap_settle_creep(model_version):
   CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
   planner = LongitudinalPlanner(CP, init_v=0.0)
+  planner._carnival_intersection_enabled = True
+  planner._carnival_feature_refresh_t = time.monotonic()
   sm = make_sm(
     0.0,
     desired_accel=-0.12,
