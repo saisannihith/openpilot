@@ -102,6 +102,19 @@ def test_carnival_radar_only_lead_follows_curved_model_path():
   assert not track.potential_low_speed_lead(1.0, make_model_data(path_y=-0.8))
 
 
+def test_carnival_radar_only_lead_rejects_kinematically_inconsistent_side_object():
+  track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                     d_rel=10.0, y_rel=0.0, v_rel=-1.0, v_ego=1.0)
+  for frame in range(1, 30):
+    distance = 10.0 + 0.05 * frame
+    track.update(distance, 0.0, -1.0, 0.0, True)
+
+  model_data = make_model_data()
+  for _ in range(8):
+    assert not track.potential_low_speed_lead(1.0, model_data)
+  assert not track.potential_low_speed_lead(1.0, model_data, previously_selected=True)
+
+
 def test_carnival_previously_selected_track_reacquires_with_shorter_history():
   track = mature_track(make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
                                   d_rel=22.0, y_rel=0.0, v_rel=1.0, v_ego=2.0), frames=8)

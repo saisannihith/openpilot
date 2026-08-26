@@ -264,12 +264,19 @@ class RadarInterface(RadarInterfaceBase):
 
     for raw_track_id in conflicting_ids:
       batch_objects.pop(raw_track_id, None)
+      self.carnival_confirmation_tracks.pop(raw_track_id, None)
       self.carnival_confirmation_prev.pop(raw_track_id, None)
       self.carnival_confirmation_persist.pop(raw_track_id, None)
 
     for raw_track_id, obj in batch_objects.items():
       previous = self.carnival_confirmation_prev.get(raw_track_id)
-      persist = self.carnival_confirmation_persist.get(raw_track_id, 0) + 1 if carnival_confirmation_continuous(previous, now, obj) else 1
+      continuous = carnival_confirmation_continuous(previous, now, obj)
+      persist = self.carnival_confirmation_persist.get(raw_track_id, 0) + 1 if continuous else 1
+      if not continuous:
+        # A raw ID can be recycled for a different physical object. Withdraw the
+        # old point immediately so radard creates a fresh Track after persistence
+        # is re-established instead of inheriting its maturity and path history.
+        self.carnival_confirmation_tracks.pop(raw_track_id, None)
       self.carnival_confirmation_prev[raw_track_id] = (now, obj.d_rel, obj.y_rel, obj.v_rel)
       self.carnival_confirmation_persist[raw_track_id] = persist
       if persist >= CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST:

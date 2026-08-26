@@ -1,0 +1,76 @@
+{
+  "scope": {
+    "routes": [
+      "00000024--42367f5320",
+      "00000025--ec126ad94a",
+      "00000026--f108fe9d74",
+      "00000027--bdca0bd66c"
+    ],
+    "segments": 133,
+    "source": "raw CAN bus 1 addresses 0x180-0x184 plus modelV2, carState, and radarState"
+  },
+  "qualification": {
+    "cameraAssociationFirst": true,
+    "causalSameGenerationConfirmation": true,
+    "identityContinuityEnforced": true,
+    "kinematicDistanceRateGate": true,
+    "simulatedTargetSwitches": 0
+  },
+  "routeResults": {
+    "00000024--42367f5320": {
+      "filesScanned": 26,
+      "newRadarOnlyEvents": 0,
+      "overrideFrames": 17,
+      "qualifiedFrames": 596,
+      "reacquireFrames": 17,
+      "status": "pass"
+    },
+    "00000025--ec126ad94a": {
+      "filesScanned": 15,
+      "newRadarOnlyEvents": 0,
+      "overrideFrames": 0,
+      "qualifiedFrames": 77,
+      "reacquireFrames": 0,
+      "status": "pass-no-candidate"
+    },
+    "00000026--f108fe9d74": {
+      "filesScanned": 29,
+      "newRadarOnlyEvents": 0,
+      "overrideFrames": 8,
+      "qualifiedFrames": 212,
+      "reacquireFrames": 8,
+      "status": "pass"
+    },
+    "00000027--bdca0bd66c": {
+      "filesScanned": 63,
+      "preFixNewRadarOnlyEvents": 2,
+      "preFixSimulatedTargetSwitches": 0,
+      "eventSegment": 62,
+      "cameraInspection": "parked vehicles in residential driveways, not travel-lane leads",
+      "eventDistanceTrend": "increasing while decoded relative velocity indicated closing",
+      "postFixFocusedNewRadarOnlyEvents": 0,
+      "postFixFocusedOverrideFrames": 0,
+      "postFixFocusedSimulatedTargetSwitches": 0,
+      "status": "pass-after-focused-replay"
+    }
+  },
+  "defectsFixed": [
+    "Discontinuous or conflicting raw IDs could leave the prior published object alive briefly.",
+    "The previous validator accepted non-causal confirmations and did not separate recycled object generations.",
+    "The previous validator could count an already camera-associated track as radar-only.",
+    "Path-aligned parked vehicles could qualify despite distance evolution contradicting decoded relative velocity."
+  ],
+  "tests": {
+    "parserTests": 10,
+    "radarControlTestsOnDevice": 16,
+    "route27Segment62PostFixEvents": 0,
+    "ruff": "pass",
+    "pythonCompile": "pass"
+  },
+  "controlBoundary": {
+    "normalOperation": "camera/model association remains first",
+    "velocityBlend": "bounded consensus blend remains unchanged",
+    "radarOnlyCreation": "strict low-speed path, maturity, lateral, velocity, and distance-rate qualification",
+    "acceleration": "model-led for camera-associated Carnival confirmation tracks"
+  }
+}

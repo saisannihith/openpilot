@@ -63,6 +63,8 @@ CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_ABS_Y = 1.25
 CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_MIN_FRAMES = 8
 CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_V_LEAD = -1.5
 CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_LEAD = 6.0
+CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_FRAMES = 8
+CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_MAX_RESIDUAL = 1.5
 
 
 def is_carnival_confirmation_track(identifier: int) -> bool:
@@ -106,6 +108,7 @@ class Track:
     self.rest_frames = 0
     self.seen_moving = False
     self.radar_only_path_frames = 0
+    self.radar_only_distance_history = deque(maxlen=CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_FRAMES)
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float):
     # relative values, copy
@@ -114,6 +117,7 @@ class Track:
     self.vRel = v_rel   # REL_SPEED
     self.vLead = v_lead
     self.measured = measured   # measured or estimate
+    self.radar_only_distance_history.append(d_rel)
 
     # computed velocity and accelerations
     if self.cnt > 0:
@@ -260,13 +264,20 @@ def carnival_low_speed_radar_lead_sane(track: Track, v_ego: float, model_data: c
     track.radar_only_path_frames = 0
     return False
   path_offset = abs(-track.yRel - float(np.interp(object_x, path_x, path_y)))
+  if len(track.radar_only_distance_history) < CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_FRAMES:
+    track.radar_only_path_frames = 0
+    return False
+  observed_v_rel = ((track.radar_only_distance_history[-1] - track.radar_only_distance_history[0]) /
+                    ((len(track.radar_only_distance_history) - 1) * DT_MDL))
+  distance_rate_sane = abs(observed_v_rel - track.vRel) <= CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_MAX_RESIDUAL
 
   if previously_selected:
     track.radar_only_path_frames = 0
     return (track.cnt >= CARNIVAL_4TH_GEN_REACQUIRE_MIN_FRAMES and
             v_ego < V_EGO_STATIONARY and
             0.75 < track.dRel < CARNIVAL_4TH_GEN_REACQUIRE_MAX_DISTANCE and
-            path_offset < CARNIVAL_4TH_GEN_REACQUIRE_PATH_OFFSET)
+            path_offset < CARNIVAL_4TH_GEN_REACQUIRE_PATH_OFFSET and
+            distance_rate_sane)
 
   path_aligned = (track.cnt >= CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_FRAMES and
                   v_ego < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_EGO and
@@ -275,7 +286,7 @@ def carnival_low_speed_radar_lead_sane(track: Track, v_ego: float, model_data: c
                   path_offset < CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_OFFSET and
                   CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_V_LEAD < track.vLead < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_LEAD)
   track.radar_only_path_frames = track.radar_only_path_frames + 1 if path_aligned else 0
-  return track.radar_only_path_frames >= CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_MIN_FRAMES
+  return track.radar_only_path_frames >= CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_MIN_FRAMES and distance_rate_sane
 
 
 def track_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: float, *,

@@ -98,6 +98,36 @@ def test_carnival_radar_requires_persistence_and_publishes_stable_id() -> None:
   assert (rr.points[0].dRel, rr.points[0].yRel, rr.points[0].vRel) == pytest.approx((31.0, -0.45, -2.0))
 
 
+def test_carnival_radar_recycled_id_must_requalify() -> None:
+  probe = make_probe()
+  first = [(0, [(0x180, encode_object(37, 6, 31.0, -0.45, -2.0), 1)])]
+  replacement = [(0, [(0x180, encode_object(37, 7, 55.0, 3.0, 4.0), 1)])]
+
+  for _ in range(3):
+    probe._update_carnival_object_probe(first)
+  assert 37 in probe.carnival_confirmation_tracks
+
+  probe._update_carnival_object_probe(replacement)
+  assert 37 not in probe.carnival_confirmation_tracks
+  probe._update_carnival_object_probe(replacement)
+  assert 37 not in probe.carnival_confirmation_tracks
+  probe._update_carnival_object_probe(replacement)
+  assert probe.carnival_confirmation_tracks[37][1:] == pytest.approx((55.0, 3.0, 4.0))
+
+
+def test_carnival_radar_conflicting_id_is_withdrawn() -> None:
+  probe = make_probe()
+  first = [(0, [(0x180, encode_object(37, 6, 31.0, -0.45, -2.0), 1)])]
+  for _ in range(3):
+    probe._update_carnival_object_probe(first)
+  assert 37 in probe.carnival_confirmation_tracks
+
+  near = int.from_bytes(encode_object(37, 7, 30.8, -0.4, -2.0), "little")
+  far = int.from_bytes(encode_object(37, 8, 70.0, 4.0, 5.0, 128), "little")
+  probe._update_carnival_object_probe([(0, [(0x180, (near | far).to_bytes(32, "little"), 1)])])
+  assert 37 not in probe.carnival_confirmation_tracks
+
+
 def test_carnival_radar_publishes_complete_ten_object_bank() -> None:
   probe = make_probe()
   frames = []
