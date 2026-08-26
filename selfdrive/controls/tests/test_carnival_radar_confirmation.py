@@ -47,7 +47,7 @@ def test_carnival_confirmation_track_cannot_be_adjacent_lead_or_stop_hint():
 
 
 def test_carnival_confirmation_track_can_confirm_matching_model_lead():
-  track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1, d_rel=20.0, y_rel=0.0, v_rel=-30.0, v_ego=10.0)
+  track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1, d_rel=20.0, y_rel=0.0, v_rel=0.8, v_ego=10.0)
   model_data = SimpleNamespace(
     meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
     laneLines=[],
@@ -82,6 +82,41 @@ def test_carnival_confirmation_track_can_confirm_matching_model_lead():
   assert confirmed["dRel"] == track.dRel
   assert confirmed["vRel"] == 1.0
   assert confirmed["vLead"] == 11.0
+
+
+def test_carnival_confirmation_track_rejects_velocity_mismatch():
+  track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1, d_rel=20.0, y_rel=0.0, v_rel=-20.0, v_ego=10.0)
+  model_data = SimpleNamespace(
+    meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
+    laneLines=[],
+  )
+  lead = SimpleNamespace(
+    prob=0.8,
+    x=[21.52],
+    y=[0.0],
+    v=[11.0],
+    a=[0.0],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=10.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=10.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+
+  assert lead_state["status"]
+  assert not lead_state["radar"]
+  assert lead_state["radarTrackId"] == -1
 
 
 def test_carnival_confirmation_track_cannot_create_lead_without_model_confidence():
@@ -153,7 +188,7 @@ def test_carnival_confirmation_track_falls_back_to_vision_when_model_does_not_ma
 
 
 def test_carnival_confirmation_track_is_preferred_over_generic_track_for_matching_model_lead():
-  confirmation_track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1, d_rel=20.0, y_rel=0.0, v_rel=-20.0, v_ego=10.0)
+  confirmation_track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1, d_rel=20.0, y_rel=0.0, v_rel=1.0, v_ego=10.0)
   generic_track = make_track(42, d_rel=20.2, y_rel=0.0, v_rel=1.0, v_ego=10.0)
   model_data = SimpleNamespace(
     meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),

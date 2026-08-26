@@ -47,6 +47,8 @@ CARNIVAL_4TH_GEN_CONFIRMATION_DIST_SCALE = 0.22
 CARNIVAL_4TH_GEN_CONFIRMATION_DIST_FLOOR = 4.0
 CARNIVAL_4TH_GEN_CONFIRMATION_Y_STD_SCALE = 1.5
 CARNIVAL_4TH_GEN_CONFIRMATION_Y_FLOOR = 1.2
+CARNIVAL_4TH_GEN_CONFIRMATION_V_STD_SCALE = 3.0
+CARNIVAL_4TH_GEN_CONFIRMATION_V_FLOOR = 4.0
 
 
 def is_carnival_confirmation_track(identifier: int) -> bool:
@@ -229,7 +231,7 @@ def track_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: 
   return dist_sane and vel_sane and lat_sane
 
 
-def carnival_confirmation_matches_vision(track: Track, lead: capnp._DynamicStructReader) -> bool:
+def carnival_confirmation_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: float) -> bool:
   if not getattr(track, "confirmationOnly", False) or track.cnt < 1:
     return False
 
@@ -238,14 +240,16 @@ def carnival_confirmation_matches_vision(track: Track, lead: capnp._DynamicStruc
                                                          CARNIVAL_4TH_GEN_CONFIRMATION_DIST_FLOOR)
   lat_sane = abs(track.yRel + lead.y[0]) < max(CARNIVAL_4TH_GEN_CONFIRMATION_Y_FLOOR,
                                                CARNIVAL_4TH_GEN_CONFIRMATION_Y_STD_SCALE * max(float(lead.yStd[0]), 0.2))
-  return dist_sane and lat_sane
+  vel_sane = abs(track.vRel + v_ego - lead.v[0]) < max(CARNIVAL_4TH_GEN_CONFIRMATION_V_FLOOR,
+                                                       CARNIVAL_4TH_GEN_CONFIRMATION_V_STD_SCALE * max(float(lead.vStd[0]), 0.5))
+  return dist_sane and lat_sane and vel_sane
 
 
 def get_RadarState_from_carnival_confirmation(track: Track, lead_msg: capnp._DynamicStructReader,
                                               v_ego: float, model_v_ego: float, model_prob: float):
-  # The Carnival hidden radar distance/lateral association is now validated well
-  # enough to stabilize a model lead. Its velocity decode is still being refined,
-  # so keep velocity and acceleration model-led for longitudinal safety.
+  # Distance, lateral position, and relative velocity are decoded and used to
+  # validate object association. Keep the final control velocity model-led until
+  # full-bank replay proves that target handoffs are safe, not merely bit-correct.
   model_v_rel = float(lead_msg.v[0] - model_v_ego)
   model_v_lead = float(v_ego + model_v_rel)
   return {
@@ -280,7 +284,7 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, model_
   if not tracks:
     return None
 
-  confirmation_tracks = [track for track in tracks.values() if carnival_confirmation_matches_vision(track, lead)]
+  confirmation_tracks = [track for track in tracks.values() if carnival_confirmation_matches_vision(track, lead, v_ego)]
   if confirmation_tracks:
     offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
     return min(confirmation_tracks, key=lambda c: (

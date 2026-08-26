@@ -1,0 +1,258 @@
+{
+  "alignedSamples": 7332,
+  "controlPromotionReady": false,
+  "currentTruncatedState3Alt8Field": {
+    "derivativeRouteP95": {
+      "00000012--88204cf9d7": 3.7441
+    },
+    "derivativeState": {
+      "4/10": {
+        "mae": 1.2324,
+        "p50": 0.44,
+        "p95": 11.7156,
+        "p99": 11.9399,
+        "samples": 239
+      },
+      "4/12": {
+        "mae": 0.2113,
+        "p50": 0.1483,
+        "p95": 0.6785,
+        "p99": 0.9026,
+        "samples": 2943
+      },
+      "4/14": {
+        "mae": 0.4193,
+        "p50": 0.3549,
+        "p95": 1.2109,
+        "p99": 1.5152,
+        "samples": 1387
+      },
+      "4/4": {
+        "mae": 2.4165,
+        "p50": 0.2032,
+        "p95": 12.9036,
+        "p99": 14.3311,
+        "samples": 1658
+      },
+      "4/6": {
+        "mae": 0.5954,
+        "p50": 0.1098,
+        "p95": 0.8913,
+        "p99": 13.2229,
+        "samples": 601
+      },
+      "4/8": {
+        "mae": 1.1647,
+        "p50": 0.2539,
+        "p95": 13.1029,
+        "p99": 13.8173,
+        "samples": 321
+      },
+      "5/0": {
+        "mae": 0.3616,
+        "p50": 0.3616,
+        "p95": 0.3616,
+        "p99": 0.3616,
+        "samples": 1
+      }
+    },
+    "field": {
+      "offset": 2.4059439014445294,
+      "scale": 0.050066083726851514,
+      "signed": true,
+      "size": 8,
+      "start": 91
+    },
+    "modelRouteP95": {
+      "00000012--88204cf9d7": 13.0094
+    },
+    "valueRange": [
+      -4.003,
+      8.764
+    ],
+    "vsModelVelocity": {
+      "mae": 1.8266,
+      "p50": 0.1078,
+      "p95": 13.0094,
+      "p99": 13.1079,
+      "samples": 7332
+    },
+    "vsSmoothedDistanceDerivative": {
+      "mae": 0.8722,
+      "p50": 0.2031,
+      "p95": 3.7441,
+      "p99": 13.1899,
+      "samples": 7150
+    }
+  },
+  "exactPublicPrField": {
+    "derivativeRouteP95": {
+      "00000012--88204cf9d7": 0.8609
+    },
+    "derivativeState": {
+      "4/10": {
+        "mae": 0.4659,
+        "p50": 0.439,
+        "p95": 0.9695,
+        "p99": 1.112,
+        "samples": 239
+      },
+      "4/12": {
+        "mae": 0.2129,
+        "p50": 0.1503,
+        "p95": 0.6852,
+        "p99": 0.9087,
+        "samples": 2943
+      },
+      "4/14": {
+        "mae": 0.4209,
+        "p50": 0.3575,
+        "p95": 1.2115,
+        "p99": 1.5157,
+        "samples": 1387
+      },
+      "4/4": {
+        "mae": 0.3717,
+        "p50": 0.1839,
+        "p95": 1.2716,
+        "p99": 4.1722,
+        "samples": 1658
+      },
+      "4/6": {
+        "mae": 0.2171,
+        "p50": 0.1091,
+        "p95": 0.7979,
+        "p99": 1.0517,
+        "samples": 601
+      },
+      "4/8": {
+        "mae": 0.2867,
+        "p50": 0.2456,
+        "p95": 0.7157,
+        "p99": 1.0226,
+        "samples": 321
+      },
+      "5/0": {
+        "mae": 0.3615,
+        "p50": 0.3615,
+        "p95": 0.3615,
+        "p99": 0.3615,
+        "samples": 1
+      }
+    },
+    "field": {
+      "offset": 2.4,
+      "scale": 0.05,
+      "signed": true,
+      "size": 11,
+      "start": 91
+    },
+    "modelRouteP95": {
+      "00000012--88204cf9d7": 13.0041
+    },
+    "valueRange": [
+      -9.1,
+      4.3
+    ],
+    "vsModelVelocity": {
+      "mae": 1.1914,
+      "p50": 0.1094,
+      "p95": 13.0041,
+      "p99": 13.0963,
+      "samples": 7332
+    },
+    "vsSmoothedDistanceDerivative": {
+      "mae": 0.3022,
+      "p50": 0.1979,
+      "p95": 0.8609,
+      "p99": 1.6333,
+      "samples": 7150
+    }
+  },
+  "exactPublicPrRouteSeparatedDerivativeFit": null,
+  "metadata": {
+    "00000012--88204cf9d7": {
+      "firmware": [
+        "\u00f1\u0000KA4_ SCC FHCUP      1.00 1.00 99110-R0100         ",
+        "\u00f1\u0010\u0017\u00df\u0001",
+        "\u00f1\u008b #\u0007\u0018"
+      ],
+      "openpilotLongitudinalControl": [
+        false
+      ],
+      "software": [
+        [
+          "23d2997c5e09e7cc107eb4b5bbfde41c89e2ecc3",
+          "snithpilot",
+          false
+        ]
+      ]
+    }
+  },
+  "notes": [
+    "radarState confirmation velocity is model-led in SNITHPilot and is an independent reference for raw velocity decoding",
+    "distance derivative uses a local regression over stable track/state identity instead of adjacent-frame differencing",
+    "candidate fits are trained without the evaluated route and therefore cannot pass solely by memorizing one drive",
+    "a passing field still requires live shadow validation before any control use"
+  ],
+  "promotionGate": {
+    "maximumDistanceDerivativeP95": 1.0,
+    "maximumModelVelocityP95": 1.0,
+    "minimumSamples": 200
+  },
+  "routes": {
+    "00000012--88204cf9d7": {
+      "alignedSamples": 7332,
+      "confirmationReferences": 14684,
+      "files": 22,
+      "rawFrames": 42701,
+      "smoothedDerivativeSamples": 7150,
+      "states": [
+        "4/10",
+        "4/12",
+        "4/14",
+        "4/4",
+        "4/6",
+        "4/8",
+        "5/0"
+      ],
+      "trackIds": [
+        13,
+        44,
+        45,
+        48,
+        49,
+        57,
+        88,
+        89,
+        93,
+        177,
+        241
+      ]
+    }
+  },
+  "decoderReady": true,
+  "readinessConclusion": "raw_velocity_decoded_stock_scc_verified",
+  "status": "pass",
+  "stockSccComparison": {
+    "00000012--88204cf9d7": {
+      "aligned": 15382,
+      "buses": {
+        "0": 64050,
+        "128": 4,
+        "130": 63750,
+        "2": 300
+      },
+      "receivedReferences": 64350,
+      "references": 128104,
+      "velocityError": {
+        "mae": 0.1799,
+        "p50": 0.15,
+        "p95": 0.55,
+        "p99": 0.8,
+        "samples": 15382
+      }
+    }
+  },
+  "topRouteSeparatedDerivativeCandidates": []
+}

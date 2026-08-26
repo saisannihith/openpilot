@@ -27,49 +27,13 @@ CARNIVAL_4TH_GEN_PRIMARY_OBJECT_SLOT_OFFSET = 0
 CARNIVAL_4TH_GEN_OBJECT_BUS = 1
 CARNIVAL_4TH_GEN_OBJECT_LEN = 32
 CARNIVAL_4TH_GEN_OBJECT_LOG_INTERVAL = 1.0
-CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID = 0xC4101
+CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE = 0xC4100
 CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE = 0.25
 CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST = 3
 CARNIVAL_4TH_GEN_CONFIRMATION_MAX_GAP = 0.15
-CARNIVAL_4TH_GEN_SHADOW_DISTANCE_FIELDS = (
-  ("u11@4x0.03", 4, 11, 0.03),
-  ("u10@5x0.02", 5, 10, 0.02),
-)
-CARNIVAL_4TH_GEN_SHADOW_LATERAL_FIELDS = (
-  ("s8@76x0.01", 76, 8, 0.01),
-  ("s8@78x0.01", 78, 8, 0.01),
-  ("s8@80x0.01", 80, 8, 0.01),
-)
-CARNIVAL_4TH_GEN_SHADOW_VELOCITY_FIELDS = (
-  ("s10@90x0.005", 90, 10, 0.005),
-  ("s10@91x0.01", 91, 10, 0.01),
-  ("s8@92sccFit", 92, 8, 0.10038812996608489),
-  ("s10@92sccFit", 92, 10, 0.10829942713591408),
-  ("s12@89alt4Fit", 89, 12, 0.012627710973957268),
-  ("s10@90alt6Fit", 90, 10, 0.0254301516520513),
-  ("s8@93fit", 93, 8, 0.11248251363290525),
-  ("s14@88compactFit", 88, 14, 0.004776276420154466),
-)
-CARNIVAL_4TH_GEN_CONFIRMATION_SPECS = {
-  (3, 6): (80, 0.25),
-  (3, 8): (80, 0.30),
-  (4, 4): (76, None),
-  (4, 6): (76, 0.40),
-  (4, 8): (76, 0.40),
-  (4, 10): (76, None),
-  (4, 12): (76, None),
-  (4, 14): (76, None),
-}
-CARNIVAL_4TH_GEN_CONFIRMATION_VEL_BY_STATE_ALT = {
-  (3, 6): (89, 14, 0.012816497532684136, -102.47277125484996),
-  (3, 8): (91, 8, 0.050066083726851514, 2.4059439014445294),
-  (4, 4): (89, 12, 0.012627710973957268, 2.473553325611029),
-  (4, 6): (90, 10, 0.0254301516520513, -10.57402966185409),
-  (4, 8): (93, 8, 0.21134808418254836, 2.813726385579173),
-  (4, 10): (92, 10, 0.10829942713591408, 2.936194664391474),
-  (4, 12): (92, 8, 0.10038812996608489, 2.519855039553459),
-  (4, 14): (93, 8, 0.20908604269296968, 2.8070581722888535),
-}
+CARNIVAL_4TH_GEN_CONFIRMATION_VELOCITY_SPEC = (91, 11, 0.05, 2.4)
+CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_Y = 50.0
+CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_V = 60.0
 
 
 def get_little_unsigned(dat: bytes, start: int, size: int) -> int:
@@ -81,34 +45,49 @@ def get_little_signed(dat: bytes, start: int, size: int) -> int:
   return val - (1 << size) if val & (1 << (size - 1)) else val
 
 
-def decode_carnival_confirmation_velocity(dat: bytes, bit_offset: int, state: int, state_alt: int) -> float:
-  start, size, scale, offset = CARNIVAL_4TH_GEN_CONFIRMATION_VEL_BY_STATE_ALT[(state, state_alt)]
+def decode_carnival_confirmation_velocity(dat: bytes, bit_offset: int, _state: int, _state_alt: int) -> float:
+  # Verified against 15,382 stock-SCC samples from the Carnival's 99110-R0100
+  # radar: median 0.15 m/s and p95 0.55 m/s versus ACC_ObjRelSpd.
+  start, size, scale, offset = CARNIVAL_4TH_GEN_CONFIRMATION_VELOCITY_SPEC
   return get_little_signed(dat, bit_offset + start, size) * scale + offset
 
 
-def carnival_confirmation_lateral(dat: bytes, bit_offset: int, state: int, state_alt: int) -> float | None:
-  spec = CARNIVAL_4TH_GEN_CONFIRMATION_SPECS.get((state, state_alt))
-  if spec is None:
-    return None
-  lateral_start, _ = spec
-  return get_little_signed(dat, bit_offset + lateral_start, 8) * 0.01
+@dataclass(frozen=True)
+class CarnivalRadarObject:
+  raw_track_id: int
+  heartbeat: int
+  d_rel: float
+  y_rel: float
+  v_rel: float
 
 
-def carnival_confirmation_lateral_sane(y_rel: float, state: int, state_alt: int) -> bool:
-  _, max_y = CARNIVAL_4TH_GEN_CONFIRMATION_SPECS[(state, state_alt)]
-  return max_y is None or abs(y_rel) <= max_y
+def decode_carnival_radar_object(dat: bytes, bit_offset: int) -> CarnivalRadarObject:
+  return CarnivalRadarObject(
+    raw_track_id=get_little_unsigned(dat, bit_offset + 42, 8),
+    heartbeat=get_little_unsigned(dat, bit_offset + 124, 4),
+    d_rel=get_little_unsigned(dat, bit_offset + 64, 13) * 0.05,
+    y_rel=get_little_signed(dat, bit_offset + 78, 11) * 0.05,
+    v_rel=decode_carnival_confirmation_velocity(dat, bit_offset, 0, 0),
+  )
 
 
-def carnival_confirmation_continuous(prev: tuple[float, float, int, int] | None, now: float,
-                                     d_rel: float, state: int, state_alt: int) -> bool:
+def carnival_radar_object_valid(obj: CarnivalRadarObject) -> bool:
+  return (obj.raw_track_id != 0 and obj.heartbeat != 0 and
+          0.5 <= obj.d_rel <= 220.0 and
+          abs(obj.y_rel) <= CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_Y and
+          abs(obj.v_rel) <= CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_V)
+
+
+def carnival_confirmation_continuous(prev: tuple[float, float, float, float] | None, now: float,
+                                     obj: CarnivalRadarObject) -> bool:
   if prev is None:
     return False
-  prev_t, prev_d, prev_state, prev_alt = prev
+  prev_t, prev_d, prev_y, prev_v = prev
   dt = now - prev_t
-  d_limit = max(1.5, 35.0 * max(dt, 0.0))
-  return (prev_state == state and prev_alt == state_alt and
-          0.0 <= dt <= CARNIVAL_4TH_GEN_CONFIRMATION_MAX_GAP and
-          abs(d_rel - prev_d) <= d_limit)
+  return (0.0 <= dt <= CARNIVAL_4TH_GEN_CONFIRMATION_MAX_GAP and
+          abs(obj.d_rel - prev_d) <= max(1.5, 60.0 * max(dt, 0.0)) and
+          abs(obj.y_rel - prev_y) <= max(1.0, 20.0 * max(dt, 0.0)) and
+          abs(obj.v_rel - prev_v) <= 8.0)
 
 
 @dataclass(frozen=True)
@@ -200,9 +179,9 @@ class RadarInterface(RadarInterfaceBase):
     self.carnival_object_probe_last_log = 0.0
     self.carnival_object_probe_seen = 0
     self.carnival_object_probe_valid = 0
-    self.carnival_confirmation_track: tuple[float, float, float, float] | None = None
-    self.carnival_confirmation_prev: tuple[float, float, int, int] | None = None
-    self.carnival_confirmation_persist = 0
+    self.carnival_confirmation_tracks: dict[int, tuple[float, float, float, float]] = {}
+    self.carnival_confirmation_prev: dict[int, tuple[float, float, float, float]] = {}
+    self.carnival_confirmation_persist: dict[int, int] = {}
     self.rcp = get_radar_can_parser(CP, self.radar_config)
 
     # Precompute (addr, "RADAR_TRACK_xxx") pairs once. _update runs on the
@@ -236,7 +215,7 @@ class RadarInterface(RadarInterfaceBase):
     if self.radar_off_can or (self.rcp is None):
       rr = super().update(None)
       if rr is not None and self.carnival_object_probe:
-        self._add_carnival_confirmation_track(rr)
+        self._add_carnival_confirmation_tracks(rr)
       return rr
 
     vls = self.rcp.update(can_strings)
@@ -250,17 +229,15 @@ class RadarInterface(RadarInterfaceBase):
     rr = self._update(self.updated_messages)
     self.updated_messages.clear()
     if self.carnival_object_probe:
-      self._add_carnival_confirmation_track(rr)
+      self._add_carnival_confirmation_tracks(rr)
 
     return rr
 
   def _update_carnival_object_probe(self, can_strings):
     now = time.monotonic()
-    primary = None
-    shadow_distances = []
-    shadow_laterals = []
-    shadow_velocities = []
-    confirmation_gate_active = False
+    primary: CarnivalRadarObject | None = None
+    batch_objects: dict[int, CarnivalRadarObject] = {}
+    conflicting_ids: set[int] = set()
 
     for _, frames in can_strings:
       for address, dat, src in frames:
@@ -272,120 +249,82 @@ class RadarInterface(RadarInterfaceBase):
           continue
 
         self.carnival_object_probe_seen += 1
-        if address != CARNIVAL_4TH_GEN_PRIMARY_OBJECT_ADDR:
-          continue
-
-        bit_offset = CARNIVAL_4TH_GEN_PRIMARY_OBJECT_SLOT_OFFSET
-        state = get_little_unsigned(dat, bit_offset + 55, 4)
-        state_alt = get_little_unsigned(dat, bit_offset + 51, 4)
-        d_rel = get_little_unsigned(dat, bit_offset + 64, 12) * 0.05
-        y_rel_raw = get_little_signed(dat, bit_offset + 76, 12) * 0.05
-        v_rel_raw = get_little_signed(dat, bit_offset + 88, 14) * 0.01
-        valid = state in (3, 4, 5) and 0.5 <= d_rel <= 220.0
-        if valid:
+        for bit_offset in (0, 128):
+          obj = decode_carnival_radar_object(dat, bit_offset)
+          if not carnival_radar_object_valid(obj):
+            continue
           self.carnival_object_probe_valid += 1
-          key = (address, 1)
-          prev = self.carnival_object_probe_prev.get(key)
-          d_dot = float("nan")
-          if prev is not None:
-            prev_t, prev_d = prev
-            dt = now - prev_t
-            if 0.01 <= dt <= 1.0:
-              d_dot = (d_rel - prev_d) / dt
-          self.carnival_object_probe_prev[key] = (now, d_rel)
-          primary = (state, d_rel, y_rel_raw, v_rel_raw, d_dot, state_alt)
-          y_shadow = carnival_confirmation_lateral(dat, bit_offset, state, state_alt)
-          confirmation_gate_active = (y_shadow is not None and
-                                      carnival_confirmation_lateral_sane(y_shadow, state, state_alt))
-          if confirmation_gate_active:
-            if carnival_confirmation_continuous(self.carnival_confirmation_prev, now, d_rel, state, state_alt):
-              self.carnival_confirmation_persist += 1
-            else:
-              self.carnival_confirmation_persist = 1
-            self.carnival_confirmation_prev = (now, d_rel, state, state_alt)
-            v_shadow = decode_carnival_confirmation_velocity(dat, bit_offset, state, state_alt)
-            if self.carnival_confirmation_persist >= CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST:
-              self.carnival_confirmation_track = (now, d_rel, y_shadow, v_shadow)
+          if address == CARNIVAL_4TH_GEN_PRIMARY_OBJECT_ADDR and bit_offset == CARNIVAL_4TH_GEN_PRIMARY_OBJECT_SLOT_OFFSET:
+            primary = obj
+          previous_in_batch = batch_objects.get(obj.raw_track_id)
+          if previous_in_batch is not None and previous_in_batch != obj:
+            conflicting_ids.add(obj.raw_track_id)
           else:
-            self.carnival_confirmation_persist = 0
-            self.carnival_confirmation_prev = None
-          self._expire_carnival_confirmation_track(now)
+            batch_objects[obj.raw_track_id] = obj
 
-        for label, start, size, scale in CARNIVAL_4TH_GEN_SHADOW_DISTANCE_FIELDS:
-          d_shadow = get_little_unsigned(dat, start, size) * scale
-          if 0.5 <= d_shadow <= 220.0:
-            shadow_distances.append((label, d_shadow))
-        for label, start, size, scale in CARNIVAL_4TH_GEN_SHADOW_LATERAL_FIELDS:
-          shadow_laterals.append((label, get_little_signed(dat, bit_offset + start, size) * scale))
-        for label, start, size, scale in CARNIVAL_4TH_GEN_SHADOW_VELOCITY_FIELDS:
-          offset = 0.0
-          if label == "s8@93fit":
-            offset = 0.9638295363157041
-          elif label == "s14@88compactFit":
-            offset = 1.9954503521173612
-          elif label == "s8@92sccFit":
-            offset = 2.519855039553459
-          elif label == "s10@92sccFit":
-            offset = 2.936194664391474
-          elif label == "s12@89alt4Fit":
-            offset = 2.473553325611029
-          elif label == "s10@90alt6Fit":
-            offset = -10.57402966185409
-          shadow_velocities.append((label, get_little_signed(dat, bit_offset + start, size) * scale + offset))
+    for raw_track_id in conflicting_ids:
+      batch_objects.pop(raw_track_id, None)
+      self.carnival_confirmation_prev.pop(raw_track_id, None)
+      self.carnival_confirmation_persist.pop(raw_track_id, None)
 
+    for raw_track_id, obj in batch_objects.items():
+      previous = self.carnival_confirmation_prev.get(raw_track_id)
+      persist = self.carnival_confirmation_persist.get(raw_track_id, 0) + 1 if carnival_confirmation_continuous(previous, now, obj) else 1
+      self.carnival_confirmation_prev[raw_track_id] = (now, obj.d_rel, obj.y_rel, obj.v_rel)
+      self.carnival_confirmation_persist[raw_track_id] = persist
+      if persist >= CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST:
+        self.carnival_confirmation_tracks[raw_track_id] = (now, obj.d_rel, obj.y_rel, obj.v_rel)
+
+    self._expire_carnival_confirmation_tracks(now)
     if primary is None or now - self.carnival_object_probe_last_log < CARNIVAL_4TH_GEN_OBJECT_LOG_INTERVAL:
       return
 
-    state, d_rel, y_rel_raw, v_rel_raw, d_dot, state_alt = primary
+    primary_prev = self.carnival_object_probe_prev.get((CARNIVAL_4TH_GEN_PRIMARY_OBJECT_ADDR, 1))
+    d_dot = float("nan")
+    if primary_prev is not None:
+      prev_t, prev_d = primary_prev
+      dt = now - prev_t
+      if 0.01 <= dt <= 1.0:
+        d_dot = (primary.d_rel - prev_d) / dt
+    self.carnival_object_probe_prev[(CARNIVAL_4TH_GEN_PRIMARY_OBJECT_ADDR, 1)] = (now, primary.d_rel)
     d_dot_str = "nan" if not math.isfinite(d_dot) else f"{d_dot:.2f}"
-    shadow_str = " ".join(f"{label}={d_shadow:.2f}" for label, d_shadow in shadow_distances) or "none"
-    lateral_str = " ".join(f"{label}={y_shadow:.2f}" for label, y_shadow in shadow_laterals) or "none"
-    velocity_str = " ".join(f"{label}={v_shadow:.2f}" for label, v_shadow in shadow_velocities) or "none"
-    # These compact 0x180.1 gates are validated for vision-led model-lead
-    # confirmation/debug tracks, but not for independent radar-only braking.
-    visual_candidate = confirmation_gate_active
-    lead_confirm_candidate = confirmation_gate_active
-    confirmation_track = confirmation_gate_active and self.carnival_confirmation_persist >= CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST
-    publish_ready = self.carnival_confirmation_track is not None
-    control_ready = False
-    cloudlog.warning(
-      "Carnival 4th gen radar probe: "
-      f"addr=0x{CARNIVAL_4TH_GEN_PRIMARY_OBJECT_ADDR:x} slot=1 state={state}/{state_alt} "
-      f"dRel={d_rel:.2f} yRaw={y_rel_raw:.2f} vRaw={v_rel_raw:.2f} dDot={d_dot_str} "
-      f"shadowDistance={shadow_str} shadowY={lateral_str} shadowV={velocity_str} "
-      f"confirmationGate={confirmation_gate_active} visualCandidate={visual_candidate} "
-      f"leadConfirmCandidate={lead_confirm_candidate} confirmationTrack={confirmation_track} "
-      f"persist={self.carnival_confirmation_persist} "
-      f"publishReady={publish_ready} controlReady={control_ready} "
-      f"seen={self.carnival_object_probe_seen} valid={self.carnival_object_probe_valid}"
-    )
+    cloudlog.warning("".join((
+      "Carnival 4th gen radar probe: ",
+      f"addr=0x{CARNIVAL_4TH_GEN_PRIMARY_OBJECT_ADDR:x} slot=1 rawTrackId={primary.raw_track_id} ",
+      f"heartbeat={primary.heartbeat} dRel={primary.d_rel:.2f} yRel={primary.y_rel:.2f} ",
+      f"vRel={primary.v_rel:.2f} dDot={d_dot_str} shadowDistance=YES ",
+      f"confirmationTrack={primary.raw_track_id in self.carnival_confirmation_tracks} ",
+      f"publishedTracks={len(self.carnival_confirmation_tracks)} publishReady={bool(self.carnival_confirmation_tracks)} ",
+      f"controlReady=False conflicts={len(conflicting_ids)} seen={self.carnival_object_probe_seen} ",
+      f"valid={self.carnival_object_probe_valid}",
+    )))
     self.carnival_object_probe_last_log = now
 
-  def _expire_carnival_confirmation_track(self, now):
-    if self.carnival_confirmation_track is None:
-      return
-    track_time, *_ = self.carnival_confirmation_track
-    if now - track_time > CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE:
-      self.carnival_confirmation_track = None
+  def _expire_carnival_confirmation_tracks(self, now):
+    stale = [raw_track_id for raw_track_id, (track_time, *_) in self.carnival_confirmation_tracks.items()
+             if now - track_time > CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE]
+    for raw_track_id in stale:
+      self.carnival_confirmation_tracks.pop(raw_track_id, None)
+      self.carnival_confirmation_prev.pop(raw_track_id, None)
+      self.carnival_confirmation_persist.pop(raw_track_id, None)
 
-  def _add_carnival_confirmation_track(self, rr):
-    if self.carnival_confirmation_track is None:
-      return
-
-    self._expire_carnival_confirmation_track(time.monotonic())
-    if self.carnival_confirmation_track is None:
+  def _add_carnival_confirmation_tracks(self, rr):
+    self._expire_carnival_confirmation_tracks(time.monotonic())
+    if not self.carnival_confirmation_tracks:
       return
 
-    _, d_rel, y_rel, v_rel = self.carnival_confirmation_track
-    pt = structs.RadarData.RadarPoint()
-    pt.trackId = CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID
-    pt.measured = True
-    pt.dRel = float(d_rel)
-    pt.yRel = float(y_rel)
-    pt.vRel = float(v_rel)
-    pt.aRel = float("nan")
-    pt.yvRel = float("nan")
-    rr.points = list(rr.points) + [pt]
+    points = list(rr.points)
+    for raw_track_id, (_, d_rel, y_rel, v_rel) in sorted(self.carnival_confirmation_tracks.items()):
+      pt = structs.RadarData.RadarPoint()
+      pt.trackId = CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE + raw_track_id
+      pt.measured = True
+      pt.dRel = float(d_rel)
+      pt.yRel = float(y_rel)
+      pt.vRel = float(v_rel)
+      pt.aRel = float("nan")
+      pt.yvRel = float("nan")
+      points.append(pt)
+    rr.points = points
 
   def _decode_g90_mando_values(self, dat: bytes):
     vals = {}
