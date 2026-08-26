@@ -10,6 +10,8 @@ _MIN_LANE_PROB = 0.7
 _FULL_LANE_PROB = 0.80
 _MAX_LANE_STD = 0.25
 _FULL_LANE_STD = 0.20
+_RELEASE_LANE_PROB = 0.60
+_RELEASE_LANE_STD = 0.32
 _MIN_LANE_WIDTH = 2.6
 _MAX_LANE_WIDTH = 4.8
 _FULL_LANE_WIDTH_SPREAD = 0.15
@@ -216,11 +218,33 @@ class LaneCenteringController:
         float(np.clip(e2e_authority, 0.0, 1.0)),
         self._road_topology_bias,
       )
-      self._valid_model_frames = min(self._valid_model_frames + 1, _ACQUIRE_MODEL_FRAMES) if calculated_valid else 0
-      self._raw_valid = calculated_valid and self._valid_model_frames >= _ACQUIRE_MODEL_FRAMES
-      self._raw_correction = calculated_correction if calculated_valid else 0.0
+      relaxed_valid = False
+      if not calculated_valid and self._raw_valid:
+        relaxed_valid, calculated_correction = self._calculate_raw_correction(
+          model_v2,
+          v_ego,
+          model_curvature,
+          float(np.clip(offset, -_MAX_OFFSET, _MAX_OFFSET)),
+          float(np.clip(e2e_authority, 0.0, 1.0)),
+          self._road_topology_bias,
+          relaxed=True,
+        )
+
+      if calculated_valid:
+        self._valid_model_frames = min(self._valid_model_frames + 1, _ACQUIRE_MODEL_FRAMES)
+        self._raw_valid = self._valid_model_frames >= _ACQUIRE_MODEL_FRAMES
+        self._raw_correction = calculated_correction
+      elif relaxed_valid:
+        self._raw_valid = True
+        self._raw_correction = calculated_correction
+      else:
+        self._valid_model_frames = 0
+        self._raw_valid = False
+        self._raw_correction = 0.0
       self._last_model_frame_id = model_frame_id
-      state_reason = self._lane_centering_reason if not calculated_valid else ("active" if self._raw_valid else "acquiring")
+      state_reason = self._lane_centering_reason if not (calculated_valid or relaxed_valid) else (
+        "active_relaxed" if relaxed_valid else ("active" if self._raw_valid else "acquiring")
+      )
       self._set_lane_state(self._raw_valid, state_reason)
 
     valid = self._raw_valid
@@ -359,7 +383,8 @@ class LaneCenteringController:
       return 0
 
   def _calculate_raw_correction(self, model_v2, v_ego: float, model_curvature: float,
-                                offset: float, e2e_authority: float, road_topology_bias: float = 0.0) -> tuple[bool, float]:
+                                offset: float, e2e_authority: float, road_topology_bias: float = 0.0,
+                                relaxed: bool = False) -> tuple[bool, float]:
     try:
       self._effective_road_topology_bias = 0.0
       lane_lines = model_v2.laneLines
@@ -371,10 +396,12 @@ class LaneCenteringController:
       if not np.isfinite(probs[[1, 2]]).all() or not np.isfinite(stds[[1, 2]]).all():
         self._lane_centering_reason = "invalid_lane_uncertainty"
         return False, 0.0
-      if np.any(probs[[1, 2]] < _MIN_LANE_PROB) or np.any(probs[[1, 2]] > 1.0):
+      min_lane_prob = _RELEASE_LANE_PROB if relaxed else _MIN_LANE_PROB
+      max_lane_std = _RELEASE_LANE_STD if relaxed else _MAX_LANE_STD
+      if np.any(probs[[1, 2]] < min_lane_prob) or np.any(probs[[1, 2]] > 1.0):
         self._lane_centering_reason = "untrusted_lane_probability"
         return False, 0.0
-      if np.any(stds[[1, 2]] < 0.0) or np.any(stds[[1, 2]] > _MAX_LANE_STD):
+      if np.any(stds[[1, 2]] < 0.0) or np.any(stds[[1, 2]] > max_lane_std):
         self._lane_centering_reason = "untrusted_lane_uncertainty"
         return False, 0.0
 
@@ -449,12 +476,12 @@ class LaneCenteringController:
       correction_coherence = 1.0 if term_magnitude < 1e-9 else abs(float(np.sum(correction_terms))) / term_magnitude
 
       probability_scale = float(np.clip(
-        (float(np.min(probs[[1, 2]])) - _MIN_LANE_PROB) / (_FULL_LANE_PROB - _MIN_LANE_PROB),
+        (float(np.min(probs[[1, 2]])) - min_lane_prob) / (_FULL_LANE_PROB - min_lane_prob),
         0.0,
         1.0,
       ))
       uncertainty_scale = float(np.clip(
-        (_MAX_LANE_STD - float(np.max(stds[[1, 2]]))) / (_MAX_LANE_STD - _FULL_LANE_STD),
+        (max_lane_std - float(np.max(stds[[1, 2]]))) / (max_lane_std - _FULL_LANE_STD),
         0.0,
         1.0,
       ))

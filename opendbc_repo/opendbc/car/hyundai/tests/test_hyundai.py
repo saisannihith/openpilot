@@ -192,18 +192,30 @@ class TestHyundaiFingerprint:
     assert apply_carnival_4th_gen_manual_turn_torque_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 15.0, 101.0, 637.0, True, 409
     ) == (409, False, 0)
+    # A strong opposing intervention at neighborhood/arterial speed must not
+    # snap straight back to full requested torque as soon as the driver lets go.
+    assert apply_carnival_4th_gen_manual_turn_torque_guard(
+      CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 14.9, 22.2, -381.0, True, 183
+    ) == (159, True, 80)
+    post_override = apply_carnival_4th_gen_manual_turn_torque_guard(
+      CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 14.9, 22.2, 0.0, False, 159, 80
+    )
+    assert post_override == (135, True, 79)
+    assert apply_carnival_4th_gen_manual_turn_torque_guard(
+      CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 14.9, 22.2, 0.0, False, 0, 1
+    ) == (409, False, 0)
     assert apply_carnival_4th_gen_manual_turn_torque_guard(
       CAR.KIA_CARNIVAL_2025, 409, 409, 7.7, 101.0, 637.0, True, 409
     ) == (409, False, 0)
     assert apply_carnival_4th_gen_eps_fault_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 27.0, 12.0, True, False, 409, 49, 0
-    ) == (385, 50, 120, True, True)
+    ) == (345, 50, 120, True, True)
     assert apply_carnival_4th_gen_eps_fault_guard(
       CAR.KIA_CARNIVAL_4TH_GEN, -384, 409, 23.6, -16.3, True, False, -384, 49, 0
-    ) == (-360, 50, 120, True, True)
+    ) == (-320, 50, 120, True, True)
     assert apply_carnival_4th_gen_eps_fault_guard(
-      CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 10.0, 12.0, True, False, 409, 49, 0
-    ) == (409, 47, 0, False, False)
+      CAR.KIA_CARNIVAL_4TH_GEN, 409, 409, 7.5, 12.0, True, False, 409, 0, 0
+    ) == (409, 0, 0, False, False)
 
     carnival_2025_cp = CarInterface.get_non_essential_params(CAR.KIA_CARNIVAL_2025)
     carnival_2025_limits = CarControllerParams(carnival_2025_cp, vEgoRaw=15.0)

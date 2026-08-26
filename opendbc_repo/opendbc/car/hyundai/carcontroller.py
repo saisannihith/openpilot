@@ -48,6 +48,8 @@ CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_MIN_DRIVER_TORQUE = 80.0
 CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_SCALE = 0.0
 CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_RELEASE_FRAMES = 24
 CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_HOLD_FRAMES = 80
+CARNIVAL_4TH_GEN_DRIVER_OVERRIDE_GUARD_MAX_SPEED = 20.0
+CARNIVAL_4TH_GEN_DRIVER_OVERRIDE_GUARD_MIN_TORQUE = 150.0
 # Some Hyundai/Kia cancel buttons are pause/resume toggles. Give a brake press
 # time to disengage stock SCC before sending the fallback button message.
 CANCEL_BUTTON_DELAY_FRAMES = 10
@@ -492,32 +494,45 @@ def apply_carnival_4th_gen_manual_turn_torque_guard(car_fingerprint, apply_torqu
                                                     steering_torque: float, steering_pressed: bool,
                                                     apply_torque_last: int,
                                                     guard_frames: int = 0) -> tuple[int, bool, int]:
-  if car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN or not steering_pressed:
+  if car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN:
     return apply_torque, False, 0
 
   angle = abs(steering_angle_deg)
   high_angle_entry = (
+    steering_pressed and
     v_ego <= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED and
     angle >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE and
     abs(steering_torque) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE
   )
   driver_yield_entry = (
+    steering_pressed and
     v_ego <= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED and
     angle >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_ANGLE and
     abs(steering_torque) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_MIN_DRIVER_TORQUE
   )
   driver_touch_entry = (
+    steering_pressed and
     v_ego <= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED and
     angle >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_TOUCH_ANGLE
   )
-  if high_angle_entry or driver_yield_entry or driver_touch_entry:
+  opposing_driver_entry = (
+    steering_pressed and
+    v_ego <= CARNIVAL_4TH_GEN_DRIVER_OVERRIDE_GUARD_MAX_SPEED and
+    abs(steering_torque) >= CARNIVAL_4TH_GEN_DRIVER_OVERRIDE_GUARD_MIN_TORQUE and
+    apply_torque * steering_torque < 0
+  )
+  guard_entry = high_angle_entry or driver_yield_entry or driver_touch_entry or opposing_driver_entry
+  if guard_entry:
     guard_frames = CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_HOLD_FRAMES
-  elif guard_frames > 0 and v_ego <= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED:
+  elif guard_frames > 0 and v_ego <= CARNIVAL_4TH_GEN_DRIVER_OVERRIDE_GUARD_MAX_SPEED:
     guard_frames -= 1
   else:
     return apply_torque, False, 0
 
-  if high_angle_entry and not driver_touch_entry:
+  if not steering_pressed:
+    cap_fraction = 1.0 - guard_frames / max(CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_HOLD_FRAMES, 1)
+    cap_fraction = float(np.clip(cap_fraction, CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_SCALE, 1.0))
+  elif high_angle_entry and not driver_touch_entry:
     cap_fraction = np.interp(
       angle,
       [CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE, CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_FULL_ANGLE],

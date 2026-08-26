@@ -126,14 +126,15 @@ CARNIVAL_LEAD_DEPART_MIN_ACCEL = 1.00
 CARNIVAL_LEAD_DEPART_CREEP_RELEASE_MIN_ACCEL = 0.30
 CARNIVAL_LEAD_DEPART_ACCEL_HOLD_TIME = 2.5
 CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MAX_EGO_SPEED = 5.5
-CARNIVAL_LATERAL_FEASIBILITY_MAX_EGO_SPEED = 13.5
+CARNIVAL_LATERAL_FEASIBILITY_MAX_EGO_SPEED = 31.0
 CARNIVAL_LATERAL_FEASIBILITY_MIN_CURVATURE = 0.008
+CARNIVAL_LATERAL_FEASIBILITY_MIN_LAT_ACCEL = 1.10
 CARNIVAL_LATERAL_FEASIBILITY_MIN_SPEED = 4.5
 CARNIVAL_LATERAL_FEASIBILITY_SPEED_MARGIN = 0.35
 CARNIVAL_LATERAL_FEASIBILITY_PRE_DECEL = 1.20
 CARNIVAL_LATERAL_FEASIBILITY_RELEASE_ACCEL = 0.80
-CARNIVAL_LATERAL_FEASIBILITY_LAT_ACCEL_BP = [0.0, 5.0, 8.8, 13.5]
-CARNIVAL_LATERAL_FEASIBILITY_LAT_ACCEL_VALS = [0.55, 0.70, 0.82, 1.05]
+CARNIVAL_LATERAL_FEASIBILITY_LAT_ACCEL_BP = [0.0, 5.0, 8.8, 13.5, 20.0, 31.0]
+CARNIVAL_LATERAL_FEASIBILITY_LAT_ACCEL_VALS = [0.55, 0.70, 0.82, 1.05, 1.25, 1.45]
 STANDSTILL_STOPPED_LEAD_GUARD_MAX_EGO_SPEED = 0.5
 STANDSTILL_STOPPED_LEAD_GUARD_MAX_LEAD_SPEED = 0.45
 STANDSTILL_STOPPED_LEAD_GUARD_MAX_LEAD_DELTA = 0.50
@@ -240,6 +241,17 @@ VISION_UNTRACKED_SLOW_LEAD_CONFIRM_TIME = 0.30
 VISION_UNTRACKED_SLOW_LEAD_IMMEDIATE_DECEL = 0.55
 VISION_UNTRACKED_SLOW_LEAD_IMMEDIATE_DISTANCE = 45.0
 VISION_UNTRACKED_SLOW_LEAD_IMMEDIATE_LEAD_BRAKE = 0.10
+VISION_UNTRACKED_URGENT_MIN_MODEL_PROB = 0.95
+VISION_UNTRACKED_URGENT_MAX_LATERAL_OFFSET = 0.80
+VISION_UNTRACKED_URGENT_MIN_EGO_SPEED = 15.0
+VISION_UNTRACKED_URGENT_MIN_CLOSING_SPEED = 4.0
+VISION_UNTRACKED_URGENT_MIN_CLOSING_RATIO = 0.18
+VISION_UNTRACKED_URGENT_MAX_TTC = 13.0
+VISION_UNTRACKED_URGENT_MAX_DISTANCE_TIME = 4.0
+VISION_UNTRACKED_URGENT_MIN_LEAD_BRAKE = 0.35
+VISION_UNTRACKED_URGENT_MIN_DECEL = 0.85
+VISION_UNTRACKED_URGENT_MAX_DECEL = 1.80
+VISION_UNTRACKED_URGENT_LEAD_BRAKE_GAIN = 0.65
 VISION_UNTRACKED_APPROACH_LIFT_MIN_EGO_SPEED = 18.0
 VISION_UNTRACKED_APPROACH_LIFT_MIN_MODEL_PROB = 0.95
 VISION_UNTRACKED_APPROACH_LIFT_MAX_LATERAL_OFFSET = 1.2
@@ -451,7 +463,18 @@ def apply_carnival_lateral_feasibility_speed_cap(CP, model_msg, v_ego, v, a, j, 
       current_curvature = 0.0
     if np.isfinite(current_curvature) and abs(current_curvature) > abs(curvature[0]):
       curvature[0] = current_curvature
-  high_curvature = np.abs(curvature) >= CARNIVAL_LATERAL_FEASIBILITY_MIN_CURVATURE
+  lateral_accel_demand = np.abs(curvature) * np.square(v)
+  high_curvature = (
+    (np.abs(curvature) >= CARNIVAL_LATERAL_FEASIBILITY_MIN_CURVATURE) |
+    (lateral_accel_demand >= CARNIVAL_LATERAL_FEASIBILITY_MIN_LAT_ACCEL)
+  )
+  # At road speed, require adjacent horizon samples to agree. A single noisy
+  # yaw-rate point must not create a phantom highway slowdown.
+  if float(v_ego) > 13.5 and high_curvature.size > 1:
+    adjacent_confirmation = np.zeros_like(high_curvature)
+    adjacent_confirmation[:-1] |= high_curvature[:-1] & high_curvature[1:]
+    adjacent_confirmation[1:] |= high_curvature[1:] & high_curvature[:-1]
+    high_curvature = adjacent_confirmation
   if not np.any(high_curvature):
     return v, a, j
 
@@ -1184,6 +1207,47 @@ class LongitudinalPlanner:
       return None
 
     return max(accel_min, -approach_decel)
+
+  def get_vision_untracked_urgent_brake_cap(self, lead, v_ego, accel_min, t_follow):
+    if not self.is_carnival_4th_gen():
+      return None
+    if lead is None or not lead.status or bool(getattr(lead, "radar", False)):
+      return None
+    if float(v_ego) < VISION_UNTRACKED_URGENT_MIN_EGO_SPEED:
+      return None
+
+    lead_prob = float(getattr(lead, "modelProb", 0.0))
+    lateral_offset = abs(float(getattr(lead, "yRel", 0.0)))
+    if lead_prob < VISION_UNTRACKED_URGENT_MIN_MODEL_PROB or lateral_offset > VISION_UNTRACKED_URGENT_MAX_LATERAL_OFFSET:
+      return None
+
+    lead_speed = max(float(getattr(lead, "vLead", 0.0)), 0.0)
+    lead_brake = max(0.0, -float(getattr(lead, "aLeadK", 0.0)))
+    closing_speed = max(0.0, float(v_ego) - lead_speed)
+    closing_ratio = closing_speed / max(float(v_ego), 0.1)
+    if closing_speed < VISION_UNTRACKED_URGENT_MIN_CLOSING_SPEED:
+      return None
+    if closing_ratio < VISION_UNTRACKED_URGENT_MIN_CLOSING_RATIO and lead_brake < VISION_UNTRACKED_URGENT_MIN_LEAD_BRAKE:
+      return None
+
+    d_rel = max(float(getattr(lead, "dRel", 0.0)), 0.0)
+    projected_ttc = d_rel / max(closing_speed, 0.1)
+    max_distance = max(80.0, VISION_UNTRACKED_URGENT_MAX_DISTANCE_TIME * float(v_ego))
+    if projected_ttc > VISION_UNTRACKED_URGENT_MAX_TTC or d_rel > max_distance:
+      return None
+
+    reaction_t = max(self.CP.longitudinalActuatorDelay, self.dt)
+    projected_closing_speed = closing_speed + lead_brake * reaction_t
+    desired_gap = float(desired_follow_distance(v_ego, lead_speed, t_follow))
+    available_gap = max(d_rel - desired_gap - projected_closing_speed * reaction_t, 4.0)
+    required_decel = projected_closing_speed ** 2 / (2.0 * available_gap)
+    required_decel += VISION_UNTRACKED_URGENT_LEAD_BRAKE_GAIN * lead_brake
+    urgent_decel = float(np.clip(
+      required_decel,
+      VISION_UNTRACKED_URGENT_MIN_DECEL,
+      VISION_UNTRACKED_URGENT_MAX_DECEL,
+    ))
+    return max(float(accel_min), -urgent_decel)
 
   @staticmethod
   def get_vision_untracked_approach_lift_cap(lead, v_ego, t_follow):
@@ -2787,6 +2851,11 @@ class LongitudinalPlanner:
           pretracking_cap = self.get_vision_untracked_slow_lead_cap(lead, v_ego, vision_cap_accel_min)
           if pretracking_cap is not None:
             pretracking_vision_caps.append((pretracking_cap, lead))
+          urgent_pretracking_cap = self.get_vision_untracked_urgent_brake_cap(
+            lead, v_ego, vision_cap_accel_min, effective_t_follow,
+          )
+          if urgent_pretracking_cap is not None:
+            pretracking_vision_caps.append((urgent_pretracking_cap, lead))
 
       if pretracking_vision_caps:
         pretracking_vision_cap, pretracking_vision_lead = min(pretracking_vision_caps, key=lambda cap_and_lead: cap_and_lead[0])

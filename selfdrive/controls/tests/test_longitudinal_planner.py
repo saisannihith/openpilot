@@ -335,6 +335,39 @@ def test_carnival_lateral_feasibility_speed_cap_smooths_before_curve():
   assert np.max(accel_steps) <= longitudinal_planner_module.CARNIVAL_LATERAL_FEASIBILITY_RELEASE_ACCEL + 1e-6
 
 
+def test_carnival_lateral_feasibility_speed_cap_handles_confirmed_highway_exit_curve():
+  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
+  v = np.full(len(T_IDXS_MPC), 27.0)
+  a = np.full(len(T_IDXS_MPC), 0.2)
+  j = np.zeros(len(T_IDXS_MPC))
+  model = SimpleNamespace(orientationRate=SimpleNamespace(z=[0.081] * ModelConstants.IDX_N))
+
+  capped_v, _, _ = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
+    CP, model, 27.0, v, a, j,
+  )
+
+  assert np.min(capped_v) < 24.0
+  assert np.all(capped_v <= v + 1e-6)
+
+
+def test_carnival_lateral_feasibility_speed_cap_rejects_single_highway_yaw_spike():
+  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
+  v = np.full(len(T_IDXS_MPC), 27.0)
+  a = np.full(len(T_IDXS_MPC), 0.2)
+  j = np.zeros(len(T_IDXS_MPC))
+  yaw_rate = np.zeros(ModelConstants.IDX_N)
+  yaw_rate[len(yaw_rate) // 2] = 0.30
+  model = SimpleNamespace(orientationRate=SimpleNamespace(z=yaw_rate))
+
+  capped_v, capped_a, capped_j = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
+    CP, model, 27.0, v, a, j,
+  )
+
+  assert np.allclose(capped_v, v)
+  assert np.allclose(capped_a, a)
+  assert np.allclose(capped_j, j)
+
+
 def test_carnival_pre_red_stop_evidence_confirms_yellow_light_approach():
   CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN", brand="hyundai")
   planner = LongitudinalPlanner(CP)
@@ -1209,6 +1242,36 @@ def test_vision_untracked_slow_lead_cap_keeps_low_confidence_floor_for_less_thre
   less_threatening_lead = make_lead(status=True, d_rel=115.4, v_lead=9.5, a_lead=0.0, radar=False, model_prob=0.75)
 
   assert planner.get_vision_untracked_slow_lead_cap(less_threatening_lead, v_ego, -1.0) is None
+
+
+def test_carnival_route_26_urgent_vision_lead_brakes_before_tracking_debounce():
+  v_ego = 27.225
+  planner = LongitudinalPlanner(
+    HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN), init_v=v_ego,
+  )
+  lead = make_lead(
+    status=True, d_rel=80.467, v_lead=19.761, a_lead=-0.85,
+    radar=False, model_prob=0.967, y_rel=-0.086,
+  )
+
+  cap = planner.get_vision_untracked_urgent_brake_cap(lead, v_ego, -3.5, 1.25)
+
+  assert cap is not None
+  assert -1.81 <= cap <= -1.45
+
+
+def test_carnival_urgent_vision_lead_cap_rejects_off_path_or_mild_closing_lead():
+  v_ego = 27.0
+  planner = LongitudinalPlanner(
+    HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN), init_v=v_ego,
+  )
+  off_path = make_lead(status=True, d_rel=80.0, v_lead=19.0, a_lead=-0.8,
+                       radar=False, model_prob=0.99, y_rel=1.2)
+  mild = make_lead(status=True, d_rel=90.0, v_lead=25.0, a_lead=0.0,
+                   radar=False, model_prob=0.99, y_rel=0.0)
+
+  assert planner.get_vision_untracked_urgent_brake_cap(off_path, v_ego, -3.5, 1.25) is None
+  assert planner.get_vision_untracked_urgent_brake_cap(mild, v_ego, -3.5, 1.25) is None
 
 
 def test_vision_untracked_approach_lift_eases_throttle_without_braking():

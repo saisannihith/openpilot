@@ -470,6 +470,36 @@ def test_geometry_target_refreshes_once_per_model_frame():
   assert 0.0 < refreshed < cached
 
 
+def test_acquired_lane_lock_uses_relaxed_release_thresholds_without_acquiring_on_them():
+  model = _model(left=-1.5, right=2.1, lane_prob=0.65, lane_std=0.28)
+  controller = LaneCenteringController()
+  for frame_id in range(6):
+    model.frameId = frame_id
+    assert _update(controller, model, authority=0.0) == 0.0
+  assert not controller._raw_valid
+
+  model.laneLineProbs[1] = model.laneLineProbs[2] = 0.9
+  model.laneLineStds[1] = model.laneLineStds[2] = 0.1
+  for frame_id in range(6, 9):
+    model.frameId = frame_id
+    active = _update(controller, model, authority=0.0)
+  assert controller._raw_valid
+  assert active > 0.0
+
+  model.frameId += 1
+  model.laneLineProbs[1] = model.laneLineProbs[2] = 0.65
+  model.laneLineStds[1] = model.laneLineStds[2] = 0.28
+  relaxed = _update(controller, model, authority=0.0)
+  assert controller._raw_valid
+  assert relaxed > 0.0
+
+  model.frameId += 1
+  model.laneLineProbs[1] = model.laneLineProbs[2] = 0.55
+  released = _update(controller, model, authority=0.0)
+  assert not controller._raw_valid
+  assert 0.0 <= released < relaxed
+
+
 def test_correction_is_smoothed_and_capped():
   controller = LaneCenteringController()
   model = _model(left=0.0, right=3.0, path_std=0.1)
