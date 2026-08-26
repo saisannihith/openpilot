@@ -35,6 +35,7 @@ REACQUIRE_MAX_DISTANCE = 25.0
 REACQUIRE_PATH_OFFSET = 1.1
 RADAR_ONLY_MIN_FRAMES = 20
 RADAR_ONLY_MAX_V_EGO = 3.0
+RADAR_ONLY_MIN_DISTANCE = 1.5
 RADAR_ONLY_MAX_DISTANCE = 18.0
 RADAR_ONLY_PATH_OFFSET = 0.65
 RADAR_ONLY_MAX_ABS_Y = 1.25
@@ -166,14 +167,14 @@ def qualify(track_id: int, track: dict[str, float | int], v_ego: float, path_x: 
   if previously_selected:
     path_frames[track_id] = 0
     if (age >= REACQUIRE_MIN_FRAMES and v_ego < REACQUIRE_MAX_V_EGO and
-        0.75 < d_rel < REACQUIRE_MAX_DISTANCE and path_offset < REACQUIRE_PATH_OFFSET and
+        RADAR_ONLY_MIN_DISTANCE < d_rel < REACQUIRE_MAX_DISTANCE and path_offset < REACQUIRE_PATH_OFFSET and
         distance_rate_sane):
       return "reacquire", path_offset
     return None
 
   v_lead = v_ego + float(track["vRel"])
   path_aligned = (age >= RADAR_ONLY_MIN_FRAMES and v_ego < RADAR_ONLY_MAX_V_EGO and
-                  0.75 < d_rel < RADAR_ONLY_MAX_DISTANCE and abs(float(track["yRel"])) < RADAR_ONLY_MAX_ABS_Y and
+                  RADAR_ONLY_MIN_DISTANCE < d_rel < RADAR_ONLY_MAX_DISTANCE and abs(float(track["yRel"])) < RADAR_ONLY_MAX_ABS_Y and
                   path_offset < RADAR_ONLY_PATH_OFFSET and RADAR_ONLY_MIN_V_LEAD < v_lead < RADAR_ONLY_MAX_V_LEAD)
   path_frames[track_id] = path_frames.get(track_id, 0) + 1 if path_aligned else 0
   if path_frames[track_id] >= RADAR_ONLY_PATH_MIN_FRAMES and distance_rate_sane:

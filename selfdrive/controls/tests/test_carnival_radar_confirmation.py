@@ -91,6 +91,16 @@ def test_carnival_radar_only_lead_rejects_object_outside_model_path():
   assert not track.potential_low_speed_lead(1.0, make_model_data())
 
 
+def test_carnival_radar_only_lead_rejects_sub_bumper_return():
+  track = mature_track(make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                                  d_rel=0.8, y_rel=0.0, v_rel=-0.75, v_ego=0.0), frames=30)
+  model_data = make_model_data()
+
+  for _ in range(8):
+    assert not track.potential_low_speed_lead(0.0, model_data)
+  assert not track.potential_low_speed_lead(0.0, model_data, previously_selected=True)
+
+
 def test_carnival_radar_only_lead_follows_curved_model_path():
   track = mature_track(make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
                                   d_rel=10.0, y_rel=-0.8, v_rel=-1.0, v_ego=1.0), frames=20)

@@ -1,0 +1,85 @@
+{
+  "status": "pass",
+  "vehicle": {
+    "name": "2024 Kia Carnival 4th generation",
+    "radarFirmware": "99110-R0100"
+  },
+  "functionalParity": {
+    "complete": true,
+    "radarPointFieldsConsumedByRadard": [
+      "trackId",
+      "dRel",
+      "yRel",
+      "vRel",
+      "measured"
+    ],
+    "optionalFieldsPublishedAsNaN": [
+      "aRel",
+      "yvRel"
+    ],
+    "optionalFieldReason": "radard does not consume RadarPoint aRel or yvRel; acceleration is estimated from the tracked lead velocity",
+    "objectBank": "bus 1, 0x180-0x184, 32 bytes, two 128-bit slots per message, ten objects total"
+  },
+  "decodedFields": {
+    "trackId": "u8 at bit 42",
+    "distance": "u13 at bit 64, scale 0.05 m",
+    "lateral": "s11 at bit 78, scale 0.05 m",
+    "relativeVelocity": "s11 at bit 91, scale 0.05 m/s, offset 2.4 m/s",
+    "rollingCounter": "u4 at bit 124; all values 0 through 15 are valid"
+  },
+  "evidence": {
+    "factorySccVelocity": {
+      "samples": 15382,
+      "medianAbsoluteErrorMps": 0.15,
+      "p95AbsoluteErrorMps": 0.55,
+      "p99AbsoluteErrorMps": 0.8,
+      "report": "analysis/carnival_route12_stock_scc_velocity_report.json"
+    },
+    "objectLifecycle": {
+      "fullResolutionSegments": 85,
+      "structuralCandidates": 355106,
+      "continuousCandidates": 342231,
+      "continuousCounterZeroSamples": 27964,
+      "counterTransitionRate": 0.943839,
+      "conflictingIds": 0,
+      "report": "analysis/carnival_radar_object_lifecycle_report.json"
+    },
+    "targetQualification": {
+      "fullResolutionSegments": 148,
+      "routes": [
+        "00000023--6e00c1d59e",
+        "00000024--42367f5320",
+        "00000025--ec126ad94a",
+        "00000026--f108fe9d74",
+        "00000027--bdca0bd66c"
+      ],
+      "newRadarOnlyEvents": 0,
+      "simulatedTargetSwitches": 0,
+      "localReport": "analysis/carnival_routes23_26_radar_only_replay_after_counter_fix.json",
+      "deviceReport": "analysis/carnival_route27_radar_only_replay_after_counter_fix.json"
+    }
+  },
+  "controlBehavior": {
+    "normalSpeed": "camera/model lead association remains mandatory and first",
+    "velocityFusion": "decoded radar velocity contributes only after maturity and close model consensus, with bounded blend weight and model fallback on disagreement",
+    "radarOnlyCreation": "limited to low speed with persistence, model-path, lateral, distance, lead-speed, and observed-distance-rate gates",
+    "minimumRadarOnlyDistanceM": 1.5,
+    "acceleration": "model-led for camera-associated Carnival tracks"
+  },
+  "defectsFixed": [
+    "Counter value zero was misclassified as invalid, freezing about 8.2 percent of continuous object updates.",
+    "A 0.80 m stationary sub-bumper return could briefly qualify as a radar-only lead.",
+    "The old layout validator compared different raw object IDs and produced a misleading failure.",
+    "Recycled or conflicting raw IDs could inherit stale track maturity before the identity reset fix."
+  ],
+  "verification": {
+    "parserTests": 10,
+    "deviceRadarControlTests": 17,
+    "uiProjectionTests": 9,
+    "ruff": "pass",
+    "pythonCompile": "pass",
+    "localRouteReplay": "pass",
+    "deviceRouteReplay": "pass"
+  },
+  "boundary": "This is complete openpilot radar parsing and fusion parity for the observed R0100 object stream. It does not allow raw radar to independently command highway braking; established openpilot radar integrations also fuse radar with model lead selection."
+}

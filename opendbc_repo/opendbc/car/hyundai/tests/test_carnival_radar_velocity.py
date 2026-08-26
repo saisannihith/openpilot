@@ -75,10 +75,23 @@ def test_carnival_r0100_full_object_decode_both_slots() -> None:
   assert carnival_radar_object_valid(obj2)
 
 
-@pytest.mark.parametrize(("track_id", "heartbeat"), ((0, 3), (12, 0)))
-def test_carnival_radar_rejects_invalid_identity(track_id: int, heartbeat: int) -> None:
-  obj = decode_carnival_radar_object(encode_object(track_id, heartbeat, 20.0, 0.0, 0.0), 0)
+def test_carnival_radar_rejects_zero_track_id() -> None:
+  obj = decode_carnival_radar_object(encode_object(0, 3, 20.0, 0.0, 0.0), 0)
   assert not carnival_radar_object_valid(obj)
+
+
+def test_carnival_radar_accepts_complete_rolling_counter_cycle() -> None:
+  probe = make_probe()
+  for heartbeat in range(16):
+    distance = 20.0 + 0.05 * heartbeat
+    frame = [(0, [(0x180, encode_object(12, heartbeat, distance, 0.0, -0.5), 1)])]
+    probe._update_carnival_object_probe(frame)
+
+  rr = structs.RadarData()
+  probe._add_carnival_confirmation_tracks(rr)
+  assert len(rr.points) == 1
+  assert rr.points[0].trackId == CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE + 12
+  assert rr.points[0].dRel == pytest.approx(20.75)
 
 
 def test_carnival_radar_requires_persistence_and_publishes_stable_id() -> None:

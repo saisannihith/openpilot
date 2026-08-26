@@ -72,7 +72,9 @@ def decode_carnival_radar_object(dat: bytes, bit_offset: int) -> CarnivalRadarOb
 
 
 def carnival_radar_object_valid(obj: CarnivalRadarObject) -> bool:
-  return (obj.raw_track_id != 0 and obj.heartbeat != 0 and
+  # The high nibble is a rolling counter and legitimately wraps through zero.
+  # Identity, geometry, continuity, and persistence provide object validity.
+  return (obj.raw_track_id != 0 and
           0.5 <= obj.d_rel <= 220.0 and
           abs(obj.y_rel) <= CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_Y and
           abs(obj.v_rel) <= CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_V)
