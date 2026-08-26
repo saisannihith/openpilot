@@ -49,6 +49,9 @@ CARNIVAL_4TH_GEN_CONFIRMATION_Y_STD_SCALE = 1.5
 CARNIVAL_4TH_GEN_CONFIRMATION_Y_FLOOR = 1.2
 CARNIVAL_4TH_GEN_CONFIRMATION_V_STD_SCALE = 3.0
 CARNIVAL_4TH_GEN_CONFIRMATION_V_FLOOR = 4.0
+CARNIVAL_4TH_GEN_VELOCITY_BLEND_MAX_RESIDUAL = 1.0
+CARNIVAL_4TH_GEN_VELOCITY_BLEND_WEIGHT = 0.35
+CARNIVAL_4TH_GEN_VELOCITY_BLEND_MIN_FRAMES = 5
 
 
 def is_carnival_confirmation_track(identifier: int) -> bool:
@@ -247,17 +250,21 @@ def carnival_confirmation_matches_vision(track: Track, lead: capnp._DynamicStruc
 
 def get_RadarState_from_carnival_confirmation(track: Track, lead_msg: capnp._DynamicStructReader,
                                               v_ego: float, model_v_ego: float, model_prob: float):
-  # Distance, lateral position, and relative velocity are decoded and used to
-  # validate object association. Keep the final control velocity model-led until
-  # full-bank replay proves that target handoffs are safe, not merely bit-correct.
   model_v_rel = float(lead_msg.v[0] - model_v_ego)
-  model_v_lead = float(v_ego + model_v_rel)
+  v_rel = model_v_rel
+  # R0100 velocity is independently verified against factory SCC and distance
+  # evolution. Let it reduce model noise only after track maturity and close
+  # consensus; disagreement always falls back to the model.
+  if (track.cnt >= CARNIVAL_4TH_GEN_VELOCITY_BLEND_MIN_FRAMES and
+      abs(track.vRel - model_v_rel) <= CARNIVAL_4TH_GEN_VELOCITY_BLEND_MAX_RESIDUAL):
+    v_rel += CARNIVAL_4TH_GEN_VELOCITY_BLEND_WEIGHT * (track.vRel - model_v_rel)
+  v_lead = float(v_ego + v_rel)
   return {
     "dRel": float(track.dRel),
     "yRel": float(track.yRel),
-    "vRel": model_v_rel,
-    "vLead": model_v_lead,
-    "vLeadK": model_v_lead,
+    "vRel": v_rel,
+    "vLead": v_lead,
+    "vLeadK": v_lead,
     "aLeadK": float(lead_msg.a[0]),
     "aLeadTau": 0.3,
     "status": True,

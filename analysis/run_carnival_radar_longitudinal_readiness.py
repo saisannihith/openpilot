@@ -2,21 +2,21 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import math
 import subprocess
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
-from scan_longitudinal_quality import analyze as analyze_longitudinal
-from scan_longitudinal_quality import expand_logs, read_samples_and_metadata
-
-
 CARNIVAL_CONFIRMATION_TRACK_ID_MIN = 0xC4100
 CARNIVAL_CONFIRMATION_TRACK_ID_MAX = 0xC41FF
+CARNIVAL_VELOCITY_BLEND_MAX_RESIDUAL = 1.0
+CARNIVAL_VELOCITY_BLEND_WEIGHT = 0.35
+CARNIVAL_VELOCITY_BLEND_MIN_FRAMES = 5
 
 
 def safe_attr(obj: Any, name: str, default: Any = None) -> Any:
@@ -72,6 +72,14 @@ def current_commit() -> str:
     return "unknown"
 
 
+def expand_log_paths(patterns: list[str]) -> list[Path]:
+  paths: list[Path] = []
+  for pattern in patterns:
+    matches = [Path(path) for path in glob.glob(pattern)]
+    paths.extend(matches if matches else [Path(pattern)])
+  return sorted({path.resolve() for path in paths if path.is_file()})
+
+
 def percentile(values: list[float], pct: float) -> float | None:
   if not values:
     return None
@@ -89,6 +97,24 @@ def summarize_values(values: list[float]) -> dict[str, Any]:
     "p99": percentile(values, 99.0),
     "max": None if not values else round(max(values), 3),
   }
+
+
+def distance_slope(history: deque[tuple[int, float]]) -> float | None:
+  if len(history) < 8:
+    return None
+  span = (history[-1][0] - history[0][0]) / 1e9
+  if span < 0.4:
+    return None
+  origin = history[0][0]
+  xs = [(mono_time - origin) / 1e9 for mono_time, _ in history]
+  ys = [distance for _, distance in history]
+  x_bar = sum(xs) / len(xs)
+  y_bar = sum(ys) / len(ys)
+  denominator = sum((x - x_bar) ** 2 for x in xs)
+  if denominator <= 1e-9:
+    return None
+  slope = sum((x - x_bar) * (y - y_bar) for x, y in zip(xs, ys, strict=True)) / denominator
+  return slope if math.isfinite(slope) and abs(slope) <= 70.0 else None
 
 
 def lead_dict(lead: Any, path: Path, mono_time: int, start_ns: int) -> dict[str, Any]:
@@ -120,10 +146,18 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
   raw_vs_state_vrel_errors: list[float] = []
   raw_vs_state_vlead_errors: list[float] = []
   raw_vs_derived_vrel_errors: list[float] = []
+  matched_raw_vs_derived_vrel_errors: list[float] = []
+  matched_model_vs_derived_vrel_errors: list[float] = []
+  matched_blended_vs_derived_vrel_errors: list[float] = []
+  blend_eligible_raw_vs_derived_vrel_errors: list[float] = []
+  blend_eligible_model_vs_derived_vrel_errors: list[float] = []
+  blend_eligible_blended_vs_derived_vrel_errors: list[float] = []
   confirmation_examples: list[dict[str, Any]] = []
   low_speed_stop_examples: list[dict[str, Any]] = []
   raw_velocity_error_examples: list[dict[str, Any]] = []
-  previous_points: dict[tuple[str, int], tuple[int, float]] = {}
+  distance_histories: dict[tuple[str, int, int], deque[tuple[int, float]]] = defaultdict(deque)
+  latest_derived_vrel: dict[int, tuple[int, float]] = {}
+  live_track_ages: dict[int, int] = {}
   previous_lateral: dict[tuple[str, int], tuple[int, float]] = {}
   confirmation_track_ids: set[int] = set()
   metadata: list[dict[str, Any]] = []
@@ -155,12 +189,15 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
         if points:
           live_track_frames += 1
         latest_live_tracks = {}
+        previous_live_track_ids = set(live_track_ages)
+        current_live_track_ids: set[int] = set()
         has_confirmation = False
         has_centered_confirmation = False
         has_cut_in_candidate = False
         for point in points:
           track_id = safe_int(safe_attr(point, "trackId", -1))
           latest_live_tracks[track_id] = point
+          current_live_track_ids.add(track_id)
           if is_confirmation_track(track_id):
             confirmation_track_ids.add(track_id)
             has_confirmation = True
@@ -180,15 +217,26 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
                 has_cut_in_candidate = True
             previous_lateral[key] = (mono_time, y_rel)
 
-            previous = previous_points.get(key)
-            if previous is not None:
-              prev_mono_time, prev_d_rel = previous
-              dt = (mono_time - prev_mono_time) / 1e9
-              if 0.005 <= dt <= 0.25:
-                derived_vrel = (d_rel - prev_d_rel) / dt
-                raw_vrel = safe_float(safe_attr(point, "vRel", 0.0))
-                raw_vs_derived_vrel_errors.append(abs(raw_vrel - derived_vrel))
-            previous_points[key] = (mono_time, d_rel)
+            history = distance_histories[key]
+            if history:
+              dt = (mono_time - history[-1][0]) / 1e9
+              distance_jump = abs(d_rel - history[-1][1])
+              if not (0.005 <= dt <= 0.25) or distance_jump > max(1.5, 60.0 * dt):
+                history.clear()
+            history.append((mono_time, d_rel))
+            while history and (mono_time - history[0][0]) / 1e9 > 0.6:
+              history.popleft()
+            derived_vrel = distance_slope(history)
+            if derived_vrel is not None:
+              raw_vrel = safe_float(safe_attr(point, "vRel", 0.0))
+              raw_vs_derived_vrel_errors.append(abs(raw_vrel - derived_vrel))
+              latest_derived_vrel[track_id] = (mono_time, derived_vrel)
+        live_track_ages = {
+          track_id: live_track_ages.get(track_id, 0) + 1
+          for track_id in current_live_track_ids
+        }
+        for track_id in previous_live_track_ids - current_live_track_ids:
+          latest_derived_vrel.pop(track_id, None)
         if has_confirmation:
           confirmation_track_frames += 1
         if has_centered_confirmation:
@@ -220,6 +268,25 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
             vlead_error = abs(raw_vlead - state_vlead)
             raw_vs_state_vrel_errors.append(vrel_error)
             raw_vs_state_vlead_errors.append(vlead_error)
+            derived = latest_derived_vrel.get(track_id)
+            if derived is not None and 0.0 <= (mono_time - derived[0]) / 1e9 <= 0.15:
+              derived_vrel = derived[1]
+              model_error = abs(state_vrel - derived_vrel)
+              raw_error = abs(raw_vrel - derived_vrel)
+              matched_raw_vs_derived_vrel_errors.append(raw_error)
+              matched_model_vs_derived_vrel_errors.append(model_error)
+
+              blended_vrel = state_vrel
+              blend_eligible = (
+                live_track_ages.get(track_id, 0) >= CARNIVAL_VELOCITY_BLEND_MIN_FRAMES and
+                abs(raw_vrel - state_vrel) <= CARNIVAL_VELOCITY_BLEND_MAX_RESIDUAL
+              )
+              if blend_eligible:
+                blended_vrel += CARNIVAL_VELOCITY_BLEND_WEIGHT * (raw_vrel - state_vrel)
+                blend_eligible_raw_vs_derived_vrel_errors.append(raw_error)
+                blend_eligible_model_vs_derived_vrel_errors.append(model_error)
+                blend_eligible_blended_vs_derived_vrel_errors.append(abs(blended_vrel - derived_vrel))
+              matched_blended_vs_derived_vrel_errors.append(abs(blended_vrel - derived_vrel))
             if vrel_error > 3.0 and len(raw_velocity_error_examples) < 12:
               example = lead_dict(lead, path, mono_time, start_ns)
               example.update({
@@ -255,7 +322,16 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
   velocity_control_ready = (
     len(raw_vs_state_vrel_errors) >= 200 and
     (percentile(raw_vs_state_vrel_errors, 95.0) or 999.0) < 1.0 and
-    (percentile(raw_vs_derived_vrel_errors, 95.0) or 999.0) < 1.0
+    (percentile(matched_raw_vs_derived_vrel_errors, 95.0) or 999.0) < 1.0
+  )
+  bounded_velocity_blend_ready = (
+    len(blend_eligible_blended_vs_derived_vrel_errors) >= 200 and
+    len(blend_eligible_blended_vs_derived_vrel_errors) / max(len(matched_raw_vs_derived_vrel_errors), 1) >= 0.5 and
+    (percentile(blend_eligible_blended_vs_derived_vrel_errors, 95.0) or 999.0) < 1.0 and
+    (percentile(blend_eligible_blended_vs_derived_vrel_errors, 95.0) or 999.0) <
+    (percentile(blend_eligible_model_vs_derived_vrel_errors, 95.0) or 0.0) and
+    (percentile(matched_blended_vs_derived_vrel_errors, 95.0) or 999.0) <=
+    (percentile(matched_model_vs_derived_vrel_errors, 95.0) or 0.0)
   )
   tandem_ready = (
     distance_association_ready and
@@ -287,6 +363,18 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
     "rawVsStateVRelError": summarize_values(raw_vs_state_vrel_errors),
     "rawVsStateVLeadError": summarize_values(raw_vs_state_vlead_errors),
     "rawVsDerivedVRelError": summarize_values(raw_vs_derived_vrel_errors),
+    "matchedRawVsDerivedVRelError": summarize_values(matched_raw_vs_derived_vrel_errors),
+    "matchedModelVsDerivedVRelError": summarize_values(matched_model_vs_derived_vrel_errors),
+    "matchedBlendedVsDerivedVRelError": summarize_values(matched_blended_vs_derived_vrel_errors),
+    "velocityBlend": {
+      "eligibleSamples": len(blend_eligible_blended_vs_derived_vrel_errors),
+      "eligibleFraction": round(
+        len(blend_eligible_blended_vs_derived_vrel_errors) / max(len(matched_raw_vs_derived_vrel_errors), 1), 4
+      ),
+      "rawVsDerivedError": summarize_values(blend_eligible_raw_vs_derived_vrel_errors),
+      "modelVsDerivedError": summarize_values(blend_eligible_model_vs_derived_vrel_errors),
+      "blendedVsDerivedError": summarize_values(blend_eligible_blended_vs_derived_vrel_errors),
+    },
     "confirmationExamples": confirmation_examples,
     "lowSpeedStopExamples": low_speed_stop_examples,
     "rawVelocityErrorExamples": raw_velocity_error_examples,
@@ -299,7 +387,10 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
     "cutInTrackingEvidence": cut_in_tracking_evidence,
     "velocityControlReady": velocity_control_ready,
     "velocityPromotionReady": velocity_control_ready,
+    "boundedVelocityBlendReady": bounded_velocity_blend_ready,
     "readinessConclusion": (
+      "radar_bounded_velocity_blend_ready"
+      if tandem_ready and bounded_velocity_blend_ready else
       "radar_confirmed_model_led_ready"
       if tandem_ready else
       "velocity_control_candidate"
@@ -321,6 +412,9 @@ def build_report(paths: list[Path], radar_only: bool = False) -> dict[str, Any]:
       "accelJumps": [],
     }
   else:
+    from scan_longitudinal_quality import analyze as analyze_longitudinal
+    from scan_longitudinal_quality import read_samples_and_metadata
+
     mode = ReadMode.AUTO_INTERACTIVE
     long_samples = []
     long_metadata = []
@@ -359,7 +453,7 @@ def main() -> int:
   parser.add_argument("--out", help="Optional JSON output path")
   args = parser.parse_args()
 
-  paths = expand_logs(args.logs)
+  paths = expand_log_paths(args.logs)
   if args.recent_first:
     paths = sorted(paths, key=lambda path: path.stat().st_mtime, reverse=True)
   if args.max_files > 0:

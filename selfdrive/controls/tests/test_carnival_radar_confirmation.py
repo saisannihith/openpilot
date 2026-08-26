@@ -15,6 +15,12 @@ def make_track(identifier: int, d_rel: float = 12.0, y_rel: float = 0.0, v_rel: 
   return track
 
 
+def mature_track(track: Track, frames: int = 5) -> Track:
+  for _ in range(frames - track.cnt):
+    track.update(track.dRel, track.yRel, track.vRel, track.vLead, True)
+  return track
+
+
 def test_carnival_confirmation_track_id_range():
   assert is_carnival_confirmation_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN)
   assert is_carnival_confirmation_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1)
@@ -117,6 +123,78 @@ def test_carnival_confirmation_track_rejects_velocity_mismatch():
   assert lead_state["status"]
   assert not lead_state["radar"]
   assert lead_state["radarTrackId"] == -1
+
+
+def test_carnival_confirmation_mature_consensus_blends_bounded_radar_velocity():
+  track = mature_track(make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                                  d_rel=20.0, y_rel=0.0, v_rel=0.8, v_ego=10.0))
+  model_data = SimpleNamespace(
+    meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
+    laneLines=[],
+  )
+  lead = SimpleNamespace(
+    prob=0.8,
+    x=[21.52],
+    y=[0.0],
+    v=[11.0],
+    a=[0.0],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=10.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=10.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+
+  assert lead_state["radar"]
+  assert lead_state["vRel"] == 0.93
+  assert lead_state["vLead"] == 10.93
+
+
+def test_carnival_confirmation_velocity_disagreement_stays_model_led():
+  track = mature_track(make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                                  d_rel=20.0, y_rel=0.0, v_rel=3.5, v_ego=10.0))
+  model_data = SimpleNamespace(
+    meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
+    laneLines=[],
+  )
+  lead = SimpleNamespace(
+    prob=0.8,
+    x=[21.52],
+    y=[0.0],
+    v=[11.0],
+    a=[0.0],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=10.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=10.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+
+  assert lead_state["radar"]
+  assert lead_state["vRel"] == 1.0
+  assert lead_state["vLead"] == 11.0
 
 
 def test_carnival_confirmation_track_cannot_create_lead_without_model_confidence():
