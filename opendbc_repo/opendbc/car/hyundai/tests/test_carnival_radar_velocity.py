@@ -98,6 +98,36 @@ def test_carnival_radar_requires_persistence_and_publishes_stable_id() -> None:
   assert (rr.points[0].dRel, rr.points[0].yRel, rr.points[0].vRel) == pytest.approx((31.0, -0.45, -2.0))
 
 
+def test_carnival_radar_publishes_complete_ten_object_bank() -> None:
+  probe = make_probe()
+  frames = []
+  expected = {}
+  for address_index in range(5):
+    first_id = 20 + address_index * 2
+    second_id = first_id + 1
+    first_values = (15.0 + address_index, -0.5 + address_index * 0.1, -2.0 + address_index * 0.2)
+    second_values = (35.0 + address_index, 0.6 - address_index * 0.1, 1.0 + address_index * 0.2)
+    first = int.from_bytes(encode_object(first_id, 5, *first_values), "little")
+    second = int.from_bytes(encode_object(second_id, 7, *second_values, 128), "little")
+    frames.append((0x180 + address_index, (first | second).to_bytes(32, "little"), 1))
+    expected[first_id] = first_values
+    expected[second_id] = second_values
+
+  can_strings = [(0, frames)]
+  for _ in range(3):
+    probe._update_carnival_object_probe(can_strings)
+
+  rr = structs.RadarData()
+  probe._add_carnival_confirmation_tracks(rr)
+  actual = {
+    point.trackId - CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE: (point.dRel, point.yRel, point.vRel)
+    for point in rr.points
+  }
+  assert actual.keys() == expected.keys()
+  for track_id, values in expected.items():
+    assert actual[track_id] == pytest.approx(values)
+
+
 def test_carnival_radar_expires_stale_tracks() -> None:
   probe = make_probe()
   now = time.monotonic()

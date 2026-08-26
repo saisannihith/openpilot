@@ -295,7 +295,8 @@ class RadarInterface(RadarInterfaceBase):
       f"vRel={primary.v_rel:.2f} dDot={d_dot_str} shadowDistance=YES ",
       f"confirmationTrack={primary.raw_track_id in self.carnival_confirmation_tracks} ",
       f"publishedTracks={len(self.carnival_confirmation_tracks)} publishReady={bool(self.carnival_confirmation_tracks)} ",
-      f"controlReady=False conflicts={len(conflicting_ids)} seen={self.carnival_object_probe_seen} ",
+      f"velocityDecoded=YES controlReady=BOUNDED_CONFIRMATION_BLEND conflicts={len(conflicting_ids)} ",
+      f"seen={self.carnival_object_probe_seen} ",
       f"valid={self.carnival_object_probe_valid}",
     )))
     self.carnival_object_probe_last_log = now
