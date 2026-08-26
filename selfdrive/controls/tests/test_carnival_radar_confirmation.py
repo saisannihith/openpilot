@@ -21,6 +21,17 @@ def mature_track(track: Track, frames: int = 5) -> Track:
   return track
 
 
+def make_model_data(path_y: float = 0.0):
+  return SimpleNamespace(
+    meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
+    laneLines=[],
+    position=SimpleNamespace(
+      x=[0.0, 10.0, 20.0, 40.0],
+      y=[path_y, path_y, path_y, path_y],
+    ),
+  )
+
+
 def test_carnival_confirmation_track_id_range():
   assert is_carnival_confirmation_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN)
   assert is_carnival_confirmation_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1)
@@ -28,11 +39,75 @@ def test_carnival_confirmation_track_id_range():
   assert not is_carnival_confirmation_track(42)
 
 
-def test_carnival_confirmation_track_cannot_be_low_speed_radar_only_lead():
+def test_carnival_confirmation_track_requires_path_and_maturity_for_radar_only_lead():
   track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1, d_rel=10.0, y_rel=0.0, v_ego=1.0)
 
   assert track.confirmationOnly
   assert not track.potential_low_speed_lead(1.0)
+  assert not track.potential_low_speed_lead(1.0, make_model_data())
+
+
+def test_carnival_confirmation_track_can_create_strict_low_speed_radar_only_lead():
+  track = mature_track(make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                                  d_rel=10.0, y_rel=0.0, v_rel=-1.0, v_ego=1.0), frames=20)
+  model_data = make_model_data()
+  for _ in range(7):
+    assert not track.potential_low_speed_lead(1.0, model_data)
+  lead = SimpleNamespace(
+    prob=0.1,
+    x=[11.52],
+    y=[0.0],
+    v=[0.0],
+    a=[0.0],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=1.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=1.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+
+  assert lead_state["status"]
+  assert lead_state["radar"]
+  assert lead_state["radarTrackId"] == track.identifier
+  assert lead_state["vRel"] == -1.0
+  assert lead_state["vLead"] == 0.0
+
+
+def test_carnival_radar_only_lead_rejects_object_outside_model_path():
+  track = mature_track(make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                                  d_rel=10.0, y_rel=1.4, v_rel=-1.0, v_ego=1.0), frames=30)
+
+  assert not track.potential_low_speed_lead(1.0, make_model_data())
+
+
+def test_carnival_radar_only_lead_follows_curved_model_path():
+  track = mature_track(make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                                  d_rel=10.0, y_rel=-0.8, v_rel=-1.0, v_ego=1.0), frames=20)
+
+  curved_path = make_model_data(path_y=0.8)
+  for _ in range(7):
+    assert not track.potential_low_speed_lead(1.0, curved_path)
+  assert track.potential_low_speed_lead(1.0, curved_path)
+  assert not track.potential_low_speed_lead(1.0, make_model_data(path_y=-0.8))
+
+
+def test_carnival_previously_selected_track_reacquires_with_shorter_history():
+  track = mature_track(make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                                  d_rel=22.0, y_rel=0.0, v_rel=1.0, v_ego=2.0), frames=8)
+
+  assert track.potential_low_speed_lead(2.0, make_model_data(), previously_selected=True)
+  assert not track.potential_low_speed_lead(2.0, make_model_data(), previously_selected=False)
 
 
 def test_normal_track_can_still_be_low_speed_radar_only_lead():

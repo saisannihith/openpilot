@@ -52,6 +52,17 @@ CARNIVAL_4TH_GEN_CONFIRMATION_V_FLOOR = 4.0
 CARNIVAL_4TH_GEN_VELOCITY_BLEND_MAX_RESIDUAL = 1.0
 CARNIVAL_4TH_GEN_VELOCITY_BLEND_WEIGHT = 0.35
 CARNIVAL_4TH_GEN_VELOCITY_BLEND_MIN_FRAMES = 5
+CARNIVAL_4TH_GEN_REACQUIRE_MIN_FRAMES = 8
+CARNIVAL_4TH_GEN_REACQUIRE_MAX_DISTANCE = 25.0
+CARNIVAL_4TH_GEN_REACQUIRE_PATH_OFFSET = 1.1
+CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_FRAMES = 20
+CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_EGO = 3.0
+CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_DISTANCE = 18.0
+CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_OFFSET = 0.65
+CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_ABS_Y = 1.25
+CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_MIN_FRAMES = 8
+CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_V_LEAD = -1.5
+CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_LEAD = 6.0
 
 
 def is_carnival_confirmation_track(identifier: int) -> bool:
@@ -94,6 +105,7 @@ class Track:
     self.moving_frames = 0
     self.rest_frames = 0
     self.seen_moving = False
+    self.radar_only_path_frames = 0
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float):
     # relative values, copy
@@ -190,9 +202,11 @@ class Track:
     right_lane = np.interp(self.dRel, model_data.laneLines[2].x, model_data.laneLines[2].y)
     return bool(model_y < left_lane or model_y > right_lane)
 
-  def potential_low_speed_lead(self, v_ego: float):
+  def potential_low_speed_lead(self, v_ego: float, model_data: capnp._DynamicStructReader | None = None,
+                               previously_selected: bool = False,
+                               model_path: tuple[list[float], list[float]] | None = None):
     if self.confirmationOnly:
-      return False
+      return carnival_low_speed_radar_lead_sane(self, v_ego, model_data, previously_selected, model_path)
 
     # stop for stuff in front of you and low speed, even without model confirmation
     # Radar points closer than 0.75, are almost always glitches on toyota radars
@@ -222,6 +236,46 @@ def g90_low_speed_radar_lead_sane(track: Track, v_ego: float) -> bool:
   return (track.cnt >= 3 and v_ego < 3.0 and
           0.75 < track.dRel < G90_RADAR_LOW_SPEED_MAX_DIST and
           abs(track.yRel) < G90_RADAR_LOW_SPEED_MAX_Y)
+
+
+def carnival_low_speed_radar_lead_sane(track: Track, v_ego: float, model_data: capnp._DynamicStructReader | None,
+                                       previously_selected: bool,
+                                       model_path: tuple[list[float], list[float]] | None = None) -> bool:
+  if model_data is None or not track.measured:
+    track.radar_only_path_frames = 0
+    return False
+
+  if model_path is None:
+    position = getattr(model_data, "position", None)
+    path_x = list(getattr(position, "x", []))
+    path_y = list(getattr(position, "y", []))
+  else:
+    path_x, path_y = model_path
+  if len(path_x) < 2 or len(path_x) != len(path_y):
+    track.radar_only_path_frames = 0
+    return False
+
+  object_x = track.dRel + RADAR_TO_CAMERA
+  if object_x < path_x[0] or object_x > path_x[-1]:
+    track.radar_only_path_frames = 0
+    return False
+  path_offset = abs(-track.yRel - float(np.interp(object_x, path_x, path_y)))
+
+  if previously_selected:
+    track.radar_only_path_frames = 0
+    return (track.cnt >= CARNIVAL_4TH_GEN_REACQUIRE_MIN_FRAMES and
+            v_ego < V_EGO_STATIONARY and
+            0.75 < track.dRel < CARNIVAL_4TH_GEN_REACQUIRE_MAX_DISTANCE and
+            path_offset < CARNIVAL_4TH_GEN_REACQUIRE_PATH_OFFSET)
+
+  path_aligned = (track.cnt >= CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_FRAMES and
+                  v_ego < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_EGO and
+                  0.75 < track.dRel < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_DISTANCE and
+                  abs(track.yRel) < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_ABS_Y and
+                  path_offset < CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_OFFSET and
+                  CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_V_LEAD < track.vLead < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_LEAD)
+  track.radar_only_path_frames = track.radar_only_path_frames + 1 if path_aligned else 0
+  return track.radar_only_path_frames >= CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_MIN_FRAMES
 
 
 def track_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: float, *,
@@ -376,7 +430,12 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
     if g90_radar_filter:
       low_speed_tracks = [c for c in tracks.values() if g90_low_speed_radar_lead_sane(c, v_ego)]
     else:
-      low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego)]
+      position = getattr(model_data, "position", None)
+      model_path = (list(getattr(position, "x", [])), list(getattr(position, "y", [])))
+      low_speed_tracks = [
+        c for c in tracks.values()
+        if c.potential_low_speed_lead(v_ego, model_data, c.identifier == preferred_track_id, model_path)
+      ]
     if len(low_speed_tracks) > 0:
       closest_track = min(low_speed_tracks, key=lambda c: c.dRel)
 
