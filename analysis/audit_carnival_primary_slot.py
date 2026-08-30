@@ -306,6 +306,7 @@ def evaluate_velocity_policy(rows: list[QualificationRow], routes: set[str], pol
     prediction = bool(
       row.quality == 255 and
       persistence[row.route] >= int(policy["minPersistence"]) and
+      row.d_rel >= policy.get("minDistance", 0.0) and
       row.d_rel <= policy["maxDistance"] and
       abs(row.y_rel) <= policy["maxAbsY"] and
       row.path_error is not None and row.path_error <= policy["maxPathError"] and

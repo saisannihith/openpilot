@@ -35,6 +35,9 @@ class Policy:
   blend_weight: float
   max_correction: float
   primary_only: bool = False
+  min_distance: float = 0.0
+  bidirectional: bool = False
+  max_model_residual: float = math.inf
 
 
 POLICIES = (
@@ -44,6 +47,8 @@ POLICIES = (
   Policy("very_strict", 20, 12, 0.75, 2.0, 60.0, 4.0, 0.25, 2.0),
   Policy("primary_balanced", 12, 6, 1.0, 0.75, 80.0, 6.0, 0.30, 1.5, True),
   Policy("primary_strict", 16, 8, 0.75, 1.0, 65.0, 5.0, 0.25, 1.25, True),
+  Policy("primary_far_fixed", 8, 6, 0.75, 0.0, 60.0, math.inf, 0.35, 0.35,
+         True, 40.0, True, 1.0),
 )
 
 
@@ -106,11 +111,20 @@ def policy_output(policy, sample):
     return None
   if sample["observedVRel"] is None or abs(sample["rawVRel"] - sample["observedVRel"]) > policy.max_consensus_residual:
     return None
+  if not policy.min_distance < sample["dRel"] <= policy.max_distance:
+    return None
+
+  model_vrel = sample["modelVRel"]
+  if policy.bidirectional:
+    if abs(sample["rawVRel"] - model_vrel) > policy.max_model_residual:
+      return None
+    correction = float(np.clip(policy.blend_weight * (sample["rawVRel"] - model_vrel),
+                               -policy.max_correction, policy.max_correction))
+    return float(model_vrel + correction)
 
   # Less-negative of two independent radar estimates is deliberately conservative.
   consensus_vrel = max(sample["rawVRel"], sample["observedVRel"])
-  model_vrel = sample["modelVRel"]
-  if consensus_vrel >= model_vrel - policy.min_model_delta or sample["dRel"] > policy.max_distance:
+  if consensus_vrel >= model_vrel - policy.min_model_delta:
     return None
   ttc = sample["dRel"] / max(-consensus_vrel, 0.1)
   if ttc > policy.max_ttc:

@@ -13,6 +13,15 @@ from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 CARNIVAL_CONFIRMATION_TRACK_ID_MIN = 0xC4100
 CARNIVAL_CONFIRMATION_TRACK_ID_MAX = 0xC41FF
+CARNIVAL_PRIMARY_TRACK_ID_MIN = 0xC4200
+CARNIVAL_PRIMARY_TRACK_ID_MAX = 0xC42FF
+
+
+def is_carnival_r0100_track(track_id: int) -> bool:
+  return (
+    CARNIVAL_CONFIRMATION_TRACK_ID_MIN <= track_id <= CARNIVAL_CONFIRMATION_TRACK_ID_MAX or
+    CARNIVAL_PRIMARY_TRACK_ID_MIN <= track_id <= CARNIVAL_PRIMARY_TRACK_ID_MAX
+  )
 
 
 def safe_attr(obj: Any, name: str, default: Any = None) -> Any:
@@ -65,6 +74,8 @@ class Sample:
   red_light: bool
   forcing_stop: bool
   should_stop: bool
+  model_desired_accel: float
+  model_should_stop: bool
   lead_status: bool
   lead_radar: bool
   lead_track_id: int
@@ -79,6 +90,7 @@ class Sample:
   confirmation_tracks: int
   closest_path_track_d_rel: float
   closest_path_track_v_rel: float
+  closest_path_track_id: int
 
   @property
   def ttc(self) -> float:
@@ -108,11 +120,12 @@ def make_sample(path: Path, start_ns: int, mono_time: int, latest: dict[str, Any
   live_tracks = list(safe_attr(latest.get("liveTracks"), "points", []))
   confirmation_tracks = [
     track for track in live_tracks
-    if CARNIVAL_CONFIRMATION_TRACK_ID_MIN <= int(safe_attr(track, "trackId", -1)) <= CARNIVAL_CONFIRMATION_TRACK_ID_MAX
+    if is_carnival_r0100_track(int(safe_attr(track, "trackId", -1)))
   ]
   path_tracks = [track for track in confirmation_tracks if abs(safe_float(safe_attr(track, "yRel", 99.0))) <= 1.25]
   closest_path_track = min(path_tracks, key=lambda track: safe_float(safe_attr(track, "dRel", 999.0)), default=None)
   actuators = safe_attr(car_control, "actuators")
+  model_action = safe_attr(model, "action")
 
   model_d_rel = 0.0
   model_v_rel = 0.0
@@ -139,6 +152,8 @@ def make_sample(path: Path, start_ns: int, mono_time: int, latest: dict[str, Any
     red_light=bool(safe_attr(starpilot_plan, "redLight", False)),
     forcing_stop=bool(safe_attr(starpilot_plan, "forcingStop", False)),
     should_stop=bool(safe_attr(long_plan, "shouldStop", False)),
+    model_desired_accel=safe_float(safe_attr(model_action, "desiredAcceleration", 0.0)),
+    model_should_stop=bool(safe_attr(model_action, "shouldStop", False)),
     lead_status=lead_status,
     lead_radar=bool(safe_attr(lead, "radar", False)) if lead_status else False,
     lead_track_id=lead_track_id,
@@ -153,6 +168,7 @@ def make_sample(path: Path, start_ns: int, mono_time: int, latest: dict[str, Any
     confirmation_tracks=len(confirmation_tracks),
     closest_path_track_d_rel=(safe_float(safe_attr(closest_path_track, "dRel", 0.0)) if closest_path_track is not None else 0.0),
     closest_path_track_v_rel=(safe_float(safe_attr(closest_path_track, "vRel", 0.0)) if closest_path_track is not None else 0.0),
+    closest_path_track_id=(int(safe_attr(closest_path_track, "trackId", -1)) if closest_path_track is not None else -1),
   )
 
 

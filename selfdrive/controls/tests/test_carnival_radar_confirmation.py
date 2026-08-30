@@ -30,8 +30,8 @@ def make_model_data(path_y: float = 0.0):
     meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
     laneLines=[],
     position=SimpleNamespace(
-      x=[0.0, 10.0, 20.0, 40.0],
-      y=[path_y, path_y, path_y, path_y],
+      x=[0.0, 10.0, 20.0, 40.0, 80.0],
+      y=[path_y, path_y, path_y, path_y, path_y],
     ),
   )
 
@@ -305,6 +305,83 @@ def test_carnival_primary_consistent_velocity_refines_model_velocity():
   assert abs(lead_state["vRel"] - 0.8) < 1e-6
   assert abs(lead_state["vLead"] - 10.8) < 1e-6
   assert lead_state["aLeadK"] == track.aLeadK
+
+
+def test_carnival_primary_far_velocity_uses_bounded_blend_after_stable_association():
+  track = make_track(CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN + 1,
+                     d_rel=55.0, y_rel=0.0, v_rel=-1.2, v_ego=30.0)
+  for frame in range(1, 8):
+    distance = 55.0 - 1.2 * 0.05 * frame
+    track.update(distance, 0.0, -1.2, 28.8, True)
+  model_data = make_model_data()
+  lead = SimpleNamespace(
+    prob=0.9,
+    x=[track.dRel + 1.52],
+    y=[0.0],
+    v=[29.6],
+    a=[-0.2],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=30.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=30.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+    preferred_track_id=track.identifier,
+    preferred_track_frames=5,
+  )
+
+  assert lead_state["radar"]
+  assert abs(lead_state["vRel"] + 0.68) < 1e-6
+  assert abs(lead_state["vLead"] - 29.32) < 1e-6
+  assert lead_state["aLeadK"] == -0.2
+
+
+def test_carnival_primary_far_velocity_stays_model_led_before_stable_association():
+  track = make_track(CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN + 1,
+                     d_rel=55.0, y_rel=0.0, v_rel=-1.2, v_ego=30.0)
+  for frame in range(1, 8):
+    distance = 55.0 - 1.2 * 0.05 * frame
+    track.update(distance, 0.0, -1.2, 28.8, True)
+  model_data = make_model_data()
+  lead = SimpleNamespace(
+    prob=0.9,
+    x=[track.dRel + 1.52],
+    y=[0.0],
+    v=[29.6],
+    a=[-0.2],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=30.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=30.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+    preferred_track_id=track.identifier,
+    preferred_track_frames=4,
+  )
+
+  assert lead_state["radar"]
+  assert abs(lead_state["vRel"] + 0.4) < 1e-6
+  assert lead_state["aLeadK"] == -0.2
 
 
 def test_carnival_primary_velocity_outside_consensus_stays_model_led():
