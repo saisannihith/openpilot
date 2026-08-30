@@ -64,6 +64,15 @@ def latest_at(times: list[int], values: list[Any], mono_time: int, max_age_ns: i
   return values[index]
 
 
+def future_rate(observations: list[tuple[int, float]], now: int, distance: float) -> tuple[float, float] | None:
+  future = next(((time, d_rel) for time, d_rel in observations
+                 if 0.25 <= (time - now) / 1e9 <= 0.60), None)
+  if future is None:
+    return None
+  dt = (future[0] - now) / 1e9
+  return (future[1] - distance) / dt, dt
+
+
 def expand_paths(patterns: list[str]) -> list[Path]:
   paths: list[Path] = []
   for pattern in patterns:
@@ -113,6 +122,13 @@ def replay_path(path: Path, with_card: bool) -> dict[str, Any]:
     generated = [msg for msg in process_output if msg.which() == service]
     values = generated if generated else [msg for msg in messages if msg.which() == service]
     event_series[service] = ([int(msg.logMonoTime) for msg in values], values)
+  observations: dict[int, list[tuple[int, float]]] = {}
+  for tracks_msg in event_series["liveTracks"][1]:
+    now = int(tracks_msg.logMonoTime)
+    for point in tracks_msg.liveTracks.points:
+      track_id = int(point.trackId)
+      if is_r0100(track_id):
+        observations.setdefault(track_id, []).append((now, safe_float(point.dRel)))
   scc_times, scc_values = decode_scc_refs(messages)
 
   metrics: Counter[str] = Counter()
@@ -128,6 +144,11 @@ def replay_path(path: Path, with_card: bool) -> dict[str, Any]:
   authority_model_acceleration: list[float] = []
   authority_acceleration_delta: list[float] = []
   full_raw_counterfactual_degradation: list[float] = []
+  future_raw_errors: list[float] = []
+  future_replay_errors: list[float] = []
+  future_model_errors: list[float] = []
+  future_accel_errors: list[float] = []
+  future_replay_degradation: list[float] = []
   accel_magnitudes: list[float] = []
   switch_examples: list[dict[str, Any]] = []
   velocity_examples: list[dict[str, Any]] = []
@@ -221,6 +242,27 @@ def replay_path(path: Path, with_card: bool) -> dict[str, Any]:
       if model_delta is not None:
         corrections.append(abs(replay_v_rel - model_v_rel))
       accel_magnitudes.append(abs(safe_float(lead.aLeadK)))
+
+      future = future_rate(observations.get(track_id, []), mono_time, safe_float(point.dRel))
+      if future is not None and model_v_rel is not None:
+        future_v_rel, future_dt = future
+        raw_error = abs(raw_v_rel - future_v_rel)
+        replay_error = abs(replay_v_rel - future_v_rel)
+        model_error = abs(model_v_rel - future_v_rel)
+        future_raw_errors.append(raw_error)
+        future_replay_errors.append(replay_error)
+        future_model_errors.append(model_error)
+        degradation = replay_error - model_error
+        future_replay_degradation.append(degradation)
+        if degradation > 0.5:
+          metrics["futureReplayHarmfulOver0_5"] += 1
+        raw_a_rel = float(point.aRel)
+        if math.isfinite(raw_a_rel):
+          forecast_v_rel = raw_v_rel + 0.5 * raw_a_rel * future_dt
+          forecast_error = abs(forecast_v_rel - future_v_rel)
+          future_accel_errors.append(forecast_error)
+          if forecast_error > model_error + 0.5:
+            metrics["futureRadarAccelHarmfulOver0_5"] += 1
 
       if selected_model_prob <= 1e-6:
         metrics["radarOnlyFrames"] += 1
@@ -324,6 +366,13 @@ def replay_path(path: Path, with_card: bool) -> dict[str, Any]:
         "model": summary(authority_model_vs_scc),
       },
       "fullRawPrimaryCounterfactualDegradation": summary(full_raw_counterfactual_degradation),
+    },
+    "futureVelocityError": {
+      "raw": summary(future_raw_errors),
+      "replayed": summary(future_replay_errors),
+      "model": summary(future_model_errors),
+      "rawWithDecodedAcceleration": summary(future_accel_errors),
+      "replayMinusModel": summary(future_replay_degradation),
     },
     "accelerationMagnitude": summary(accel_magnitudes),
     "modelMatchedRawAuthorityAcceleration": {

@@ -24,7 +24,8 @@ def encode_velocity(value: float, bit_offset: int = 0) -> bytes:
 
 def encode_object(track_id: int, heartbeat: int, distance: float, lateral: float,
                   velocity: float, bit_offset: int = 0, *, quality_byte: int = 1,
-                  state_alt: int = 0, state: int = 1) -> bytes:
+                  state_alt: int = 0, state: int = 1, lateral_velocity: float = 0.0,
+                  relative_acceleration: float = 0.0) -> bytes:
   values = (
     (quality_byte, bit_offset + 32, 8),
     (track_id, bit_offset + 42, 8),
@@ -34,6 +35,8 @@ def encode_object(track_id: int, heartbeat: int, distance: float, lateral: float
     (round(distance / 0.05), bit_offset + 64, 13),
     (round(lateral / 0.05), bit_offset + 78, 11),
     (round((velocity - 2.4) / 0.05), bit_offset + 91, 11),
+    (round((lateral_velocity + 25.0) / 0.2), bit_offset + 106, 8),
+    (round(relative_acceleration / 0.1), bit_offset + 116, 8),
   )
   packed = 0
   for value, start, size in values:
@@ -66,9 +69,11 @@ def test_carnival_r0100_second_slot_relative_velocity_decode() -> None:
 
 def test_carnival_r0100_full_object_decode_both_slots() -> None:
   first = int.from_bytes(encode_object(17, 9, 42.5, -1.25, -3.4,
-                                       quality_byte=73, state_alt=12, state=4), "little")
+                                       quality_byte=73, state_alt=12, state=4,
+                                       lateral_velocity=-1.4, relative_acceleration=-2.3), "little")
   second = int.from_bytes(encode_object(91, 4, 88.0, 2.15, 7.3, 128,
-                                        quality_byte=46, state_alt=6, state=3), "little")
+                                        quality_byte=46, state_alt=6, state=3,
+                                        lateral_velocity=2.6, relative_acceleration=1.7), "little")
   dat = (first | second).to_bytes(32, "little")
 
   obj1 = decode_carnival_radar_object(dat, 0)
@@ -80,6 +85,8 @@ def test_carnival_r0100_full_object_decode_both_slots() -> None:
   assert (obj2.quality_byte, obj2.state_alt, obj2.state) == (46, 6, 3)
   assert (obj1.d_rel, obj1.y_rel, obj1.v_rel) == pytest.approx((42.5, -1.25, -3.4))
   assert (obj2.d_rel, obj2.y_rel, obj2.v_rel) == pytest.approx((88.0, 2.15, 7.3))
+  assert (obj1.yv_rel, obj1.a_rel) == pytest.approx((-1.4, -2.3))
+  assert (obj2.yv_rel, obj2.a_rel) == pytest.approx((2.6, 1.7))
   assert carnival_radar_object_valid(obj1)
   assert carnival_radar_object_valid(obj2)
 
@@ -126,6 +133,7 @@ def test_carnival_radar_requires_persistence_and_publishes_stable_id() -> None:
   assert len(rr.points) == 1
   assert rr.points[0].trackId == CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE + 37
   assert (rr.points[0].dRel, rr.points[0].yRel, rr.points[0].vRel) == pytest.approx((31.0, -0.45, -2.0))
+  assert (rr.points[0].yvRel, rr.points[0].aRel) == pytest.approx((0.0, 0.0))
 
 
 def test_carnival_radar_recycled_id_must_requalify() -> None:
@@ -143,7 +151,7 @@ def test_carnival_radar_recycled_id_must_requalify() -> None:
   assert 37 not in probe.carnival_confirmation_tracks
   probe._update_carnival_object_probe(replacement)
   assert probe.carnival_confirmation_tracks[37][1:4] == pytest.approx((55.0, 3.0, 4.0))
-  assert not probe.carnival_confirmation_tracks[37][4]
+  assert not probe.carnival_confirmation_tracks[37][-1]
 
 
 def test_carnival_primary_slot_requires_factory_quality() -> None:
@@ -234,6 +242,8 @@ def test_carnival_radar_expires_stale_tracks() -> None:
   probe.carnival_confirmation_tracks[12] = (
     now - CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE - 0.01,
     20.0,
+    0.0,
+    0.0,
     0.0,
     0.0,
     False,

@@ -39,6 +39,7 @@ class Policy:
   bidirectional: bool = False
   max_model_residual: float = math.inf
   direct_radar: bool = False
+  relative_accel_forecast: bool = False
 
 
 POLICIES = (
@@ -56,6 +57,8 @@ POLICIES = (
          primary_only=True, bidirectional=True, max_model_residual=0.75),
   Policy("primary_direct_consistent", 8, 6, 0.75, 0.0, 220.0, math.inf, 1.0, math.inf,
          primary_only=True, direct_radar=True),
+  Policy("primary_direct_with_radar_acceleration", 8, 6, 0.75, 0.0, 220.0, math.inf, 1.0, math.inf,
+         primary_only=True, direct_radar=True, relative_accel_forecast=True),
 )
 
 
@@ -108,7 +111,14 @@ def future_rate(observations, now, distance):
   if future is None:
     return None
   dt = (future[0] - now) / 1e9
-  return (future[1] - distance) / dt
+  return (future[1] - distance) / dt, dt
+
+
+def extract(raw, start, size, signed=False):
+  value = (raw >> start) & ((1 << size) - 1)
+  if signed and value & (1 << (size - 1)):
+    value -= 1 << size
+  return value
 
 
 def policy_output(policy, sample):
@@ -160,12 +170,30 @@ def main():
     selected_track = {"leadOne": None, "leadTwo": None}
     selected_frames = defaultdict(int)
     latest = {}
+    latest_dynamics = {}
     latest_model_vrel: list[float] = []
 
     for msg in LogReader(str(path), default_mode=ReadMode.AUTO_INTERACTIVE, sort_by_time=False):
       now = int(msg.logMonoTime)
       which = msg.which()
-      if which == "liveTracks":
+      if which == "can":
+        for can in msg.can:
+          if int(can.src) != 1 or not 0x180 <= int(can.address) <= 0x184 or len(can.dat) != 32:
+            continue
+          packed = int.from_bytes(bytes(can.dat), "little", signed=False)
+          for offset in (0, 128):
+            raw = (packed >> offset) & ((1 << 128) - 1)
+            raw_track_id = extract(raw, 42, 8)
+            quality = extract(raw, 32, 8)
+            state = extract(raw, 55, 3)
+            if raw_track_id == 0 or quality == 0 or state == 0:
+              continue
+            latest_dynamics[raw_track_id] = {
+              "time": now,
+              "rawARel": extract(raw, 116, 8, True) * 0.1,
+              "rawYVRel": extract(raw, 106, 8) * 0.2 - 25.0,
+            }
+      elif which == "liveTracks":
         seen = set()
         latest = {}
         for point in msg.liveTracks.points:
@@ -188,6 +216,9 @@ def main():
             "observedVRel": regression_rate(history),
             "trackFrames": track_frames[track_id],
           }
+          dynamics = latest_dynamics.get(track_id & 0xFF)
+          if dynamics is not None and 0 <= now - dynamics["time"] <= int(0.12e9):
+            latest[track_id].update(dynamics)
         for track_id in list(track_frames):
           if track_id not in seen:
             track_frames[track_id] = 0
@@ -232,9 +263,19 @@ def main():
       fused = policy_output(policy, sample)
       if fused is None:
         continue
-      future = future_rate(observations[(sample["routeSegment"], sample["trackId"])], sample["time"], sample["dRel"])
-      if future is None:
+      future_result = future_rate(
+        observations[(sample["routeSegment"], sample["trackId"])], sample["time"], sample["dRel"],
+      )
+      if future_result is None:
         continue
+      future, future_dt = future_result
+      if policy.relative_accel_forecast:
+        if "rawARel" not in sample:
+          continue
+        # future_rate is the average relative velocity across the interval.
+        # Under constant relative acceleration, its matching prediction is
+        # v_now + 0.5 * a_rel * dt.
+        fused += 0.5 * sample["rawARel"] * future_dt
       model_error = abs(sample["modelVRel"] - future)
       fused_error = abs(fused - future)
       improvement = model_error - fused_error
@@ -254,6 +295,8 @@ def main():
           "modelVRel": round(sample["modelVRel"], 3),
           "fusedVRel": round(fused, 3),
           "futureVRel": round(future, 3),
+          "rawARel": round(sample.get("rawARel", math.nan), 3),
+          "futureDt": round(future_dt, 3),
           "errorDelta": round(improvement, 3),
         })
     event_improvements = [float(np.median(values)) for values in events.values()]

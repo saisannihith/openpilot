@@ -34,6 +34,8 @@ CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE = 0.25
 CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST = 3
 CARNIVAL_4TH_GEN_CONFIRMATION_MAX_GAP = 0.15
 CARNIVAL_4TH_GEN_CONFIRMATION_VELOCITY_SPEC = (91, 11, 0.05, 2.4)
+CARNIVAL_4TH_GEN_LATERAL_VELOCITY_SPEC = (106, 8, 0.2, -25.0)
+CARNIVAL_4TH_GEN_RELATIVE_ACCELERATION_SPEC = (116, 8, 0.1, 0.0)
 CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_Y = 50.0
 CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_V = 60.0
 
@@ -65,9 +67,13 @@ class CarnivalRadarObject:
   d_rel: float
   y_rel: float
   v_rel: float
+  yv_rel: float
+  a_rel: float
 
 
 def decode_carnival_radar_object(dat: bytes, bit_offset: int) -> CarnivalRadarObject:
+  yv_start, yv_size, yv_scale, yv_offset = CARNIVAL_4TH_GEN_LATERAL_VELOCITY_SPEC
+  a_start, a_size, a_scale, a_offset = CARNIVAL_4TH_GEN_RELATIVE_ACCELERATION_SPEC
   return CarnivalRadarObject(
     raw_track_id=get_little_unsigned(dat, bit_offset + 42, 8),
     heartbeat=get_little_unsigned(dat, bit_offset + 124, 4),
@@ -78,6 +84,8 @@ def decode_carnival_radar_object(dat: bytes, bit_offset: int) -> CarnivalRadarOb
     d_rel=get_little_unsigned(dat, bit_offset + 64, 13) * 0.05,
     y_rel=get_little_signed(dat, bit_offset + 78, 11) * 0.05,
     v_rel=decode_carnival_confirmation_velocity(dat, bit_offset, 0, 0),
+    yv_rel=get_little_unsigned(dat, bit_offset + yv_start, yv_size) * yv_scale + yv_offset,
+    a_rel=get_little_signed(dat, bit_offset + a_start, a_size) * a_scale + a_offset,
   )
 
 
@@ -185,15 +193,15 @@ class RadarInterface(RadarInterfaceBase):
     self.ioniq_6_radar_probe = CP.carFingerprint == CAR.HYUNDAI_IONIQ_6 and CP.openpilotLongitudinalControl and self.radar_off_can
     self.ioniq_6_radar_probe_logged = False
     self.ioniq_6_radar_probe_updates = 0
-    # The 2024 Carnival exposes an MRR30-like object bank at 0x180-0x184 on bus 1.
-    # Keep this as a shadow probe until lateral/velocity fields are fully decoded;
-    # publishing it as liveTracks would immediately affect longitudinal planning.
+    # The 2024 Carnival exposes a ten-object R0100 bank at 0x180-0x184 on bus 1.
+    # The parser publishes its complete measured kinematic point contract while
+    # radard remains responsible for model association and control qualification.
     self.carnival_object_probe = CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN
     self.carnival_object_probe_prev: dict[tuple[int, int], tuple[float, float]] = {}
     self.carnival_object_probe_last_log = 0.0
     self.carnival_object_probe_seen = 0
     self.carnival_object_probe_valid = 0
-    self.carnival_confirmation_tracks: dict[int, tuple[float, float, float, float, bool]] = {}
+    self.carnival_confirmation_tracks: dict[int, tuple[float, float, float, float, float, float, bool]] = {}
     self.carnival_confirmation_prev: dict[int, tuple[float, float, float, float, bool]] = {}
     self.carnival_confirmation_persist: dict[int, int] = {}
     self.rcp = get_radar_can_parser(CP, self.radar_config)
@@ -299,7 +307,7 @@ class RadarInterface(RadarInterfaceBase):
       self.carnival_confirmation_persist[raw_track_id] = persist
       if persist >= CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST:
         self.carnival_confirmation_tracks[raw_track_id] = (
-          now, obj.d_rel, obj.y_rel, obj.v_rel, qualified_primary,
+          now, obj.d_rel, obj.y_rel, obj.v_rel, obj.yv_rel, obj.a_rel, qualified_primary,
         )
 
     self._expire_carnival_confirmation_tracks(now)
@@ -319,11 +327,12 @@ class RadarInterface(RadarInterfaceBase):
       "Carnival 4th gen radar probe: ",
       f"addr=0x{CARNIVAL_4TH_GEN_PRIMARY_OBJECT_ADDR:x} slot=1 rawTrackId={primary.raw_track_id} ",
       f"heartbeat={primary.heartbeat} dRel={primary.d_rel:.2f} yRel={primary.y_rel:.2f} ",
-      f"vRel={primary.v_rel:.2f} dDot={d_dot_str} shadowDistance=YES ",
+      f"vRel={primary.v_rel:.2f} yvRel={primary.yv_rel:.2f} aRel={primary.a_rel:.2f} ",
+      f"dDot={d_dot_str} shadowDistance=YES ",
       f"r0100Track={primary.raw_track_id in self.carnival_confirmation_tracks} ",
       f"qualifiedPrimary={primary.quality_byte == CARNIVAL_4TH_GEN_PRIMARY_QUALITY} ",
       f"publishedTracks={len(self.carnival_confirmation_tracks)} publishReady={bool(self.carnival_confirmation_tracks)} ",
-      f"velocityDecoded=YES controlReady=MODEL_FUSED_TARGET_QUALIFIED conflicts={len(conflicting_ids)} ",
+      f"kinematicsDecoded=YES controlReady=MODEL_FUSED_TARGET_QUALIFIED conflicts={len(conflicting_ids)} ",
       f"seen={self.carnival_object_probe_seen} ",
       f"valid={self.carnival_object_probe_valid}",
     )))
@@ -343,7 +352,9 @@ class RadarInterface(RadarInterfaceBase):
       return
 
     points = list(rr.points)
-    for raw_track_id, (_, d_rel, y_rel, v_rel, qualified_primary) in sorted(self.carnival_confirmation_tracks.items()):
+    for raw_track_id, (_, d_rel, y_rel, v_rel, yv_rel, a_rel, qualified_primary) in sorted(
+      self.carnival_confirmation_tracks.items()
+    ):
       pt = structs.RadarData.RadarPoint()
       track_id_base = (CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_BASE if qualified_primary
                        else CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE)
@@ -352,8 +363,8 @@ class RadarInterface(RadarInterfaceBase):
       pt.dRel = float(d_rel)
       pt.yRel = float(y_rel)
       pt.vRel = float(v_rel)
-      pt.aRel = float("nan")
-      pt.yvRel = float("nan")
+      pt.aRel = float(a_rel)
+      pt.yvRel = float(yv_rel)
       points.append(pt)
     rr.points = points
 

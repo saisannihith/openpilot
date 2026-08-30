@@ -27,7 +27,7 @@ NIS_GATE = 11.345
 PRIMARY_ADDR = 0x180
 PRIMARY_SLOT = 1
 PRIMARY_QUALITY = 0xFF
-UNKNOWN_BITS = (*range(32, 42), *range(50, 64), 77, 89, 90, 102, 103, 113, 114)
+UNKNOWN_BITS = (*range(32, 42), *range(50, 64), 77, 89, 90, *range(102, 106), 114, 115)
 METADATA_WINDOWS = tuple(
   (start, width)
   for width in range(2, 7)
@@ -79,8 +79,8 @@ def decode(t: float, addr: int, dat: bytes) -> list[RadarObject]:
       d_rel=extract(raw, 64, 13) * 0.05,
       y_rel=extract(raw, 78, 11, True) * 0.05,
       v_rel=extract(raw, 91, 11, True) * 0.05 + 2.4,
-      yv_rel=extract(raw, 104, 9, True) * 0.05 + 0.6,
-      a_rel=extract(raw, 115, 9, True) * 0.1,
+      yv_rel=extract(raw, 106, 8) * 0.2 - 25.0,
+      a_rel=extract(raw, 116, 8, True) * 0.1,
       heartbeat=extract(raw, 124, 4),
     ))
   return objects
@@ -522,8 +522,9 @@ def main() -> int:
   report = {
     "layout": {
       "provenKinematics": ["trackId", "dRel", "yRel", "vRel"],
-      "publicCandidates": ["validCount@32", "yvRel@104", "aRel@115", "heartbeat@124"],
-      "unresolvedMetadata": "bits 50..63 and sparse gaps between kinematic fields",
+      "decodedDynamics": ["yvRel@106 unsigned 8-bit * 0.2 - 25.0", "aRel@116 signed 8-bit * 0.1"],
+      "publicCandidates": ["validCount@32", "heartbeat@124"],
+      "unresolvedMetadata": "bits 50..63 and sparse gaps 77, 89..90, 102..105, 114..115",
       "openpilotRequiredRadarPointFields": ["dRel", "yRel", "vRel"],
       "openpilotOptionalRadarPointFields": ["aRel", "yvRel"],
       "notInRadarPointSchema": ["classification", "OEM lane assignment"],
