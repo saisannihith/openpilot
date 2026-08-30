@@ -6,18 +6,18 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from cereal import car, log
+from cereal import log
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.values import CAR
 from opendbc.car.gm.values import CAR as GM_CAR, GMFlags
-from opendbc.car.hyundai.interface import CarInterface as HyundaiCarInterface
-from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR
+from opendbc.car.ford.interface import CarInterface as FordCarInterface
+from opendbc.car.ford.values import CAR as FORD_CAR
 from opendbc.car.toyota.interface import CarInterface as ToyotaCarInterface
 from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 import openpilot.selfdrive.controls.lib.longitudinal_planner as longitudinal_planner_module
-from openpilot.selfdrive.controls.lib.longcontrol import LongControl, LongCtrlState
+from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
-from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, get_coast_accel, get_vehicle_min_accel, should_publish_planner_fcw, should_guard_carnival_lone_high_speed_red_light, update_carnival_lone_high_speed_red_light_suppression, get_carnival_red_light_stop_line_decel, get_carnival_low_speed_stop_context_hold_cap
+from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, get_coast_accel, get_vehicle_min_accel, should_publish_planner_fcw
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LongitudinalMpc,
   build_model_lead_trajectory,
@@ -29,10 +29,26 @@ from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import (
   allow_radar_standstill_gap_settle,
   get_far_follow_output_slew_rates,
   get_follow_prebrake_min_headway,
-  get_kia_carnival_4th_gen_radar_far_follow_cap,
   get_honda_accord_lead_departure_tune,
+  get_honda_accord_stop_go_accel_cap,
+  get_honda_crv_5g_stopped_lead_obstacle_bias,
+  get_honda_crv_5g_low_speed_stopped_lead_cap,
+  allow_honda_crv_5g_vision_gap_settle,
+  is_honda_crv_5g_early_radar_follow_lead,
+  get_honda_crv_5g_early_radar_follow_cap,
+  get_standstill_gap_settle_max_extra_gap,
+  get_standstill_stopped_lead_guard_distance_margin,
+  get_standstill_stopped_lead_guard_max_lead_speed,
+  get_stop_sign_low_speed_hold,
+  get_tracked_lead_catchup_bias_cap,
+  get_tracked_lead_catchup_bias_gain,
+  get_tracked_lead_catchup_cruise_error_full,
+  get_tracked_lead_catchup_fade_margins,
+  get_tracked_lead_catchup_headway_margins,
+  get_tracked_lead_catchup_speed_range,
   get_toyota_prius_stopped_lead_obstacle_bias,
   get_toyota_rav4_tss2_lead_departure_tune,
+  get_toyota_rav4_tss2_lead_creep_tune,
   get_toyota_rav4_tss2_early_lead_cap,
   get_toyota_sienna_post_departure_restop_cap,
   is_toyota_rav4_tss2_radar_follow_lead,
@@ -78,311 +94,6 @@ def make_lead(*, status: bool, d_rel: float = 200.0, v_lead: float = 0.0, a_lead
   return lead
 
 
-def test_carnival_lone_high_speed_red_light_guard_requires_no_other_stop_evidence():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
-  assert should_guard_carnival_lone_high_speed_red_light(CP, 20.0, True, False, False, False)
-  assert not should_guard_carnival_lone_high_speed_red_light(CP, 16.0, True, False, False, False)
-  assert not should_guard_carnival_lone_high_speed_red_light(CP, 20.0, True, True, False, False)
-  assert not should_guard_carnival_lone_high_speed_red_light(CP, 20.0, True, False, True, False)
-  assert not should_guard_carnival_lone_high_speed_red_light(CP, 20.0, True, False, False, True)
-  assert not should_guard_carnival_lone_high_speed_red_light(SimpleNamespace(carFingerprint="HONDA_CIVIC"), 20.0, True, False, False, False)
-
-
-def test_carnival_lone_high_speed_red_light_guard_latches_until_evidence_or_clear():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
-  suppressed = update_carnival_lone_high_speed_red_light_suppression(CP, 20.0, True, False, False)
-  assert suppressed
-  assert not update_carnival_lone_high_speed_red_light_suppression(
-    CP, 18.0, True, False, False, currently_suppressed=suppressed,
-    model_length=52.0, pre_red_stop_evidence=True)
-  assert update_carnival_lone_high_speed_red_light_suppression(
-    CP, 14.0, True, False, False, currently_suppressed=suppressed, model_length=120.0)
-  assert not update_carnival_lone_high_speed_red_light_suppression(
-    CP, 12.0, True, False, False, currently_suppressed=suppressed, model_length=30.0)
-  assert not update_carnival_lone_high_speed_red_light_suppression(
-    CP, 22.0, True, False, False, forcing_stop=True, currently_suppressed=suppressed, model_length=150.0)
-  assert not update_carnival_lone_high_speed_red_light_suppression(
-    CP, 14.0, False, False, False, currently_suppressed=suppressed)
-  assert not update_carnival_lone_high_speed_red_light_suppression(
-    CP, 14.0, True, True, False, currently_suppressed=suppressed)
-  assert not update_carnival_lone_high_speed_red_light_suppression(
-    CP, 14.0, True, False, True, currently_suppressed=suppressed)
-
-
-def test_carnival_lone_high_speed_red_light_latch_ignores_forcing_stop_only_after_latched():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
-  assert not update_carnival_lone_high_speed_red_light_suppression(CP, 20.0, True, False, False, True, False)
-  suppressed = update_carnival_lone_high_speed_red_light_suppression(CP, 20.0, True, False, False, False, False)
-  assert update_carnival_lone_high_speed_red_light_suppression(
-    CP, 14.0, True, False, False, True, currently_suppressed=suppressed)
-
-
-def test_carnival_red_light_stop_line_decel_releases_route16_like_stop():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
-
-  stop_line_decel = get_carnival_red_light_stop_line_decel(
-    CP,
-    17.13,
-    True,
-    model_should_stop=False,
-    lead_control_active=False,
-    forcing_stop=False,
-    model_length=52.7,
-  )
-
-  assert stop_line_decel == pytest.approx(2.886, abs=0.01)
-  assert not update_carnival_lone_high_speed_red_light_suppression(
-    CP,
-    17.13,
-    True,
-    model_should_stop=False,
-    lead_control_active=False,
-    forcing_stop=False,
-    model_length=52.7,
-  )
-
-
-def test_carnival_red_light_stop_line_decel_keeps_phantom_red_suppressed():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
-
-  assert get_carnival_red_light_stop_line_decel(
-    CP,
-    31.0,
-    True,
-    model_should_stop=False,
-    lead_control_active=False,
-    forcing_stop=False,
-    model_length=100.0,
-  ) is None
-  assert update_carnival_lone_high_speed_red_light_suppression(
-    CP,
-    31.0,
-    True,
-    model_should_stop=False,
-    lead_control_active=False,
-    forcing_stop=False,
-    model_length=100.0,
-  )
-
-
-def test_carnival_stopped_lead_hold_ignores_gap_settle_release_permission():
-  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-  lead = make_lead(status=True, d_rel=5.8, v_lead=0.0, radar=True, model_prob=1.0)
-
-  release_ready = planner.get_standstill_release_ready(
-    lead_depart_ready=False,
-    confident_depart_ready=False,
-    slow_creep_depart_ready=False,
-    radar_gap_settle_active=True,
-    depart_release_hold_active=False,
-  )
-  cap = planner.get_standstill_stopped_lead_guard_cap(
-    lead,
-    v_ego=0.2,
-    accel_min=-1.0,
-    stop_distance=4.5,
-    release_ready=release_ready,
-    confident_depart_ready=False,
-  )
-
-  assert not release_ready
-  assert cap is not None
-  assert cap <= -0.45
-
-
-def test_non_carnival_stopped_lead_guard_allows_gap_settle_release_permission():
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-  lead = make_lead(status=True, d_rel=4.0, v_lead=0.0, radar=True, model_prob=1.0)
-
-  release_ready = planner.get_standstill_release_ready(
-    lead_depart_ready=False,
-    confident_depart_ready=False,
-    slow_creep_depart_ready=False,
-    radar_gap_settle_active=True,
-    depart_release_hold_active=False,
-  )
-
-  assert release_ready
-  assert planner.get_standstill_stopped_lead_guard_cap(
-    lead,
-    v_ego=0.2,
-    accel_min=-1.0,
-    stop_distance=4.5,
-    release_ready=release_ready,
-    confident_depart_ready=False,
-  ) is None
-
-
-def test_carnival_red_light_stop_line_decel_requires_carnival_and_no_lead():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
-  non_carnival = SimpleNamespace(carFingerprint="HONDA_CIVIC")
-
-  assert get_carnival_red_light_stop_line_decel(
-    non_carnival,
-    17.13,
-    True,
-    model_should_stop=False,
-    lead_control_active=False,
-    forcing_stop=False,
-    model_length=52.7,
-  ) is None
-  assert get_carnival_red_light_stop_line_decel(
-    CP,
-    17.13,
-    True,
-    model_should_stop=False,
-    lead_control_active=True,
-    forcing_stop=False,
-    model_length=52.7,
-  ) is None
-
-
-def test_carnival_low_speed_stop_context_hold_cap_latches_red_or_model_stop():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
-  non_carnival = SimpleNamespace(carFingerprint="HONDA_CIVIC")
-
-  assert get_carnival_low_speed_stop_context_hold_cap(
-    CP, 0.2, -3.5, red_light=True, model_should_stop=False, forcing_stop=False,
-  ) == pytest.approx(-0.45)
-  assert get_carnival_low_speed_stop_context_hold_cap(
-    CP, 0.0, -3.5, red_light=False, model_should_stop=True, forcing_stop=False,
-  ) == pytest.approx(-0.45)
-  assert get_carnival_low_speed_stop_context_hold_cap(
-    CP, 0.0, -3.5, red_light=False, model_should_stop=False, forcing_stop=True,
-  ) == pytest.approx(-0.45)
-
-  assert get_carnival_low_speed_stop_context_hold_cap(
-    CP, 1.4, -3.5, red_light=True, model_should_stop=False, forcing_stop=False,
-  ) is None
-  assert get_carnival_low_speed_stop_context_hold_cap(
-    CP, 0.0, -3.5, red_light=True, model_should_stop=False, forcing_stop=False, driver_gas=True,
-  ) is None
-  assert get_carnival_low_speed_stop_context_hold_cap(
-    non_carnival, 0.0, -3.5, red_light=True, model_should_stop=False, forcing_stop=False,
-  ) is None
-
-
-def test_carnival_lateral_feasibility_speed_cap_leaves_non_carnival_unchanged():
-  CP = SimpleNamespace(carFingerprint="HONDA_CIVIC")
-  model = SimpleNamespace(orientationRate=SimpleNamespace(z=[0.20] * ModelConstants.IDX_N))
-  v = np.full(len(T_IDXS_MPC), 8.8)
-  a = np.linspace(-0.2, 0.2, len(T_IDXS_MPC))
-  j = np.linspace(0.1, -0.1, len(T_IDXS_MPC))
-
-  capped_v, capped_a, capped_j = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
-    CP, model, 8.8, v, a, j)
-
-  assert np.allclose(capped_v, v)
-  assert np.allclose(capped_a, a)
-  assert np.allclose(capped_j, j)
-
-
-def test_carnival_lateral_feasibility_speed_cap_updates_accel_and_zero_jerk_reference():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
-  model = SimpleNamespace(orientationRate=SimpleNamespace(z=[0.22] * ModelConstants.IDX_N))
-  v = np.full(len(T_IDXS_MPC), 8.8)
-  a = np.full(len(T_IDXS_MPC), 0.4)
-  j = np.full(len(T_IDXS_MPC), 0.2)
-
-  capped_v, capped_a, capped_j = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
-    CP, model, 8.8, v, a, j)
-
-  assert np.all(capped_v <= v + 1e-6)
-  assert np.min(capped_v) < np.min(v)
-  assert not np.allclose(capped_a, a)
-  assert np.all(capped_a >= longitudinal_planner_module.ACCEL_MIN - 1e-6)
-  assert np.all(capped_a <= longitudinal_planner_module.ACCEL_MAX + 1e-6)
-  assert np.allclose(capped_j, 0.0)
-
-
-def test_carnival_lateral_feasibility_speed_cap_includes_lane_centered_curvature():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
-  model = SimpleNamespace(orientationRate=SimpleNamespace(z=[0.0] * ModelConstants.IDX_N))
-  v = np.full(len(T_IDXS_MPC), 8.8)
-  a = np.full(len(T_IDXS_MPC), 0.2)
-  j = np.full(len(T_IDXS_MPC), 0.1)
-
-  raw_v, raw_a, raw_j = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
-    CP, model, 8.8, v, a, j)
-  centered_v, centered_a, centered_j = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
-    CP, model, 8.8, v, a, j, current_desired_curvature=0.025)
-
-  assert np.allclose(raw_v, v)
-  assert np.allclose(raw_a, a)
-  assert np.allclose(raw_j, j)
-  assert centered_v[0] < v[0]
-  assert np.all(centered_v <= v + 1e-6)
-  assert not np.allclose(centered_a, a)
-  assert np.allclose(centered_j, 0.0)
-
-
-def test_carnival_lateral_feasibility_speed_cap_smooths_before_curve():
-  v = np.full(len(T_IDXS_MPC), 8.8)
-  point_cap = np.array(v, copy=True)
-  curve_slice = slice(7, 10)
-  point_cap[curve_slice] = 5.8
-
-  smoothed = longitudinal_planner_module.smooth_carnival_lateral_feasibility_speed(v, point_cap)
-  dt = np.diff(T_IDXS_MPC)
-  decel_steps = (smoothed[:-1] - smoothed[1:]) / dt
-  accel_steps = (smoothed[1:] - smoothed[:-1]) / dt
-
-  assert np.all(smoothed <= v + 1e-6)
-  assert np.any(smoothed[:curve_slice.start] < v[:curve_slice.start])
-  assert np.max(decel_steps) <= longitudinal_planner_module.CARNIVAL_LATERAL_FEASIBILITY_PRE_DECEL + 1e-6
-  assert np.max(accel_steps) <= longitudinal_planner_module.CARNIVAL_LATERAL_FEASIBILITY_RELEASE_ACCEL + 1e-6
-
-
-def test_carnival_lateral_feasibility_speed_cap_handles_confirmed_highway_exit_curve():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
-  v = np.full(len(T_IDXS_MPC), 27.0)
-  a = np.full(len(T_IDXS_MPC), 0.2)
-  j = np.zeros(len(T_IDXS_MPC))
-  model = SimpleNamespace(orientationRate=SimpleNamespace(z=[0.081] * ModelConstants.IDX_N))
-
-  capped_v, _, _ = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
-    CP, model, 27.0, v, a, j,
-  )
-
-  assert np.min(capped_v) < 24.0
-  assert np.all(capped_v <= v + 1e-6)
-
-
-def test_carnival_lateral_feasibility_speed_cap_rejects_single_highway_yaw_spike():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN")
-  v = np.full(len(T_IDXS_MPC), 27.0)
-  a = np.full(len(T_IDXS_MPC), 0.2)
-  j = np.zeros(len(T_IDXS_MPC))
-  yaw_rate = np.zeros(ModelConstants.IDX_N)
-  yaw_rate[len(yaw_rate) // 2] = 0.30
-  model = SimpleNamespace(orientationRate=SimpleNamespace(z=yaw_rate))
-
-  capped_v, capped_a, capped_j = longitudinal_planner_module.apply_carnival_lateral_feasibility_speed_cap(
-    CP, model, 27.0, v, a, j,
-  )
-
-  assert np.allclose(capped_v, v)
-  assert np.allclose(capped_a, a)
-  assert np.allclose(capped_j, j)
-
-
-def test_carnival_pre_red_stop_evidence_confirms_yellow_light_approach():
-  CP = SimpleNamespace(carFingerprint="KIA_CARNIVAL_4TH_GEN", brand="hyundai")
-  planner = LongitudinalPlanner(CP)
-
-  assert not planner.update_carnival_pre_red_stop_evidence(
-    100.0, False, False, 190.0, 20.0, -0.2, -0.1)
-  assert planner.update_carnival_pre_red_stop_evidence(
-    101.0, False, False, 133.0, 20.0, -1.1, -0.4)
-  assert planner.update_carnival_pre_red_stop_evidence(
-    102.0, True, False, 52.0, 17.0, -2.0, -0.4)
-  assert not update_carnival_lone_high_speed_red_light_suppression(
-    CP, 17.0, True, False, False, False, False, 52.0,
-    pre_red_stop_evidence=True)
-
-
 def test_mpc_duplicate_lead_filters_do_not_cross_contaminate_tracks():
   mpc = LongitudinalMpc()
   mpc.set_cur_state(20.0, 0.0)
@@ -422,6 +133,87 @@ def test_prius_stopped_lead_obstacle_bias_does_not_apply_at_standstill_or_to_dep
 
   assert get_toyota_prius_stopped_lead_obstacle_bias(prius, stopped_lead, v_ego=0.0) == pytest.approx(0.0)
   assert get_toyota_prius_stopped_lead_obstacle_bias(prius, departing_lead, v_ego=8.0) == pytest.approx(0.0)
+
+
+def test_honda_crv_5g_stopped_lead_tune_is_vehicle_specific():
+  crv = CarInterface.get_non_essential_params(CAR.HONDA_CRV_5G)
+  civic = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  stopped_lead = make_lead(status=True, d_rel=18.0, v_lead=0.2, model_prob=0.99)
+
+  bias = get_honda_crv_5g_stopped_lead_obstacle_bias(crv, stopped_lead, v_ego=8.0)
+  assert 0.0 < bias < 1.0
+  assert get_honda_crv_5g_stopped_lead_obstacle_bias(civic, stopped_lead, v_ego=8.0) == pytest.approx(0.0)
+  assert get_honda_crv_5g_low_speed_stopped_lead_cap(
+    crv, make_lead(status=True, d_rel=10.0, v_lead=0.1, model_prob=0.99), v_ego=1.6, accel_min=-0.5,
+  ) == pytest.approx(-0.272)
+  assert get_honda_crv_5g_low_speed_stopped_lead_cap(
+    civic, make_lead(status=True, d_rel=10.0, v_lead=0.1, model_prob=0.99), v_ego=1.6, accel_min=-0.5,
+  ) is None
+  assert allow_honda_crv_5g_vision_gap_settle(crv)
+  assert not allow_honda_crv_5g_vision_gap_settle(civic)
+  assert get_standstill_gap_settle_max_extra_gap(crv) > get_standstill_gap_settle_max_extra_gap(civic)
+
+
+def test_honda_crv_5g_early_radar_follow_admits_high_closing_centered_lead():
+  crv = CarInterface.get_non_essential_params(CAR.HONDA_CRV_5G)
+  lead = make_lead(
+    status=True, d_rel=77.0, v_lead=2.8, radar=True, model_prob=0.87, y_rel=0.56,
+  )
+
+  assert is_honda_crv_5g_early_radar_follow_lead(crv, lead, v_ego=16.2)
+  assert get_honda_crv_5g_early_radar_follow_cap(
+    crv, lead, v_ego=16.2, accel_min=-3.5,
+  ) == pytest.approx(-0.39, abs=0.01)
+
+
+@pytest.mark.parametrize("kwargs", [
+  {"radar": False},
+  {"model_prob": 0.79},
+  {"y_rel": 1.01},
+  {"v_lead": 8.1},
+  {"d_rel": 90.0},
+])
+def test_honda_crv_5g_early_radar_follow_rejects_unreliable_or_nonurgent_lead(kwargs):
+  crv = CarInterface.get_non_essential_params(CAR.HONDA_CRV_5G)
+  lead_kwargs = {
+    "d_rel": 77.0, "v_lead": 2.8, "radar": True, "model_prob": 0.87, "y_rel": 0.56,
+  }
+  lead_kwargs.update(kwargs)
+  lead = make_lead(status=True, **lead_kwargs)
+
+  assert not is_honda_crv_5g_early_radar_follow_lead(crv, lead, v_ego=16.2)
+
+
+def test_honda_crv_5g_early_radar_follow_is_vehicle_specific():
+  civic = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  lead = make_lead(status=True, d_rel=77.0, v_lead=2.8, radar=True, model_prob=0.87, y_rel=0.56)
+
+  assert not is_honda_crv_5g_early_radar_follow_lead(civic, lead, v_ego=16.2)
+
+
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+def test_honda_crv_5g_vision_lead_gap_settle_is_bounded(model_version):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CRV_5G)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+  sm = make_sm(
+    0.0,
+    desired_accel=-0.12,
+    min_accel=-0.5,
+    experimental_mode=True,
+    tracking_lead=False,
+    lead_one=make_lead(status=True, d_rel=11.0, v_lead=0.0, a_lead=0.0, model_prob=0.99),
+  )
+  sm["carState"].standstill = True
+  sm["controlsState"].longControlState = LongCtrlState.stopping
+  sm["modelV2"].action.shouldStop = True
+
+  frames = int(round(longitudinal_planner_module.RADAR_STANDSTILL_GAP_SETTLE_CONFIRM_TIME / planner.dt)) + 2
+  for _ in range(frames):
+    planner.update(sm, make_toggles(model_version))
+
+  assert planner.radar_standstill_gap_settle_active
+  assert not planner.output_should_stop
+  assert planner.output_a_target == pytest.approx(longitudinal_planner_module.RADAR_STANDSTILL_GAP_SETTLE_ACCEL)
 
 
 def test_mpc_duplicate_vision_filter_smooths_distance_jumps_per_track():
@@ -533,6 +325,67 @@ def test_hrv_far_follow_output_slew_damps_only_continuous_safe_follow():
     v_ego, prev_target=initial, target=0.4, output_should_stop=False, panic_bypass=False,
   )
   assert smoothed == pytest.approx(-0.5)
+
+
+def test_crv_far_follow_output_slew_damps_nonurgent_lead_transition():
+  v_ego = 24.0
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CRV_5G)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  planner.lead_one = make_lead(status=True, d_rel=58.0, v_lead=20.0, model_prob=0.99)
+  planner.lead_two = make_lead(status=False)
+
+  brake_rate, release_rate = get_far_follow_output_slew_rates(CP)
+  assert brake_rate == pytest.approx(1.5)
+  assert release_rate == pytest.approx(1.0)
+
+  initial = planner.get_vehicle_far_follow_slew_target(
+    v_ego, prev_target=0.0, target=-0.6, output_should_stop=False, panic_bypass=False,
+  )
+  smoothed = planner.get_vehicle_far_follow_slew_target(
+    v_ego, prev_target=initial, target=0.4, output_should_stop=False, panic_bypass=False,
+  )
+
+  assert initial == pytest.approx(-0.6)
+  assert smoothed == pytest.approx(initial + release_rate * planner.dt)
+
+
+def test_accord_far_follow_output_slew_damps_nonurgent_radar_transition():
+  v_ego = 24.0
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_ACCORD)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  planner.lead_one = make_lead(status=True, d_rel=58.0, v_lead=20.0, radar=True, model_prob=0.99)
+  planner.lead_two = make_lead(status=False)
+
+  brake_rate, release_rate = get_far_follow_output_slew_rates(CP)
+  assert brake_rate == pytest.approx(2.0)
+  assert release_rate == pytest.approx(1.5)
+
+  initial = planner.get_vehicle_far_follow_slew_target(
+    v_ego, prev_target=0.0, target=-0.6, output_should_stop=False, panic_bypass=False,
+  )
+  smoothed = planner.get_vehicle_far_follow_slew_target(
+    v_ego, prev_target=initial, target=0.4, output_should_stop=False, panic_bypass=False,
+  )
+
+  assert initial == pytest.approx(-0.6)
+  assert smoothed == pytest.approx(initial + release_rate * planner.dt)
+
+
+@pytest.mark.parametrize("output_should_stop,panic_bypass", [(True, False), (False, True)])
+def test_accord_far_follow_output_slew_bypasses_urgent_scenes(output_should_stop, panic_bypass):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_ACCORD)
+  planner = LongitudinalPlanner(CP, init_v=24.0)
+  planner.lead_one = make_lead(status=True, d_rel=58.0, v_lead=20.0, radar=True, model_prob=0.99)
+  planner.lead_two = make_lead(status=False)
+  planner.far_follow_output_slew_active = True
+
+  target = planner.get_vehicle_far_follow_slew_target(
+    24.0, prev_target=0.4, target=-1.0,
+    output_should_stop=output_should_stop, panic_bypass=panic_bypass,
+  )
+
+  assert target == pytest.approx(-1.0)
+  assert not planner.far_follow_output_slew_active
 
 
 @pytest.mark.parametrize("d_rel,v_lead,output_should_stop,panic_bypass", [
@@ -786,6 +639,7 @@ def make_sm(v_ego: float, desired_accel: float, min_accel: float, *, experimenta
       forcingStop=False,
       redLight=False,
       forcingStopLength=2,
+      approachStopLength=0.0,
     ),
   }
 
@@ -928,12 +782,65 @@ def test_gm_silverado_early_follow_requires_a_credible_centered_vision_lead(kwar
   assert not is_gm_silverado_early_follow_lead(CP, lead, 30.0)
 
 
-def test_silverado_prebrake_floor_is_vehicle_specific():
+def test_prebrake_floor_is_vehicle_specific():
   silverado = SimpleNamespace(brand="gm", carFingerprint=GM_CAR.CHEVROLET_SILVERADO)
+  lightning = SimpleNamespace(brand="ford", carFingerprint="FORD_F_150_LIGHTNING_MK1")
   honda = SimpleNamespace(brand="honda", carFingerprint=CAR.HONDA_CIVIC)
 
   assert get_follow_prebrake_min_headway(silverado, 1.0) == pytest.approx(1.25)
-  assert get_follow_prebrake_min_headway(honda, 1.0) == pytest.approx(1.6)
+  assert get_follow_prebrake_min_headway(lightning, 0.75) == pytest.approx(0.75)
+  assert get_follow_prebrake_min_headway(honda, 1.0) == pytest.approx(1.25)
+
+
+def test_lightning_stopped_lead_guard_tune_is_vehicle_specific():
+  lightning = FordCarInterface.get_non_essential_params(FORD_CAR.FORD_F_150_LIGHTNING_MK1)
+  civic = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+
+  assert get_standstill_stopped_lead_guard_distance_margin(lightning) == pytest.approx(5.0)
+  assert get_standstill_stopped_lead_guard_distance_margin(civic) == pytest.approx(3.0)
+  assert get_standstill_stopped_lead_guard_max_lead_speed(lightning, 0.45) == pytest.approx(0.60)
+  assert get_standstill_stopped_lead_guard_max_lead_speed(civic, 0.45) == pytest.approx(0.45)
+  assert get_standstill_gap_settle_max_extra_gap(lightning) == pytest.approx(3.0)
+  assert get_tracked_lead_catchup_headway_margins(lightning) == pytest.approx((0.10, 0.25))
+  assert get_tracked_lead_catchup_bias_gain(lightning) == pytest.approx(1.0)
+  assert get_tracked_lead_catchup_headway_margins(civic) is None
+  assert get_tracked_lead_catchup_bias_gain(civic) is None
+
+
+def test_crv_tracked_lead_catchup_tune_is_vehicle_specific():
+  crv = CarInterface.get_non_essential_params(CAR.HONDA_CRV_5G)
+  civic = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+
+  assert get_tracked_lead_catchup_headway_margins(crv) == pytest.approx((0.10, 0.35))
+  assert get_tracked_lead_catchup_bias_gain(crv) == pytest.approx(1.25)
+  assert get_tracked_lead_catchup_bias_cap(crv) == pytest.approx(65.0)
+  assert get_tracked_lead_catchup_speed_range(crv) == pytest.approx((10.0, 18.0))
+  assert get_tracked_lead_catchup_fade_margins(crv) == pytest.approx((0.75, 6.5))
+  assert get_tracked_lead_catchup_cruise_error_full(crv) == pytest.approx(0.75)
+  assert get_tracked_lead_catchup_bias_cap(civic) is None
+  assert get_tracked_lead_catchup_speed_range(civic) is None
+
+
+def test_lightning_far_follow_output_slew_damps_nonurgent_lead_braking():
+  v_ego = 24.0
+  CP = FordCarInterface.get_non_essential_params(FORD_CAR.FORD_F_150_LIGHTNING_MK1)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  planner.lead_one = make_lead(status=True, d_rel=58.0, v_lead=20.0, model_prob=0.99)
+  planner.lead_two = make_lead(status=False)
+
+  brake_rate, release_rate = get_far_follow_output_slew_rates(CP)
+  assert brake_rate == pytest.approx(2.5)
+  assert release_rate == pytest.approx(1.75)
+
+  initial = planner.get_vehicle_far_follow_slew_target(
+    v_ego, prev_target=0.0, target=-0.6, output_should_stop=False, panic_bypass=False,
+  )
+  smoothed = planner.get_vehicle_far_follow_slew_target(
+    v_ego, prev_target=initial, target=-2.0, output_should_stop=False, panic_bypass=False,
+  )
+
+  assert initial == pytest.approx(-0.6)
+  assert smoothed == pytest.approx(initial - brake_rate * planner.dt)
 
 
 def test_silverado_vision_follow_hold_survives_nonurgent_far_lead_crossover():
@@ -1242,36 +1149,6 @@ def test_vision_untracked_slow_lead_cap_keeps_low_confidence_floor_for_less_thre
   less_threatening_lead = make_lead(status=True, d_rel=115.4, v_lead=9.5, a_lead=0.0, radar=False, model_prob=0.75)
 
   assert planner.get_vision_untracked_slow_lead_cap(less_threatening_lead, v_ego, -1.0) is None
-
-
-def test_carnival_route_26_urgent_vision_lead_brakes_before_tracking_debounce():
-  v_ego = 27.225
-  planner = LongitudinalPlanner(
-    HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN), init_v=v_ego,
-  )
-  lead = make_lead(
-    status=True, d_rel=80.467, v_lead=19.761, a_lead=-0.85,
-    radar=False, model_prob=0.967, y_rel=-0.086,
-  )
-
-  cap = planner.get_vision_untracked_urgent_brake_cap(lead, v_ego, -3.5, 1.25)
-
-  assert cap is not None
-  assert -1.81 <= cap <= -1.45
-
-
-def test_carnival_urgent_vision_lead_cap_rejects_off_path_or_mild_closing_lead():
-  v_ego = 27.0
-  planner = LongitudinalPlanner(
-    HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN), init_v=v_ego,
-  )
-  off_path = make_lead(status=True, d_rel=80.0, v_lead=19.0, a_lead=-0.8,
-                       radar=False, model_prob=0.99, y_rel=1.2)
-  mild = make_lead(status=True, d_rel=90.0, v_lead=25.0, a_lead=0.0,
-                   radar=False, model_prob=0.99, y_rel=0.0)
-
-  assert planner.get_vision_untracked_urgent_brake_cap(off_path, v_ego, -3.5, 1.25) is None
-  assert planner.get_vision_untracked_urgent_brake_cap(mild, v_ego, -3.5, 1.25) is None
 
 
 def test_vision_untracked_approach_lift_eases_throttle_without_braking():
@@ -1597,6 +1474,37 @@ def test_low_speed_weak_departure_accel_cap_softens_voacc_follow_pulse(model_ver
   planner.update(sm, make_toggles(model_version))
 
   assert planner.output_a_target <= 0.22
+
+
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+@pytest.mark.parametrize("v_ego,v_lead,d_rel", [
+  (4.5, 3.7, 12.0),
+  (6.0, 5.2, 12.0),
+  (7.5, 6.7, 12.0),
+])
+def test_acc_mode_low_speed_vision_takeoff_never_relaxes_closing_lead(model_version, v_ego, v_lead, d_rel):
+  """The takeoff change must not turn a closing vision lead into acceleration."""
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  sm = make_sm(
+    v_ego,
+    desired_accel=1.4,
+    min_accel=-1.0,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=make_lead(
+      status=True, d_rel=d_rel, v_lead=v_lead, a_lead=0.0,
+      radar=False, model_prob=0.99, y_rel=0.0,
+    ),
+  )
+  sm["starpilotPlan"].vCruise = v_ego + 10.0
+
+  for _ in range(3):
+    planner.update(sm, make_toggles(model_version))
+
+  assert planner.mode == "acc"
+  assert planner.output_a_target <= 0.0
+  assert not planner.output_should_stop
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
@@ -2459,33 +2367,6 @@ def test_stationary_radar_lead_settles_excess_stop_gap_after_confirmation(model_
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
-def test_carnival_intersection_hold_blocks_stationary_gap_settle_creep(model_version):
-  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-  planner._carnival_intersection_enabled = True
-  planner._carnival_feature_refresh_t = time.monotonic()
-  sm = make_sm(
-    0.0,
-    desired_accel=-0.12,
-    min_accel=-0.5,
-    experimental_mode=True,
-    tracking_lead=False,
-    lead_one=make_lead(status=True, d_rel=6.4, v_lead=0.0, a_lead=0.0, radar=True, model_prob=1.0),
-  )
-  sm["carState"].standstill = True
-  sm["controlsState"].longControlState = LongCtrlState.stopping
-  sm["modelV2"].action.shouldStop = True
-
-  frames = int(round(longitudinal_planner_module.RADAR_STANDSTILL_GAP_SETTLE_CONFIRM_TIME / planner.dt))
-  for _ in range(max(frames, 1)):
-    planner.update(sm, make_toggles(model_version))
-
-  assert planner.output_should_stop
-  assert planner.carnival_intersection_state == "hold"
-  assert planner.output_a_target <= -0.55
-
-
-@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
 def test_stationary_radar_gap_settle_reholds_at_target_gap(model_version):
   CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
   planner = LongitudinalPlanner(CP, init_v=0.0)
@@ -2615,6 +2496,37 @@ def test_standstill_stopped_lead_guard_blocks_false_release_at_longer_gap(model_
   assert planner.output_a_target <= 0.0
 
 
+def test_lightning_stopped_lead_guard_holds_ambiguous_creep_then_releases():
+  CP = FordCarInterface.get_non_essential_params(FORD_CAR.FORD_F_150_LIGHTNING_MK1)
+  planner = LongitudinalPlanner(CP, init_v=0.17)
+  sm = make_sm(
+    0.17,
+    desired_accel=0.17,
+    min_accel=-0.5,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=9.5, v_lead=0.46, a_lead=0.02, radar=True, model_prob=1.0),
+  )
+  sm["starpilotPlan"].vCruise = 10.0
+  sm["modelV2"].action.shouldStop = False
+
+  planner.update(sm, make_toggles("v15"))
+
+  assert planner.output_should_stop
+  assert planner.output_a_target <= 0.0
+
+  sm["carState"].vEgo = 0.0
+  sm["carState"].vEgoCluster = 0.0
+  sm["carState"].standstill = True
+  sm["radarState"].leadOne.dRel = 9.9
+  sm["radarState"].leadOne.vLead = 0.71
+  sm["radarState"].leadOne.vLeadK = 0.71
+  sm["radarState"].leadOne.aLeadK = 0.22
+  planner.update(sm, make_toggles("v15"))
+
+  assert not planner.output_should_stop
+
+
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
 def test_standstill_stopped_lead_guard_does_not_block_radar_depart_at_longer_gap(model_version):
   CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
@@ -2685,167 +2597,6 @@ def test_standstill_stopped_lead_guard_blocks_false_release_during_creep_frame(m
 
   assert planner.output_should_stop
   assert planner.output_a_target <= 0.0
-
-
-@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
-def test_carnival_stopped_lead_guard_engages_before_close_crawl(model_version):
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
-  planner = LongitudinalPlanner(CP, init_v=1.9)
-
-  sm = make_sm(
-    1.9,
-    desired_accel=0.25,
-    min_accel=-2.0,
-    experimental_mode=False,
-    tracking_lead=True,
-    lead_one=make_lead(status=True, d_rel=7.4, v_lead=0.08, a_lead=-0.04, radar=True, model_prob=1.0, y_rel=-0.12),
-  )
-  sm["carState"].standstill = False
-  sm["controlsState"].longControlState = LongCtrlState.pid
-  sm["starpilotPlan"].vCruise = 10.0
-  sm["modelV2"].action.shouldStop = False
-
-  planner.update(sm, make_toggles(model_version))
-
-  assert planner.output_should_stop
-  assert planner.output_a_target <= -0.45
-
-
-def test_carnival_radar_confirmed_stop_hold_latches_confirmation_track():
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
-  planner = LongitudinalPlanner(CP, init_v=1.9)
-
-  confirmation_lead = make_lead(status=True, d_rel=7.4, v_lead=0.08, a_lead=-0.04, radar=True, model_prob=1.0, y_rel=-0.12)
-  confirmation_lead.radarTrackId = 0xC4101
-
-  cap = planner.get_carnival_radar_stop_hold_cap(
-    (confirmation_lead, make_lead(status=False)),
-    v_ego=1.9,
-    accel_min=-2.0,
-    driver_gas=False,
-  )
-
-  assert planner.carnival_radar_stop_hold_active
-  assert cap is not None
-  assert cap <= -0.55
-
-  vision_lead = make_lead(status=True, d_rel=6.2, v_lead=0.2, a_lead=0.0, radar=False, model_prob=0.99, y_rel=-0.1)
-  cap = planner.get_carnival_radar_stop_hold_cap(
-    (vision_lead, make_lead(status=False)),
-    v_ego=0.4,
-    accel_min=-2.0,
-    driver_gas=False,
-  )
-
-  assert planner.carnival_radar_stop_hold_active
-  assert cap is not None
-
-  cap = planner.get_carnival_radar_stop_hold_cap(
-    (vision_lead, make_lead(status=False)),
-    v_ego=0.4,
-    accel_min=-2.0,
-    driver_gas=True,
-  )
-
-  assert not planner.carnival_radar_stop_hold_active
-  assert cap is None
-
-
-def test_carnival_radar_confirmed_stop_hold_rejects_false_contexts():
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-
-  def confirmation_lead(**kwargs):
-    lead = make_lead(status=True, d_rel=7.4, v_lead=0.08, a_lead=-0.04, radar=True, model_prob=1.0, y_rel=-0.12)
-    lead.radarTrackId = 0xC4101
-    for key, value in kwargs.items():
-      setattr(lead, key, value)
-    return lead
-
-  reject_cases = (
-    dict(v_ego=12.0),
-    dict(lead=confirmation_lead(dRel=14.0)),
-    dict(lead=confirmation_lead(vLead=2.5)),
-    dict(lead=confirmation_lead(yRel=2.2)),
-    dict(lead=confirmation_lead(radarTrackId=0x401)),
-  )
-
-  for case in reject_cases:
-    lead = case.get("lead", confirmation_lead())
-    cap = planner.get_carnival_radar_stop_hold_cap(
-      (lead, make_lead(status=False)),
-      v_ego=case.get("v_ego", 1.9),
-      accel_min=-2.0,
-      driver_gas=False,
-    )
-    assert cap is None
-    assert not planner.carnival_radar_stop_hold_active
-
-
-def test_carnival_radar_confirmed_stop_hold_clears_on_departure():
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
-  planner = LongitudinalPlanner(CP, init_v=1.9)
-
-  confirmation_lead = make_lead(status=True, d_rel=7.4, v_lead=0.08, a_lead=-0.04, radar=True, model_prob=1.0, y_rel=-0.12)
-  confirmation_lead.radarTrackId = 0xC4101
-  assert planner.get_carnival_radar_stop_hold_cap(
-    (confirmation_lead, make_lead(status=False)),
-    v_ego=1.9,
-    accel_min=-2.0,
-    driver_gas=False,
-  ) is not None
-
-  departing_lead = make_lead(status=True, d_rel=11.5, v_lead=2.2, a_lead=0.4, radar=False, model_prob=0.99, y_rel=-0.1)
-  cap = planner.get_carnival_radar_stop_hold_cap(
-    (departing_lead, make_lead(status=False)),
-    v_ego=2.0,
-    accel_min=-2.0,
-    driver_gas=False,
-  )
-  assert cap is None
-  assert not planner.carnival_radar_stop_hold_active
-
-
-def test_carnival_radar_confirmed_stop_hold_releases_for_confirmed_departure_without_gas():
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
-  planner = LongitudinalPlanner(CP, init_v=1.9)
-
-  confirmation_lead = make_lead(status=True, d_rel=7.4, v_lead=0.08, a_lead=-0.04, radar=True, model_prob=1.0, y_rel=-0.12)
-  confirmation_lead.radarTrackId = 0xC4101
-  assert planner.get_carnival_radar_stop_hold_cap(
-    (confirmation_lead, make_lead(status=False)),
-    v_ego=1.9,
-    accel_min=-2.0,
-    driver_gas=False,
-  ) is not None
-  assert planner.carnival_radar_stop_hold_active
-
-  still_close_lead = make_lead(status=True, d_rel=7.2, v_lead=0.4, a_lead=0.2, radar=True, model_prob=1.0, y_rel=-0.1)
-  still_close_lead.radarTrackId = 0xC4101
-  cap = planner.get_carnival_radar_stop_hold_cap(
-    (still_close_lead, make_lead(status=False)),
-    v_ego=0.2,
-    accel_min=-2.0,
-    driver_gas=False,
-  )
-  assert cap is not None
-  assert planner.carnival_radar_stop_hold_active
-
-  departing_lead = make_lead(status=True, d_rel=8.2, v_lead=1.4, a_lead=0.2, radar=True, model_prob=1.0, y_rel=-0.1)
-  departing_lead.radarTrackId = 0xC4101
-  cap = planner.get_carnival_radar_stop_hold_cap(
-    (departing_lead, make_lead(status=False)),
-    v_ego=0.2,
-    accel_min=-2.0,
-    driver_gas=False,
-  )
-  assert cap is None
-  assert not planner.carnival_radar_stop_hold_active
 
 
 def test_toyota_sienna_post_departure_restop_blocks_lead_that_stops_again():
@@ -3030,26 +2781,6 @@ def test_route_251682_rav4_confirmed_depart_adds_bounded_accel_assist():
   assert floor <= longitudinal_planner_module.LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL
 
 
-def test_carnival_confirmed_departing_lead_gets_stronger_accel_floor():
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-  lead = make_lead(
-    status=True,
-    d_rel=7.7,
-    v_lead=2.0,
-    a_lead=1.79,
-    radar=False,
-    model_prob=1.0,
-  )
-
-  floor = planner.get_lead_depart_accel_floor(lead, v_ego=0.0, model_desired_accel=0.44)
-
-  assert floor >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MIN_ACCEL
-  assert floor > longitudinal_planner_module.LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL
-  assert floor <= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL
-
-
 def test_honda_accord_lead_departure_assist_is_stronger_but_vehicle_scoped():
   accord = CarInterface.get_non_essential_params(CAR.HONDA_ACCORD)
   civic = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
@@ -3072,6 +2803,41 @@ def test_honda_accord_lead_departure_assist_is_stronger_but_vehicle_scoped():
   assert get_honda_accord_lead_departure_tune(civic) is None
   assert accord_floor > civic_floor
   assert accord_floor <= get_honda_accord_lead_departure_tune(accord)[0]
+
+
+def test_honda_accord_stop_go_departure_cap_is_vehicle_and_scene_scoped():
+  accord = CarInterface.get_non_essential_params(CAR.HONDA_ACCORD)
+  civic = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  lead = make_lead(
+    status=True,
+    d_rel=7.7,
+    v_lead=1.5,
+    a_lead=0.6,
+    radar=False,
+    model_prob=1.0,
+  )
+
+  cap = get_honda_accord_stop_go_accel_cap(accord, lead, v_ego=0.0)
+  assert cap is not None
+  assert cap < 1.0
+  assert get_honda_accord_stop_go_accel_cap(civic, lead, v_ego=0.0) is None
+  assert get_honda_accord_stop_go_accel_cap(
+    accord, make_lead(status=True, d_rel=7.7, v_lead=0.0, model_prob=1.0), v_ego=0.0,
+  ) is None
+  assert get_honda_accord_stop_go_accel_cap(
+    accord, make_lead(status=True, d_rel=30.0, v_lead=1.5, model_prob=1.0), v_ego=0.0,
+  ) is None
+
+  planner = LongitudinalPlanner(accord, init_v=0.0)
+  assert planner.get_honda_accord_stop_go_accel_target(
+    lead, v_ego=0.0, previous_target=-0.2, target=1.5, blocked=False,
+  ) == pytest.approx(0.0)
+  assert planner.get_honda_accord_stop_go_accel_target(
+    lead, v_ego=0.0, previous_target=0.0, target=1.5, blocked=True,
+  ) == pytest.approx(1.5)
+  assert planner.get_honda_accord_stop_go_accel_target(
+    lead, v_ego=0.0, previous_target=0.9, target=-1.5, blocked=False,
+  ) == pytest.approx(-1.5)
 
 
 def test_rav4_tss2_lead_departure_assist_is_vehicle_scoped():
@@ -3097,320 +2863,6 @@ def test_rav4_tss2_lead_departure_assist_is_vehicle_scoped():
   assert get_toyota_rav4_tss2_lead_departure_tune(civic) is None
   assert rav4_floor > civic_floor
   assert rav4_floor == pytest.approx(0.64)
-
-
-def test_carnival_logged_lead_departure_geometry_gets_responsive_floor():
-  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-
-  # From route 00000013--69e0a3742d segment 15: the lead was clearly pulling
-  # away while the historical planner still asked for only about 0.44 m/s^2.
-  lead = make_lead(
-    status=True,
-    d_rel=4.408,
-    v_lead=1.081,
-    a_lead=0.70,
-    radar=False,
-    model_prob=1.0,
-  )
-
-  floor = planner.get_lead_depart_accel_floor(lead, v_ego=0.0, model_desired_accel=0.44)
-
-  assert floor >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MIN_ACCEL
-  assert floor <= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL
-
-
-def test_carnival_lead_departure_floor_is_still_blocked_for_weak_vision_lead():
-  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-
-  lead = make_lead(
-    status=True,
-    d_rel=4.408,
-    v_lead=1.081,
-    a_lead=0.70,
-    radar=False,
-    model_prob=0.5,
-  )
-
-  assert planner.get_lead_depart_accel_floor(lead, v_ego=0.0, model_desired_accel=0.44) is None
-
-
-def test_carnival_lead_departure_floor_caps_high_model_accel():
-  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-
-  lead = make_lead(
-    status=True,
-    d_rel=8.0,
-    v_lead=3.0,
-    a_lead=1.0,
-    radar=False,
-    model_prob=1.0,
-  )
-
-  floor = planner.get_lead_depart_accel_floor(lead, v_ego=0.0, model_desired_accel=1.4)
-
-  assert floor == pytest.approx(longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MAX_ACCEL)
-
-
-@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
-def test_carnival_experimental_standstill_lead_depart_uses_stronger_launch(model_version):
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-
-  sm = make_sm(
-    0.0,
-    desired_accel=0.0,
-    min_accel=-0.5,
-    experimental_mode=True,
-    tracking_lead=True,
-    lead_one=make_lead(status=True, d_rel=4.10, v_lead=1.05, a_lead=1.20, radar=False, model_prob=1.0),
-  )
-  sm["carState"].standstill = True
-  sm["controlsState"].longControlState = LongCtrlState.stopping
-  sm["modelV2"].action.shouldStop = False
-  sm["starpilotPlan"].vCruise = 10.0
-
-  for _ in range(6):
-    planner.update(sm, make_toggles(model_version))
-    assert planner.output_should_stop
-
-  planner.update(sm, make_toggles(model_version))
-
-  assert not planner.output_should_stop
-  assert planner.output_a_target >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_MIN_ACCEL
-
-
-@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
-def test_carnival_depart_accel_hold_continues_after_initial_pullaway(model_version):
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-  toggles = make_toggles(model_version)
-
-  sm_release = make_sm(
-    0.0,
-    desired_accel=0.0,
-    min_accel=-0.5,
-    experimental_mode=True,
-    tracking_lead=True,
-    lead_one=make_lead(status=True, d_rel=4.1, v_lead=1.05, a_lead=1.2, radar=False, model_prob=1.0),
-  )
-  sm_release["carState"].standstill = True
-  sm_release["controlsState"].longControlState = LongCtrlState.stopping
-  sm_release["modelV2"].action.shouldStop = False
-  sm_release["starpilotPlan"].vCruise = 10.0
-
-  for _ in range(7):
-    planner.update(sm_release, toggles)
-
-  sm_hold = make_sm(
-    3.2,
-    desired_accel=0.0,
-    min_accel=-0.5,
-    experimental_mode=True,
-    tracking_lead=True,
-    lead_one=make_lead(status=True, d_rel=18.0, v_lead=4.0, a_lead=0.05, radar=False, model_prob=1.0),
-  )
-  sm_hold["controlsState"].longControlState = LongCtrlState.pid
-  sm_hold["modelV2"].action.shouldStop = False
-  sm_hold["starpilotPlan"].vCruise = 10.0
-
-  planner.update(sm_hold, toggles)
-
-  assert not planner.output_should_stop
-  assert planner.output_a_target >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_ACCEL_HOLD_MIN_ACCEL
-
-
-def test_carnival_planner_lead_depart_accel_reaches_longcontrol_handoff():
-  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-  toggles = make_toggles("v15")
-
-  sm = make_sm(
-    0.0,
-    desired_accel=0.0,
-    min_accel=-0.5,
-    experimental_mode=True,
-    tracking_lead=True,
-    lead_one=make_lead(status=True, d_rel=4.1, v_lead=1.05, a_lead=1.2, radar=False, model_prob=1.0),
-  )
-  sm["carState"].standstill = True
-  sm["controlsState"].longControlState = LongCtrlState.stopping
-  sm["modelV2"].action.shouldStop = False
-  sm["starpilotPlan"].vCruise = 10.0
-
-  for _ in range(7):
-    planner.update(sm, toggles)
-
-  assert not planner.output_should_stop
-  assert planner.output_a_target >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_MIN_ACCEL
-
-  long_control = LongControl(CP)
-  longcontrol_toggles = SimpleNamespace(
-    custom_accel_profile=False,
-    startAccel=float(CP.startAccel),
-    stopAccel=float(CP.stopAccel),
-    stoppingDecelRate=float(CP.stoppingDecelRate),
-    vEgoStarting=float(CP.vEgoStarting),
-    vEgoStopping=float(CP.vEgoStopping),
-  )
-
-  cs_launch = car.CarState.new_message(vEgo=0.0, aEgo=0.0, brakePressed=False)
-  cs_launch.cruiseState.standstill = False
-  launch_output = long_control.update(
-    active=True,
-    CS=cs_launch,
-    a_target=planner.output_a_target,
-    should_stop=planner.output_should_stop,
-    accel_limits=(-3.0, 2.0),
-    starpilot_toggles=longcontrol_toggles,
-    has_lead=True,
-  )
-
-  cs_handoff = car.CarState.new_message(vEgo=float(CP.vEgoStarting) + 0.02, aEgo=float(launch_output), brakePressed=False)
-  cs_handoff.cruiseState.standstill = False
-  handoff_output = long_control.update(
-    active=True,
-    CS=cs_handoff,
-    a_target=planner.output_a_target,
-    should_stop=planner.output_should_stop,
-    accel_limits=(-3.0, 2.0),
-    starpilot_toggles=longcontrol_toggles,
-    has_lead=True,
-  )
-
-  assert launch_output == pytest.approx(CP.startAccel)
-  assert long_control.long_control_state == LongCtrlState.pid
-  assert handoff_output >= longitudinal_planner_module.CARNIVAL_LEAD_DEPART_MIN_ACCEL
-
-
-def test_carnival_radar_far_follow_caps_logged_highway_accel():
-  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
-  lead = make_lead(
-    status=True,
-    d_rel=70.8,
-    v_lead=30.459,
-    a_lead=0.0,
-    radar=True,
-    model_prob=0.951,
-    y_rel=0.0,
-  )
-
-  cap = get_kia_carnival_4th_gen_radar_far_follow_cap(CP, lead, v_ego=31.26, accel_min=-3.5)
-
-  assert cap is not None
-  assert -0.08 <= cap <= 0.03
-
-
-def test_carnival_radar_far_follow_keeps_weak_or_unconfirmed_leads_unchanged():
-  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
-
-  assert get_kia_carnival_4th_gen_radar_far_follow_cap(
-    CP,
-    make_lead(status=True, d_rel=70.0, v_lead=30.0, radar=False, model_prob=0.98),
-    v_ego=31.0,
-    accel_min=-3.5,
-  ) is None
-  assert get_kia_carnival_4th_gen_radar_far_follow_cap(
-    CP,
-    make_lead(status=True, d_rel=70.0, v_lead=30.0, radar=True, model_prob=0.65),
-    v_ego=31.0,
-    accel_min=-3.5,
-  ) is None
-
-
-def test_carnival_radar_far_follow_does_not_change_other_vehicles():
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  lead = make_lead(status=True, d_rel=70.8, v_lead=30.459, radar=True, model_prob=0.951)
-
-  assert get_kia_carnival_4th_gen_radar_far_follow_cap(CP, lead, v_ego=31.26, accel_min=-3.5) is None
-
-
-def test_carnival_experimental_cruise_recovery_uses_confirmed_far_lead():
-  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
-  planner = LongitudinalPlanner(CP, init_v=14.0)
-  lead = make_lead(
-    status=True,
-    d_rel=50.0,
-    v_lead=15.0,
-    a_lead=0.0,
-    radar=True,
-    model_prob=0.99,
-    y_rel=0.0,
-  )
-  lead.radarTrackId = 0xC4101
-
-  accel = planner.get_carnival_experimental_cruise_recovery_accel(
-    (lead, make_lead(status=False)),
-    v_ego=14.0,
-    v_cruise=26.67,
-    t_follow=1.25,
-    output_a_target_mpc=0.8,
-    red_light=False,
-    forcing_stop=False,
-    model_should_stop=False,
-  )
-
-  assert accel == pytest.approx(longitudinal_planner_module.CARNIVAL_EXPERIMENTAL_CRUISE_RECOVERY_MAX_ACCEL)
-
-
-@pytest.mark.parametrize("stop_context", ["red_light", "forcing_stop", "model_should_stop"])
-def test_carnival_experimental_cruise_recovery_rejects_stop_context(stop_context):
-  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
-  planner = LongitudinalPlanner(CP, init_v=14.0)
-  lead = make_lead(status=True, d_rel=50.0, v_lead=15.0, a_lead=0.0, radar=True, model_prob=0.99, y_rel=0.0)
-  lead.radarTrackId = 0xC4101
-  contexts = {
-    "red_light": stop_context == "red_light",
-    "forcing_stop": stop_context == "forcing_stop",
-    "model_should_stop": stop_context == "model_should_stop",
-  }
-
-  assert planner.get_carnival_experimental_cruise_recovery_accel(
-    (lead, make_lead(status=False)), 14.0, 26.67, 1.25, 0.8,
-    contexts["red_light"], contexts["forcing_stop"], contexts["model_should_stop"],
-  ) is None
-
-
-def test_carnival_experimental_cruise_recovery_requires_confirmation_track():
-  CP = HyundaiCarInterface.get_non_essential_params(HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
-  planner = LongitudinalPlanner(CP, init_v=14.0)
-  lead = make_lead(status=True, d_rel=50.0, v_lead=15.0, a_lead=0.0, radar=True, model_prob=0.99, y_rel=0.0)
-
-  assert planner.get_carnival_experimental_cruise_recovery_accel(
-    (lead, make_lead(status=False)), 14.0, 26.67, 1.25, 0.8, False, False, False,
-  ) is None
-
-
-@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
-def test_carnival_stronger_depart_launch_is_blocked_by_red_light(model_version):
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  CP.carFingerprint = "KIA_CARNIVAL_4TH_GEN"
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-
-  sm = make_sm(
-    0.0,
-    desired_accel=0.8,
-    min_accel=-0.5,
-    experimental_mode=True,
-    tracking_lead=True,
-    lead_one=make_lead(status=True, d_rel=7.0, v_lead=1.5, a_lead=1.2, radar=False, model_prob=1.0),
-  )
-  sm["carState"].standstill = True
-  sm["controlsState"].longControlState = LongCtrlState.stopping
-  sm["modelV2"].action.shouldStop = False
-  sm["starpilotPlan"].redLight = True
-  sm["starpilotPlan"].vCruise = 10.0
-
-  for _ in range(10):
-    planner.update(sm, make_toggles(model_version))
-
-  assert planner.confident_lead_depart_elapsed == 0.0
-  assert planner.lead_depart_accel_hold_floor is None
-  assert planner.output_a_target < longitudinal_planner_module.CARNIVAL_LEAD_DEPART_MIN_ACCEL
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
@@ -3769,6 +3221,39 @@ def test_modeld_action_uses_current_action_head_scaling_for_v15(monkeypatch):
   assert not action.shouldStop
 
 
+def test_modeld_action_uses_current_action_head_scaling_for_v16(monkeypatch):
+  monkeypatch.setenv("DEBUG", "0")
+  fake_commonmodel = types.ModuleType("openpilot.selfdrive.modeld.models.commonmodel_pyx")
+  fake_commonmodel.DrivingModelFrame = object
+  fake_commonmodel.CLContext = object
+  monkeypatch.setitem(sys.modules, fake_commonmodel.__name__, fake_commonmodel)
+
+  from openpilot.selfdrive.modeld import modeld
+
+  prev_action = log.ModelDataV2.Action.new_message()
+  prev_action.desiredCurvature = 0.05
+  prev_action.desiredAcceleration = -0.2
+  toggles = SimpleNamespace(vEgoStopping=0.42)
+
+  action = modeld.get_action_from_model(
+    {"action": np.array([[12.0, -0.8]], dtype=np.float32)},
+    prev_action,
+    lat_action_t=0.2,
+    long_action_t=0.73,
+    v_ego=5.0,
+    mlsim=True,
+    is_v9=False,
+    is_v14=False,
+    is_v15=False,
+    starpilot_toggles=toggles,
+    is_v16=True,
+  )
+
+  assert action.desiredCurvature == pytest.approx(modeld.smooth_value(0.48, prev_action.desiredCurvature, modeld.LAT_SMOOTH_SECONDS))
+  assert action.desiredAcceleration < -0.2
+  assert not action.shouldStop
+
+
 def test_publish_force_stop_handoff_sets_should_stop_when_vcruise_zero():
   class FakePM:
     def __init__(self):
@@ -3804,45 +3289,6 @@ def test_publish_force_stop_handoff_sets_should_stop_when_vcruise_zero():
   planner.publish(sm, pm)
 
   assert pm.sent["longitudinalPlan"].longitudinalPlan.shouldStop
-
-
-def test_publish_force_stop_handoff_does_not_relatch_confirmed_lead_departure():
-  class FakePM:
-    def __init__(self):
-      self.sent = {}
-
-    def send(self, name, msg):
-      self.sent[name] = msg
-
-  class FakeSM(dict):
-    def all_checks(self, service_list=None):
-      return True
-
-    logMonoTime = {"modelV2": int(1e9)}
-
-  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
-  planner = LongitudinalPlanner(CP, init_v=0.0)
-  planner.output_a_target = 1.0
-  planner.output_should_stop = False
-  planner.v_desired_trajectory = np.zeros(CONTROL_N)
-  planner.a_desired_trajectory = np.zeros(CONTROL_N)
-  planner.j_desired_trajectory = np.zeros(CONTROL_N)
-  planner.fcw = False
-  planner.mpc.source = "lead0"
-  planner.mpc.solve_time = 0.0
-
-  sm = FakeSM(make_sm(0.0, desired_accel=1.0, min_accel=-1.0, experimental_mode=False))
-  sm["radarState"].leadOne = make_lead(status=True, d_rel=11.0, v_lead=3.5, radar=True)
-  sm["starpilotPlan"].forcingStop = True
-  sm["starpilotPlan"].forcingStopLength = 0.0
-  sm["starpilotPlan"].vCruise = 0.0
-  pm = FakePM()
-
-  planner.publish(sm, pm)
-
-  plan = pm.sent["longitudinalPlan"].longitudinalPlan
-  assert plan.hasLead
-  assert not plan.shouldStop
 
 
 def test_publish_has_lead_includes_second_mpc_lead():
@@ -3888,6 +3334,26 @@ def test_rav4_tss2_variants_use_the_car_specific_post_departure_tune():
   assert is_toyota_rav4_tss2_post_departure_tune(rav4_2019_cp)
   assert is_toyota_rav4_tss2_post_departure_tune(rav4_2023_cp)
   assert not is_toyota_rav4_tss2_post_departure_tune(other_cp)
+
+
+def test_rav4_tss2_lead_creep_tune_is_vehicle_specific():
+  rav4 = ToyotaCarInterface.get_non_essential_params(TOYOTA_CAR.TOYOTA_RAV4_TSS2_2023)
+  other = ToyotaCarInterface.get_non_essential_params(TOYOTA_CAR.TOYOTA_RAV4_TSS2_2022)
+
+  assert get_toyota_rav4_tss2_lead_creep_tune(rav4) == pytest.approx((0.15, -0.05))
+  assert get_toyota_rav4_tss2_lead_creep_tune(other) is None
+
+
+def test_rav4_tss2_standstill_lead_creep_does_not_wait_for_lead_acceleration():
+  rav4 = ToyotaCarInterface.get_non_essential_params(TOYOTA_CAR.TOYOTA_RAV4_TSS2_2023)
+  civic = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  rav4_planner = LongitudinalPlanner(rav4, init_v=0.0)
+  civic_planner = LongitudinalPlanner(civic, init_v=0.0)
+  lead = make_lead(status=True, d_rel=6.4, v_lead=0.2, a_lead=0.0, model_prob=1.0)
+  gap = longitudinal_planner_module.STOP_DISTANCE - 0.5
+
+  assert rav4_planner.is_slow_creep_lead_depart(lead, 0.0, gap)
+  assert not civic_planner.is_slow_creep_lead_depart(lead, 0.0, gap)
 
 
 def test_rav4_tss2_early_lead_cap_starts_a_mild_response():
@@ -3977,6 +3443,42 @@ def test_publish_force_stop_handoff_sets_should_stop_when_vcruise_low():
   sm["starpilotPlan"].forcingStopLength = 6.5
   sm["starpilotPlan"].vCruise = 0.4
 
+  planner.publish(sm, pm)
+
+  assert pm.sent["longitudinalPlan"].longitudinalPlan.shouldStop
+
+
+def test_carnival_confirmed_stop_sign_stays_latched_at_low_speed():
+  class FakePM:
+    def __init__(self):
+      self.sent = {}
+
+    def send(self, name, msg):
+      self.sent[name] = msg
+
+  class FakeSM(dict):
+    def all_checks(self, service_list=None):
+      return True
+
+    logMonoTime = {"modelV2": int(1e9)}
+
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  CP.carFingerprint = "KIA_CARNIVAL_2025"
+  planner = LongitudinalPlanner(CP, init_v=0.4)
+  planner.output_a_target = -0.2
+  planner.output_should_stop = False
+  planner.v_desired_trajectory = np.zeros(CONTROL_N)
+  planner.a_desired_trajectory = np.zeros(CONTROL_N)
+  planner.j_desired_trajectory = np.zeros(CONTROL_N)
+  planner.fcw = False
+  planner.mpc.source = "cruise"
+  planner.mpc.solve_time = 0.0
+
+  sm = FakeSM(make_sm(0.4, desired_accel=0.0, min_accel=-1.0, experimental_mode=False))
+  sm["starpilotPlan"].stopSignConfirmed = True
+  pm = FakePM()
+
+  assert get_stop_sign_low_speed_hold(CP) == pytest.approx(0.75)
   planner.publish(sm, pm)
 
   assert pm.sent["longitudinalPlan"].longitudinalPlan.shouldStop

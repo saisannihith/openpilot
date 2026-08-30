@@ -24,7 +24,6 @@ if "openpilot.starpilot.common.starpilot_variables" not in sys.modules:
     sv_mod.MODELS_PATH = "/tmp"
     sv_mod.EARTH_RADIUS = 6371000
     sv_mod.STARPILOT_API = ""
-    sv_mod.FROGS_GO_MOO_PATH = "/tmp"
     sv_mod.KONIK_PATH = "/tmp"
     sys.modules["openpilot.starpilot.common.starpilot_variables"] = sv_mod
 
@@ -55,10 +54,8 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.panel import StarPilotPan
 from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import BreadcrumbController, gui_app
 
 
-def test_root_hub_contains_all_categories_in_order():
+def test_root_hub_contains_the_six_categories_in_order():
   assert [item["title"] for item in StarPilotLayout.CATEGORIES] == [
-    "Quick Controls",
-    "Search Settings",
     "Sounds & Alerts",
     "Driving Model",
     "Driving Controls",
@@ -66,7 +63,7 @@ def test_root_hub_contains_all_categories_in_order():
     "Appearance",
     "Vehicle Settings",
   ]
-  assert len(StarPilotLayout.CATEGORIES) == 8
+  assert len(StarPilotLayout.CATEGORIES) == 6
   assert all(item["title"] != "Navigation & Maps" for item in StarPilotLayout.CATEGORIES)
 
 
@@ -174,7 +171,7 @@ def _click_title(layout, title):
 
 def test_nested_hub_navigation_back_and_depth_values(monkeypatch):
   layout, depths = _make_layout(monkeypatch)
-  assert len(layout._main_grid.tiles) == 8
+  assert len(layout._main_grid.tiles) == 6
   assert depths == []
 
   _click_title(layout, "Driving Controls")

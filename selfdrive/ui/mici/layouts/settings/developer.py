@@ -5,7 +5,6 @@ from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigInputDialog
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.starpilot.common.longitudinal_mode import set_alpha_longitudinal, set_experimental_mode
 from openpilot.selfdrive.ui.widgets.ssh_key import SshKeyFetcher
 
 
@@ -57,9 +56,6 @@ class DeveloperLayoutMici(NavScroller):
     self._long_maneuver_toggle = BigToggle("longitudinal maneuver mode",
                                            initial_state=ui_state.params.get_bool("LongitudinalManeuverMode"),
                                            toggle_callback=self._on_long_maneuver_mode)
-    self._lat_maneuver_toggle = BigToggle("lateral maneuver mode",
-                                          initial_state=ui_state.params.get_bool("LateralManeuverMode"),
-                                          toggle_callback=self._on_lat_maneuver_mode)
     self._alpha_long_toggle = BigToggle("alpha longitudinal",
                                         initial_state=ui_state.params.get_bool("AlphaLongitudinalEnabled"),
                                         toggle_callback=self._on_alpha_long_enabled)
@@ -74,7 +70,6 @@ class DeveloperLayoutMici(NavScroller):
       self._disable_wide_road_toggle,
       self._joystick_toggle,
       self._long_maneuver_toggle,
-      self._lat_maneuver_toggle,
       self._alpha_long_toggle,
       self._debug_mode_toggle,
     ])
@@ -86,7 +81,6 @@ class DeveloperLayoutMici(NavScroller):
       ("DisableWideRoad", self._disable_wide_road_toggle),
       ("JoystickDebugMode", self._joystick_toggle),
       ("LongitudinalManeuverMode", self._long_maneuver_toggle),
-      ("LateralManeuverMode", self._lat_maneuver_toggle),
       ("AlphaLongitudinalEnabled", self._alpha_long_toggle),
       ("ShowDebugInfo", self._debug_mode_toggle),
     )
@@ -95,7 +89,7 @@ class DeveloperLayoutMici(NavScroller):
       self._disable_wide_road_toggle,
       self._joystick_toggle,
     )
-    engaged_blocked_toggles = (self._long_maneuver_toggle, self._lat_maneuver_toggle, self._alpha_long_toggle)
+    engaged_blocked_toggles = (self._long_maneuver_toggle, self._alpha_long_toggle)
 
     # Disable toggles that require offroad
     for item in onroad_blocked_toggles:
@@ -140,12 +134,8 @@ class DeveloperLayoutMici(NavScroller):
       if not long_man_enabled:
         self._long_maneuver_toggle.set_checked(False)
         ui_state.params.put_bool("LongitudinalManeuverMode", False)
-
-      lat_man_enabled = ui_state.is_offroad()
-      self._lat_maneuver_toggle.set_enabled(lat_man_enabled)
     else:
       self._long_maneuver_toggle.set_enabled(False)
-      self._lat_maneuver_toggle.set_enabled(False)
       self._alpha_long_toggle.set_visible(False)
 
     # Refresh toggles from params to mirror external changes
@@ -157,27 +147,16 @@ class DeveloperLayoutMici(NavScroller):
     ui_state.params.put_bool("LongitudinalManeuverMode", False)
     self._long_maneuver_toggle.set_checked(False)
     ui_state.params.put_bool("LateralManeuverMode", False)
-    self._lat_maneuver_toggle.set_checked(False)
 
   def _on_long_maneuver_mode(self, state: bool):
     ui_state.params.put_bool("LongitudinalManeuverMode", state)
     ui_state.params.put_bool("JoystickDebugMode", False)
     self._joystick_toggle.set_checked(False)
     ui_state.params.put_bool("LateralManeuverMode", False)
-    self._lat_maneuver_toggle.set_checked(False)
-    restart_needed_callback(state)
-
-  def _on_lat_maneuver_mode(self, state: bool):
-    ui_state.params.put_bool("LateralManeuverMode", state)
-    set_experimental_mode(ui_state.params, False)
-    ui_state.params.put_bool("JoystickDebugMode", False)
-    self._joystick_toggle.set_checked(False)
-    ui_state.params.put_bool("LongitudinalManeuverMode", False)
-    self._long_maneuver_toggle.set_checked(False)
     restart_needed_callback(state)
 
   def _on_alpha_long_enabled(self, state: bool):
     # TODO: show confirmation dialog before enabling
-    set_alpha_longitudinal(ui_state.params, state)
+    ui_state.params.put_bool("AlphaLongitudinalEnabled", state)
     restart_needed_callback(state)
     self._update_toggles()
