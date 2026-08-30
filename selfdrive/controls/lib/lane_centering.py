@@ -21,8 +21,10 @@ _CONFIDENCE_RELEASE_TAU = 0.20
 _CENTER_ERROR_DEADBAND = 0.08
 
 _E2E_MAX_PATH_STD = 0.35
-_E2E_BREAK_IN_START = 0.15
-_E2E_BREAK_IN_FULL = 0.50
+# Preserve lane centering through ordinary curve-tracking error, then hand control
+# back to a confident E2E path for a deliberate obstacle-scale departure.
+_E2E_BREAK_IN_START = 0.30
+_E2E_BREAK_IN_FULL = 0.60
 
 
 class LaneCenteringController:

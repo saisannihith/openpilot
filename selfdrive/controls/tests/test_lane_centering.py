@@ -149,8 +149,15 @@ def test_e2e_authority_blends_lane_correction():
   assert lane_only > blended > e2e >= 0.0
 
 
-def test_confident_e2e_authority_starts_before_large_offset():
+def test_confident_e2e_authority_does_not_weaken_routine_centering_error():
   model = _model(left=-1.7, right=2.1, model_y=0.0, path_std=0.1)
+  _, lane_only = _converge(model, authority=0.0)
+  _, e2e = _converge(model, authority=1.0)
+  assert e2e == pytest.approx(lane_only)
+
+
+def test_confident_e2e_authority_blends_obstacle_scale_departure():
+  model = _model(left=-1.4, right=2.2, model_y=0.0, path_std=0.1)
   _, lane_only = _converge(model, authority=0.0)
   _, e2e = _converge(model, authority=1.0)
   assert lane_only > e2e > 0.0
