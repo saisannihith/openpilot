@@ -24,6 +24,9 @@ RADAR_TO_CAMERA = 1.52
 MAX_RADAR_AGE = 0.12
 MIN_MODEL_LEAD_PROB = 0.35
 NIS_GATE = 11.345
+PRIMARY_ADDR = 0x180
+PRIMARY_SLOT = 1
+PRIMARY_QUALITY = 0xFF
 UNKNOWN_BITS = (*range(32, 42), *range(50, 64), 77, 89, 90, 102, 103, 113, 114)
 METADATA_WINDOWS = tuple(
   (start, width)
@@ -72,7 +75,7 @@ def decode(t: float, addr: int, dat: bytes) -> list[RadarObject]:
       track_id=extract(raw, 42, 8),
       metadata_50_63=extract(raw, 50, 14),
       state_alt_candidate=extract(raw, 51, 4),
-      state_candidate=extract(raw, 55, 4),
+      state_candidate=extract(raw, 55, 3),
       d_rel=extract(raw, 64, 13) * 0.05,
       y_rel=extract(raw, 78, 11, True) * 0.05,
       v_rel=extract(raw, 91, 11, True) * 0.05 + 2.4,
@@ -142,6 +145,12 @@ def empty_groups() -> dict[str, dict[str, Counter]]:
 
 def nearest_model_match(candidates: list[RadarObject], model_d: float, model_y: float, model_v_rel: float, v_ego: float,
                         x_std: float, y_std: float, v_std: float) -> RadarObject | None:
+  scored = score_model_matches(candidates, model_d, model_y, model_v_rel, v_ego, x_std, y_std, v_std)
+  return min(scored, key=lambda item: item[0])[1] if scored else None
+
+
+def score_model_matches(candidates: list[RadarObject], model_d: float, model_y: float, model_v_rel: float, v_ego: float,
+                        x_std: float, y_std: float, v_std: float) -> list[tuple[float, RadarObject]]:
   scored = []
   for obj in candidates:
     if not (
@@ -158,7 +167,7 @@ def nearest_model_match(candidates: list[RadarObject], model_d: float, model_y: 
     )
     if math.isfinite(score) and score <= NIS_GATE:
       scored.append((score, obj))
-  return min(scored, key=lambda item: item[0])[1] if scored else None
+  return scored
 
 
 def nearest_scc_match(candidates: list[RadarObject], d_rel: float, v_rel: float) -> RadarObject | None:
@@ -250,6 +259,8 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
   v_ego = 0.0
   model_events = scc_events = 0
   model_matches = scc_matches = 0
+  latest_scc_reference: tuple[float, float, float] | None = None
+  association_policy = Counter()
 
   for index, path in enumerate(paths, start=1):
     print(f"  [{index}/{len(paths)}] {path.parent.name}", flush=True)
@@ -269,7 +280,9 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
           dat = bytes(can.dat)
           if addr == 0x1A0 and len(dat) == 32 and int(can.src) < 128:
             raw = int.from_bytes(dat, "little", signed=False)
-            scc_references.append((extract(raw, 24, 11) * 0.1, extract(raw, 35, 9) * 0.1 - 16.4))
+            scc_reference = (extract(raw, 24, 11) * 0.1, extract(raw, 35, 9) * 0.1 - 16.4)
+            scc_references.append(scc_reference)
+            latest_scc_reference = (now, *scc_reference)
           if int(can.src) != 1 or not (0x180 <= addr <= 0x184) or len(dat) != 32:
             continue
           for obj in decode(now, addr, dat):
@@ -326,10 +339,11 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
       model_d = float(lead.x[0]) - RADAR_TO_CAMERA
       model_y = float(lead.y[0])
       model_v_rel = float(lead.v[0]) - v_ego
-      selected = nearest_model_match(
+      scored = score_model_matches(
         candidates, model_d, model_y, model_v_rel, v_ego,
         float(lead.xStd[0]), float(lead.yStd[0]), float(lead.vStd[0]),
       )
+      selected = min(scored, key=lambda item: item[0])[1] if scored else None
       if selected is not None:
         model_matches += 1
         update_group(groups, "modelSelected", selected)
@@ -351,6 +365,31 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
           update_group(groups, "inPath", obj)
         elif residual >= 1.8:
           update_group(groups, "outOfPath", obj)
+
+      if latest_scc_reference is not None and 0.0 <= now - latest_scc_reference[0] <= MAX_RADAR_AGE:
+        _, scc_d_rel, scc_v_rel = latest_scc_reference
+        if not (0.5 <= scc_d_rel <= 200.0):
+          continue
+        truth = nearest_scc_match(candidates, scc_d_rel, scc_v_rel)
+        if truth is None or not scored:
+          continue
+
+        association_policy["truthSamples"] += 1
+        best = min(scored, key=lambda item: item[0])[1]
+        primary_candidates = [item for item in scored
+                              if item[1].addr == PRIMARY_ADDR and item[1].slot == PRIMARY_SLOT and
+                              item[1].valid_count == PRIMARY_QUALITY]
+        current = min(primary_candidates, key=lambda item: item[0])[1] if primary_candidates else best
+
+        truth_key = (truth.addr, truth.slot)
+        best_key = (best.addr, best.slot)
+        current_key = (current.addr, current.slot)
+        association_policy["bestExact"] += best_key == truth_key
+        association_policy["currentExact"] += current_key == truth_key
+        association_policy["currentPrimarySelected"] += bool(primary_candidates)
+        association_policy["primaryChangedBest"] += current_key != best_key
+        association_policy["primaryChangedBestCorrectToWrong"] += best_key == truth_key and current_key != truth_key
+        association_policy["primaryChangedBestWrongToCorrect"] += best_key != truth_key and current_key == truth_key
 
   continuous = lifecycle["continuous"]
   lifecycle_summary = {
@@ -378,6 +417,19 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
     "stockSccEvents": scc_events,
     "stockSccMatches": scc_matches,
     "stockSccMatchRate": round(scc_matches / max(scc_events, 1), 6),
+    "associationPolicy": {
+      "truthSamples": association_policy["truthSamples"],
+      "currentPrimaryPreferenceExact": association_policy["currentExact"],
+      "currentPrimaryPreferenceExactRate": round(
+        association_policy["currentExact"] / max(association_policy["truthSamples"], 1), 6),
+      "bestInnovationExact": association_policy["bestExact"],
+      "bestInnovationExactRate": round(
+        association_policy["bestExact"] / max(association_policy["truthSamples"], 1), 6),
+      "currentPrimarySelected": association_policy["currentPrimarySelected"],
+      "primaryChangedBest": association_policy["primaryChangedBest"],
+      "primaryChangedBestCorrectToWrong": association_policy["primaryChangedBestCorrectToWrong"],
+      "primaryChangedBestWrongToCorrect": association_policy["primaryChangedBestWrongToCorrect"],
+    },
     "groups": {name: summarize_group(group) for name, group in sorted(groups.items())},
     "lifecycle": lifecycle_summary,
     "modelSelectedVsOtherBits": bit_separation(groups, "modelSelected", "modelOther")[:15],
@@ -422,9 +474,18 @@ def aggregate(routes: dict[str, dict[str, Any]]) -> dict[str, Any]:
     all((row["modelSelectedState34Rate"] or 0.0) >= 0.995 for row in model_routes)
   )
   state_candidate_ready = state_like_field_located and mrr30_state_gate_compatible
+  if state_candidate_ready:
+    verdict = "state_like_field_found_and_mrr30_state_gate_supported"
+    state_reason = "States 3/4 cover independently selected leads consistently across substantial routes."
+  elif state_like_field_located:
+    verdict = "state_like_field_found_but_do_not_apply_mrr30_state_gate"
+    state_reason = "The field separates active slots, but states 3/4 do not cover independently selected leads consistently."
+  else:
+    verdict = "no_cross_route_mrr30_compatible_state_gate"
+    state_reason = "No MRR30-compatible state gate is stable across the analyzed routes."
   reason = " ".join((
-    "R0100 already supplies openpilot's required dRel/yRel/vRel point contract.",
-    "The candidate field is stable but states 3/4 do not cover independently model-selected leads consistently across routes.",
+    "R0100 supplies openpilot's required dRel/yRel/vRel point contract.",
+    state_reason,
     "Classification and OEM lane assignment are not RadarPoint fields.",
   ))
   return {
@@ -441,7 +502,7 @@ def aggregate(routes: dict[str, dict[str, Any]]) -> dict[str, Any]:
     "openpilotMinimumRadarContractComplete": True,
     "classificationDecoded": False,
     "laneAssignmentDecoded": False,
-    "verdict": "state_like_field_found_but_do_not_apply_mrr30_state_gate",
+    "verdict": verdict,
     "reason": reason,
   }
 

@@ -23,8 +23,8 @@ def encode_velocity(value: float, bit_offset: int = 0) -> bytes:
 
 
 def encode_object(track_id: int, heartbeat: int, distance: float, lateral: float,
-                  velocity: float, bit_offset: int = 0, *, quality_byte: int = 0,
-                  state_alt: int = 0, state: int = 0) -> bytes:
+                  velocity: float, bit_offset: int = 0, *, quality_byte: int = 1,
+                  state_alt: int = 0, state: int = 1) -> bytes:
   values = (
     (quality_byte, bit_offset + 32, 8),
     (track_id, bit_offset + 42, 8),
@@ -86,6 +86,14 @@ def test_carnival_r0100_full_object_decode_both_slots() -> None:
 
 def test_carnival_radar_rejects_zero_track_id() -> None:
   obj = decode_carnival_radar_object(encode_object(0, 3, 20.0, 0.0, 0.0), 0)
+  assert not carnival_radar_object_valid(obj)
+
+
+@pytest.mark.parametrize(("quality_byte", "state"), ((0, 1), (1, 0)))
+def test_carnival_radar_rejects_oem_invalid_object_state(quality_byte: int, state: int) -> None:
+  obj = decode_carnival_radar_object(
+    encode_object(12, 3, 20.0, 0.0, 0.0, quality_byte=quality_byte, state=state), 0,
+  )
   assert not carnival_radar_object_valid(obj)
 
 

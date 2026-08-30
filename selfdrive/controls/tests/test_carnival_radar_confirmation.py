@@ -302,9 +302,9 @@ def test_carnival_primary_consistent_velocity_refines_model_velocity():
   )
 
   assert lead_state["radar"]
-  assert abs(lead_state["vRel"] - 0.8) < 1e-6
-  assert abs(lead_state["vLead"] - 10.8) < 1e-6
-  assert lead_state["aLeadK"] == track.aLeadK
+  assert abs(lead_state["vRel"] - 0.93) < 1e-6
+  assert abs(lead_state["vLead"] - 10.93) < 1e-6
+  assert lead_state["aLeadK"] == 0.0
 
 
 def test_carnival_primary_far_velocity_uses_bounded_blend_after_stable_association():
@@ -337,7 +337,6 @@ def test_carnival_primary_far_velocity_uses_bounded_blend_after_stable_associati
     starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
     low_speed_override=True,
     preferred_track_id=track.identifier,
-    preferred_track_frames=5,
   )
 
   assert lead_state["radar"]
@@ -346,7 +345,7 @@ def test_carnival_primary_far_velocity_uses_bounded_blend_after_stable_associati
   assert lead_state["aLeadK"] == -0.2
 
 
-def test_carnival_primary_far_velocity_stays_model_led_before_stable_association():
+def test_carnival_primary_velocity_has_no_distance_or_selection_streak_mode_switch():
   track = make_track(CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN + 1,
                      d_rel=55.0, y_rel=0.0, v_rel=-1.2, v_ego=30.0)
   for frame in range(1, 8):
@@ -376,15 +375,14 @@ def test_carnival_primary_far_velocity_stays_model_led_before_stable_association
     starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
     low_speed_override=True,
     preferred_track_id=track.identifier,
-    preferred_track_frames=4,
   )
 
   assert lead_state["radar"]
-  assert abs(lead_state["vRel"] + 0.4) < 1e-6
+  assert abs(lead_state["vRel"] + 0.68) < 1e-6
   assert lead_state["aLeadK"] == -0.2
 
 
-def test_carnival_primary_velocity_outside_consensus_stays_model_led():
+def test_carnival_primary_velocity_uses_bounded_global_fusion():
   track = make_track(CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN + 1,
                      d_rel=20.0, y_rel=0.0, v_rel=0.4, v_ego=10.0)
   for frame in range(1, 8):
@@ -416,8 +414,8 @@ def test_carnival_primary_velocity_outside_consensus_stays_model_led():
   )
 
   assert lead_state["radar"]
-  assert lead_state["vRel"] == 1.0
-  assert lead_state["vLead"] == 11.0
+  assert lead_state["vRel"] == 0.79
+  assert lead_state["vLead"] == 10.79
   assert lead_state["aLeadK"] == -0.2
 
 

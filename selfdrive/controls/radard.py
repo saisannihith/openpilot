@@ -70,18 +70,13 @@ CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_D_STD = 0.25
 CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_Y_STD = 0.25
 CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_V_STD = 0.35
 CARNIVAL_4TH_GEN_VELOCITY_MIN_FRAMES = 8
-CARNIVAL_4TH_GEN_VELOCITY_MAX_DISTANCE = 40.0
 CARNIVAL_4TH_GEN_VELOCITY_MAX_ABS_Y = 0.75
 CARNIVAL_4TH_GEN_VELOCITY_MAX_PATH_OFFSET = 0.35
 CARNIVAL_4TH_GEN_VELOCITY_MAX_NIS = 5.991
 CARNIVAL_4TH_GEN_VELOCITY_MAX_RATE_RESIDUAL = 0.75
-CARNIVAL_4TH_GEN_VELOCITY_MAX_CONSENSUS = 0.45
-CARNIVAL_4TH_GEN_FAR_VELOCITY_MIN_DISTANCE = 40.0
-CARNIVAL_4TH_GEN_FAR_VELOCITY_MAX_DISTANCE = 60.0
-CARNIVAL_4TH_GEN_FAR_VELOCITY_MIN_SELECTED_FRAMES = 6
-CARNIVAL_4TH_GEN_FAR_VELOCITY_MAX_CONSENSUS = 1.0
-CARNIVAL_4TH_GEN_FAR_VELOCITY_BLEND_WEIGHT = 0.35
-CARNIVAL_4TH_GEN_FAR_VELOCITY_MAX_CORRECTION = 0.35
+CARNIVAL_4TH_GEN_VELOCITY_MAX_MODEL_RESIDUAL = 1.0
+CARNIVAL_4TH_GEN_VELOCITY_BLEND_WEIGHT = 0.35
+CARNIVAL_4TH_GEN_VELOCITY_MAX_CORRECTION = 0.35
 CARNIVAL_4TH_GEN_REACQUIRE_MIN_FRAMES = 8
 CARNIVAL_4TH_GEN_REACQUIRE_MAX_DISTANCE = 25.0
 CARNIVAL_4TH_GEN_REACQUIRE_PATH_OFFSET = 1.1
@@ -424,12 +419,10 @@ def carnival_confirmation_innovation_score(track: Track, lead: capnp._DynamicStr
 
 
 def carnival_primary_velocity_refinement(track: Track, lead_msg: capnp._DynamicStructReader,
-                                         model_data: capnp._DynamicStructReader, model_v_ego: float,
-                                         selected_frames: int = 0) -> tuple[float, bool] | None:
-  """Return a bounded R0100 velocity refinement for an already model-matched lead."""
+                                         model_data: capnp._DynamicStructReader, model_v_ego: float) -> float | None:
+  """Fuse one source-qualified R0100 velocity into an associated model lead."""
   if (not track.carnivalPrimary or not track.measured or
       track.cnt < CARNIVAL_4TH_GEN_VELOCITY_MIN_FRAMES or
-      not (0.0 < track.dRel <= CARNIVAL_4TH_GEN_FAR_VELOCITY_MAX_DISTANCE) or
       abs(track.yRel) > CARNIVAL_4TH_GEN_VELOCITY_MAX_ABS_Y or
       carnival_confirmation_innovation_score(track, lead_msg, model_v_ego) > CARNIVAL_4TH_GEN_VELOCITY_MAX_NIS):
     return None
@@ -460,41 +453,31 @@ def carnival_primary_velocity_refinement(track: Track, lead_msg: capnp._DynamicS
   model_v_rel = float(lead_msg.v[0] - model_v_ego)
   radar_v_rel = float(track.vRel)
   velocity_residual = radar_v_rel - model_v_rel
-  if track.dRel <= CARNIVAL_4TH_GEN_VELOCITY_MAX_DISTANCE:
-    if abs(velocity_residual) > CARNIVAL_4TH_GEN_VELOCITY_MAX_CONSENSUS:
-      return None
-    return radar_v_rel, True
-
-  if (track.dRel <= CARNIVAL_4TH_GEN_FAR_VELOCITY_MIN_DISTANCE or
-      selected_frames < CARNIVAL_4TH_GEN_FAR_VELOCITY_MIN_SELECTED_FRAMES or
-      abs(velocity_residual) > CARNIVAL_4TH_GEN_FAR_VELOCITY_MAX_CONSENSUS):
+  if abs(velocity_residual) > CARNIVAL_4TH_GEN_VELOCITY_MAX_MODEL_RESIDUAL:
     return None
   correction = float(np.clip(
-    CARNIVAL_4TH_GEN_FAR_VELOCITY_BLEND_WEIGHT * velocity_residual,
-    -CARNIVAL_4TH_GEN_FAR_VELOCITY_MAX_CORRECTION,
-    CARNIVAL_4TH_GEN_FAR_VELOCITY_MAX_CORRECTION,
+    CARNIVAL_4TH_GEN_VELOCITY_BLEND_WEIGHT * velocity_residual,
+    -CARNIVAL_4TH_GEN_VELOCITY_MAX_CORRECTION,
+    CARNIVAL_4TH_GEN_VELOCITY_MAX_CORRECTION,
   ))
-  return model_v_rel + correction, False
+  return model_v_rel + correction
 
 
 def get_RadarState_from_carnival_confirmation(track: Track, lead_msg: capnp._DynamicStructReader,
                                               model_data: capnp._DynamicStructReader, v_ego: float,
-                                              model_v_ego: float, model_prob: float, selected_frames: int = 0):
+                                              model_v_ego: float, model_prob: float):
   model_v_rel = float(lead_msg.v[0] - model_v_ego)
-  refinement = carnival_primary_velocity_refinement(track, lead_msg, model_data, model_v_ego, selected_frames)
-  v_rel, direct_radar_velocity = (model_v_rel, False) if refinement is None else refinement
+  refinement = carnival_primary_velocity_refinement(track, lead_msg, model_data, model_v_ego)
+  v_rel = model_v_rel if refinement is None else refinement
   v_lead = float(v_ego + v_rel)
-  v_lead_k = float(track.vLeadK) if direct_radar_velocity else v_lead
-  a_lead_k = float(track.aLeadK) if direct_radar_velocity else float(lead_msg.a[0])
-  a_lead_tau = float(track.aLeadTau.x) if direct_radar_velocity else 0.3
   return {
     "dRel": float(track.dRel),
     "yRel": float(track.yRel),
     "vRel": v_rel,
     "vLead": v_lead,
-    "vLeadK": v_lead_k,
-    "aLeadK": a_lead_k,
-    "aLeadTau": a_lead_tau,
+    "vLeadK": v_lead,
+    "aLeadK": float(lead_msg.a[0]),
+    "aLeadTau": 0.3,
     "status": True,
     "fcw": track.is_potential_fcw(model_prob),
     "modelProb": model_prob,
@@ -597,8 +580,7 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
              model_v_ego: float, model_data: capnp._DynamicStructReader, standstill: bool,
              starpilot_plan: capnp._DynamicStructReader, starpilot_toggles: SimpleNamespace,
              low_speed_override: bool = True, g90_radar_filter: bool = False, lead_prob: float | None = None,
-             preferred_track_id: int = -1, preferred_track_frames: int = 0,
-             honda_bosch_a_radar: bool = False) -> dict[str, Any]:
+             preferred_track_id: int = -1, honda_bosch_a_radar: bool = False) -> dict[str, Any]:
   lead_detection_probability = float(getattr(starpilot_toggles, "lead_detection_probability", 0.35))
   filtered_lead_prob = float(lead_msg.prob if lead_prob is None else lead_prob)
 
@@ -613,8 +595,7 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
   if track is not None:
     if track.carnivalR0100:
       lead_dict = get_RadarState_from_carnival_confirmation(track, lead_msg, model_data, v_ego,
-                                                            model_v_ego, filtered_lead_prob,
-                                                            preferred_track_frames + 1 if track.identifier == preferred_track_id else 1)
+                                                            model_v_ego, filtered_lead_prob)
     else:
       lead_dict = track.get_RadarState(filtered_lead_prob)
   elif (track is None) and ready and (filtered_lead_prob > lead_detection_probability):
@@ -741,7 +722,6 @@ class RadarD:
     lead_prob_dt = DT_MDL if self.honda_bosch_a_radar else radar_ts
     self.lead_prob_filters = [FirstOrderFilter(0.0, 0.2, lead_prob_dt) for _ in range(2)]
     self.prev_lead_track_ids = [-1, -1]
-    self.prev_lead_track_frames = [0, 0]
     self.preferred_stale_track_ids = [-1, -1]
     self.preferred_challenger_stale_counts = [0, 0]
     self.preferred_gross_distance_stale_counts = [0, 0]
@@ -880,30 +860,22 @@ class RadarD:
                                           sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=True,
                                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[0].x,
                                           preferred_track_id=self.prev_lead_track_ids[0],
-                                          preferred_track_frames=self.prev_lead_track_frames[0],
                                           honda_bosch_a_radar=self.honda_bosch_a_radar)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, sm['modelV2'],
                                           sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=False,
                                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[1].x,
                                           preferred_track_id=self.prev_lead_track_ids[1],
-                                          preferred_track_frames=self.prev_lead_track_frames[1],
                                           honda_bosch_a_radar=self.honda_bosch_a_radar)
 
       for i, lead in enumerate((self.radar_state.leadOne, self.radar_state.leadTwo)):
         if lead.status and getattr(lead, "radar", False):
           track_id = int(getattr(lead, "radarTrackId", -1))
-          self.prev_lead_track_frames[i] = self.prev_lead_track_frames[i] + 1 if track_id == self.prev_lead_track_ids[i] else 1
           if track_id != self.prev_lead_track_ids[i]:
             self._reset_preferred_stale_evidence(i, track_id)
           self.prev_lead_track_ids[i] = track_id
         elif (not lead.status) or (self.prev_lead_track_ids[i] not in self.tracks):
           self.prev_lead_track_ids[i] = -1
-          self.prev_lead_track_frames[i] = 0
           self._reset_preferred_stale_evidence(i)
-        else:
-          # Retain the preferred ID for normal reacquisition, but require a new
-          # consecutive radar-match streak before far-range velocity blending.
-          self.prev_lead_track_frames[i] = 0
 
     if self.ready and (self.starpilot_toggles.adjacent_lead_tracking or self.starpilot_toggles.human_lane_changes):
       self.starpilot_radar_state.leadLeft = get_adjacent_lead(self.tracks, sm['carState'].standstill, sm['modelV2'], left=True)

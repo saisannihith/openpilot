@@ -38,6 +38,7 @@ class Policy:
   min_distance: float = 0.0
   bidirectional: bool = False
   max_model_residual: float = math.inf
+  direct_radar: bool = False
 
 
 POLICIES = (
@@ -49,6 +50,12 @@ POLICIES = (
   Policy("primary_strict", 16, 8, 0.75, 1.0, 65.0, 5.0, 0.25, 1.25, True),
   Policy("primary_far_fixed", 8, 6, 0.75, 0.0, 60.0, math.inf, 0.35, 0.35,
          True, 40.0, True, 1.0),
+  Policy("primary_global_bounded", 8, 6, 0.75, 0.0, 220.0, math.inf, 0.35, 0.35,
+         primary_only=True, bidirectional=True, max_model_residual=1.0),
+  Policy("primary_global_tight", 8, 6, 0.75, 0.0, 220.0, math.inf, 0.25, 0.25,
+         primary_only=True, bidirectional=True, max_model_residual=0.75),
+  Policy("primary_direct_consistent", 8, 6, 0.75, 0.0, 220.0, math.inf, 1.0, math.inf,
+         primary_only=True, direct_radar=True),
 )
 
 
@@ -115,6 +122,8 @@ def policy_output(policy, sample):
     return None
 
   model_vrel = sample["modelVRel"]
+  if policy.direct_radar:
+    return float(sample["rawVRel"])
   if policy.bidirectional:
     if abs(sample["rawVRel"] - model_vrel) > policy.max_model_residual:
       return None
@@ -151,6 +160,7 @@ def main():
     selected_track = {"leadOne": None, "leadTwo": None}
     selected_frames = defaultdict(int)
     latest = {}
+    latest_model_vrel: list[float] = []
 
     for msg in LogReader(str(path), default_mode=ReadMode.AUTO_INTERACTIVE, sort_by_time=False):
       now = int(msg.logMonoTime)
@@ -182,8 +192,12 @@ def main():
           if track_id not in seen:
             track_frames[track_id] = 0
             histories[track_id].clear()
+      elif which == "modelV2":
+        model_v_ego = finite(msg.modelV2.velocity.x[0]) if len(msg.modelV2.velocity.x) else 0.0
+        latest_model_vrel = [finite(lead.v[0]) - model_v_ego if len(lead.v) else 0.0
+                             for lead in list(msg.modelV2.leadsV3)[:2]]
       elif which == "radarState":
-        for lead_name in ("leadOne", "leadTwo"):
+        for lead_index, lead_name in enumerate(("leadOne", "leadTwo")):
           lead = getattr(msg.radarState, lead_name)
           track_id = int(lead.radarTrackId)
           if not lead.status or not lead.radar or track_id not in latest:
@@ -200,7 +214,9 @@ def main():
             "lead": lead_name,
             "trackId": track_id,
             "selectedFrames": selected_frames[(lead_name, track_id)],
-            "modelVRel": finite(lead.vRel),
+            "modelVRel": (latest_model_vrel[lead_index]
+                          if lead_index < len(latest_model_vrel) else finite(lead.vRel)),
+            "productionVRel": finite(lead.vRel),
           })
           samples.append(sample)
 

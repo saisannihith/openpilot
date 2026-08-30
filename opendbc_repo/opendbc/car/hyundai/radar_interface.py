@@ -82,9 +82,10 @@ def decode_carnival_radar_object(dat: bytes, bit_offset: int) -> CarnivalRadarOb
 
 
 def carnival_radar_object_valid(obj: CarnivalRadarObject) -> bool:
-  # The high nibble is a rolling counter and legitimately wraps through zero.
-  # Identity, geometry, continuity, and persistence provide object validity.
-  return (obj.raw_track_id != 0 and
+  # Across 151k active samples, every published object had a nonzero object
+  # byte and lifecycle state; empty slots were state/byte zero in >99.9% of
+  # samples. States 1-7 are all used, so this is not an MRR30 (3, 4) field.
+  return (obj.quality_byte != 0 and obj.state != 0 and obj.raw_track_id != 0 and
           0.5 <= obj.d_rel <= 220.0 and
           abs(obj.y_rel) <= CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_Y and
           abs(obj.v_rel) <= CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_V)
