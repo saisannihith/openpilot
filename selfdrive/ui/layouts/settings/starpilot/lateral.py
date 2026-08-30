@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from openpilot.system.hardware import HARDWARE
 from openpilot.selfdrive.ui.lib.starpilot_state import starpilot_state
+from openpilot.starpilot.common.nnff_eligibility import (
+  enforce_nnff_driving_model_eligibility,
+  nnff_driving_model_allowed_for_params,
+)
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.widgets import DialogResult
@@ -100,16 +104,32 @@ class StarPilotLateralLayout(_SettingsPage):
     def alt_on():
       return p.get_bool("AdvancedLateralTune")
 
-    def set_road_aware(state: bool):
-      if state:
-        p.put_float("LaneCenterOffset", 0.0)
-      p.put_bool("LaneCenteringRoadAware", state)
-
     def aol_on():
       return p.get_bool("AlwaysOnLateral")
 
     def lc_on():
       return p.get_bool("LaneChanges")
+
+    def nnff_model_eligible():
+      return nnff_driving_model_allowed_for_params(p, p.get("CarModel"))
+
+    def set_nnff(state: bool):
+      if state and not nnff_model_eligible():
+        p.put_bool("NNFF", False)
+        return
+      p.put_bool("NNFF", state)
+      if state:
+        p.put_bool("NNFFLite", False)
+      enforce_nnff_driving_model_eligibility(p, p.get("CarModel"))
+      _sync_parent(p, "LateralTune", _LATERAL_TUNE_KEYS)
+
+    def set_nnff_lite(state: bool):
+      if state and not nnff_model_eligible():
+        p.put_bool("NNFFLite", False)
+        return
+      p.put_bool("NNFFLite", state)
+      enforce_nnff_driving_model_eligibility(p, p.get("CarModel"))
+      _sync_parent(p, "LateralTune", _LATERAL_TUNE_KEYS)
 
     def nlc_on():
       return lc_on() and p.get_bool("NudgelessLaneChange")
@@ -167,21 +187,6 @@ class StarPilotLateralLayout(_SettingsPage):
         on_click=lambda: self._show_slider("LaneCenterOffset", -0.3, 0.3, step=0.01, unit=" m",
                                            value_type="float", title="Lane Center Offset"),
         visible=lambda: p.get_bool("LaneCentering"),
-      ),
-      SettingRow(
-        "LaneCenteringRoadAware", "toggle", tr_noop("Road-Aware Lane Position"),
-        subtitle=tr_noop("Add a small outer-lane offset only after sustained multi-distance agreement. Enabling resets the manual offset."),
-        get_state=lambda: p.get_bool("LaneCenteringRoadAware"),
-        set_state=set_road_aware,
-        visible=lambda: p.get_bool("LaneCentering"),
-      ),
-      SettingRow(
-        "LaneCenteringRoadEdgeOffset", "value", tr_noop("Outer-Lane Offset"),
-        subtitle=tr_noop("Set the maximum offset toward an outside edge with verified lane and shoulder clearance."),
-        get_value=self._get_lane_center_road_edge_offset_display,
-        on_click=lambda: self._show_slider("LaneCenteringRoadEdgeOffset", 0.0, 0.2, step=0.01, unit=" m",
-                                           value_type="float", title="Outer-Lane Offset"),
-        visible=lambda: p.get_bool("LaneCentering") and p.get_bool("LaneCenteringRoadAware"),
       ),
       SettingRow(
         "LaneCenteringPauseOnSignal", "toggle", tr_noop("Pause Lane Centering On Signal"),
@@ -267,21 +272,18 @@ class StarPilotLateralLayout(_SettingsPage):
         "NNFF", "toggle", tr_noop("NNFF"),
         subtitle=tr_noop("Neural net feedforward steering controller."),
         get_state=lambda: p.get_bool("NNFF"),
-        set_state=lambda s: (p.put_bool("NNFF", s),
-                             s and p.put_bool("NNFFLite", False),
-                             _sync_parent(p, "LateralTune", _LATERAL_TUNE_KEYS)),
-        enabled=lambda: cs.hasNNFFLog and not cs.isAngleCar,
-        disabled_label=tr_noop("Not Available"),
+        set_state=set_nnff,
+        enabled=lambda: cs.hasNNFFLog and nnff_model_eligible() and not cs.isAngleCar,
+        disabled_label=tr_noop("Requires Compatible Model"),
         visible=alt_on,
       ),
       SettingRow(
         "NNFFLite", "toggle", tr_noop("NNFF Lite"),
         subtitle=tr_noop("Lightweight NNFF when full model is off."),
         get_state=lambda: p.get_bool("NNFFLite"),
-        set_state=lambda s: (p.put_bool("NNFFLite", s),
-                             _sync_parent(p, "LateralTune", _LATERAL_TUNE_KEYS)),
-        enabled=lambda: not cs.isAngleCar,
-        disabled_label=tr_noop("Not Available"),
+        set_state=set_nnff_lite,
+        enabled=lambda: nnff_model_eligible() and not cs.isAngleCar,
+        disabled_label=tr_noop("Requires Compatible Model"),
         visible=alt_on,
       ),
       SettingRow(
@@ -453,9 +455,6 @@ class StarPilotLateralLayout(_SettingsPage):
       return tr("Centered")
     direction = tr("right") if val > 0.0 else tr("left")
     return f"{abs(val):.2f} m {direction}"
-
-  def _get_lane_center_road_edge_offset_display(self) -> str:
-    return f"{self._params.get_float('LaneCenteringRoadEdgeOffset'):.2f} m"
 
   def _get_lane_center_e2e_authority_display(self) -> str:
     return f"{self._params.get_float('LaneCenteringE2EAuthority') * 100:.0f}%"

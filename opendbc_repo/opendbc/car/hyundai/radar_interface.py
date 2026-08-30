@@ -28,6 +28,8 @@ CARNIVAL_4TH_GEN_OBJECT_BUS = 1
 CARNIVAL_4TH_GEN_OBJECT_LEN = 32
 CARNIVAL_4TH_GEN_OBJECT_LOG_INTERVAL = 1.0
 CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE = 0xC4100
+CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_BASE = 0xC4200
+CARNIVAL_4TH_GEN_PRIMARY_QUALITY = 0xFF
 CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE = 0.25
 CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST = 3
 CARNIVAL_4TH_GEN_CONFIRMATION_MAX_GAP = 0.15
@@ -46,8 +48,8 @@ def get_little_signed(dat: bytes, start: int, size: int) -> int:
 
 
 def decode_carnival_confirmation_velocity(dat: bytes, bit_offset: int, _state: int, _state_alt: int) -> float:
-  # Verified against 15,382 stock-SCC samples from the Carnival's 99110-R0100
-  # radar: median 0.15 m/s and p95 0.55 m/s versus ACC_ObjRelSpd.
+  # Verified against 15,135 unique stock-SCC samples from two held-out routes:
+  # median 0.05 m/s and p95 0.60 m/s versus ACC_ObjRelSpd.
   start, size, scale, offset = CARNIVAL_4TH_GEN_CONFIRMATION_VELOCITY_SPEC
   return get_little_signed(dat, bit_offset + start, size) * scale + offset
 
@@ -56,6 +58,10 @@ def decode_carnival_confirmation_velocity(dat: bytes, bit_offset: int, _state: i
 class CarnivalRadarObject:
   raw_track_id: int
   heartbeat: int
+  quality_byte: int
+  state_alt: int
+  state: int
+  metadata_50_63: int
   d_rel: float
   y_rel: float
   v_rel: float
@@ -65,6 +71,10 @@ def decode_carnival_radar_object(dat: bytes, bit_offset: int) -> CarnivalRadarOb
   return CarnivalRadarObject(
     raw_track_id=get_little_unsigned(dat, bit_offset + 42, 8),
     heartbeat=get_little_unsigned(dat, bit_offset + 124, 4),
+    quality_byte=get_little_unsigned(dat, bit_offset + 32, 8),
+    state_alt=get_little_unsigned(dat, bit_offset + 51, 4),
+    state=get_little_unsigned(dat, bit_offset + 55, 3),
+    metadata_50_63=get_little_unsigned(dat, bit_offset + 50, 14),
     d_rel=get_little_unsigned(dat, bit_offset + 64, 13) * 0.05,
     y_rel=get_little_signed(dat, bit_offset + 78, 11) * 0.05,
     v_rel=decode_carnival_confirmation_velocity(dat, bit_offset, 0, 0),
@@ -80,13 +90,14 @@ def carnival_radar_object_valid(obj: CarnivalRadarObject) -> bool:
           abs(obj.v_rel) <= CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_V)
 
 
-def carnival_confirmation_continuous(prev: tuple[float, float, float, float] | None, now: float,
-                                     obj: CarnivalRadarObject) -> bool:
+def carnival_confirmation_continuous(prev: tuple[float, float, float, float, bool] | None, now: float,
+                                     obj: CarnivalRadarObject, qualified_primary: bool) -> bool:
   if prev is None:
     return False
-  prev_t, prev_d, prev_y, prev_v = prev
+  prev_t, prev_d, prev_y, prev_v, prev_qualified_primary = prev
   dt = now - prev_t
   return (0.0 <= dt <= CARNIVAL_4TH_GEN_CONFIRMATION_MAX_GAP and
+          qualified_primary == prev_qualified_primary and
           abs(obj.d_rel - prev_d) <= max(1.5, 60.0 * max(dt, 0.0)) and
           abs(obj.y_rel - prev_y) <= max(1.0, 20.0 * max(dt, 0.0)) and
           abs(obj.v_rel - prev_v) <= 8.0)
@@ -181,8 +192,8 @@ class RadarInterface(RadarInterfaceBase):
     self.carnival_object_probe_last_log = 0.0
     self.carnival_object_probe_seen = 0
     self.carnival_object_probe_valid = 0
-    self.carnival_confirmation_tracks: dict[int, tuple[float, float, float, float]] = {}
-    self.carnival_confirmation_prev: dict[int, tuple[float, float, float, float]] = {}
+    self.carnival_confirmation_tracks: dict[int, tuple[float, float, float, float, bool]] = {}
+    self.carnival_confirmation_prev: dict[int, tuple[float, float, float, float, bool]] = {}
     self.carnival_confirmation_persist: dict[int, int] = {}
     self.rcp = get_radar_can_parser(CP, self.radar_config)
 
@@ -271,18 +282,24 @@ class RadarInterface(RadarInterfaceBase):
       self.carnival_confirmation_persist.pop(raw_track_id, None)
 
     for raw_track_id, obj in batch_objects.items():
+      qualified_primary = bool(
+        primary is not None and raw_track_id == primary.raw_track_id and
+        primary.quality_byte == CARNIVAL_4TH_GEN_PRIMARY_QUALITY
+      )
       previous = self.carnival_confirmation_prev.get(raw_track_id)
-      continuous = carnival_confirmation_continuous(previous, now, obj)
+      continuous = carnival_confirmation_continuous(previous, now, obj, qualified_primary)
       persist = self.carnival_confirmation_persist.get(raw_track_id, 0) + 1 if continuous else 1
       if not continuous:
         # A raw ID can be recycled for a different physical object. Withdraw the
         # old point immediately so radard creates a fresh Track after persistence
         # is re-established instead of inheriting its maturity and path history.
         self.carnival_confirmation_tracks.pop(raw_track_id, None)
-      self.carnival_confirmation_prev[raw_track_id] = (now, obj.d_rel, obj.y_rel, obj.v_rel)
+      self.carnival_confirmation_prev[raw_track_id] = (now, obj.d_rel, obj.y_rel, obj.v_rel, qualified_primary)
       self.carnival_confirmation_persist[raw_track_id] = persist
       if persist >= CARNIVAL_4TH_GEN_CONFIRMATION_MIN_PERSIST:
-        self.carnival_confirmation_tracks[raw_track_id] = (now, obj.d_rel, obj.y_rel, obj.v_rel)
+        self.carnival_confirmation_tracks[raw_track_id] = (
+          now, obj.d_rel, obj.y_rel, obj.v_rel, qualified_primary,
+        )
 
     self._expire_carnival_confirmation_tracks(now)
     if primary is None or now - self.carnival_object_probe_last_log < CARNIVAL_4TH_GEN_OBJECT_LOG_INTERVAL:
@@ -302,9 +319,10 @@ class RadarInterface(RadarInterfaceBase):
       f"addr=0x{CARNIVAL_4TH_GEN_PRIMARY_OBJECT_ADDR:x} slot=1 rawTrackId={primary.raw_track_id} ",
       f"heartbeat={primary.heartbeat} dRel={primary.d_rel:.2f} yRel={primary.y_rel:.2f} ",
       f"vRel={primary.v_rel:.2f} dDot={d_dot_str} shadowDistance=YES ",
-      f"confirmationTrack={primary.raw_track_id in self.carnival_confirmation_tracks} ",
+      f"r0100Track={primary.raw_track_id in self.carnival_confirmation_tracks} ",
+      f"qualifiedPrimary={primary.quality_byte == CARNIVAL_4TH_GEN_PRIMARY_QUALITY} ",
       f"publishedTracks={len(self.carnival_confirmation_tracks)} publishReady={bool(self.carnival_confirmation_tracks)} ",
-      f"velocityDecoded=YES controlReady=BOUNDED_CONFIRMATION_BLEND conflicts={len(conflicting_ids)} ",
+      f"velocityDecoded=YES controlReady=MODEL_FUSED_TARGET_QUALIFIED conflicts={len(conflicting_ids)} ",
       f"seen={self.carnival_object_probe_seen} ",
       f"valid={self.carnival_object_probe_valid}",
     )))
@@ -324,9 +342,11 @@ class RadarInterface(RadarInterfaceBase):
       return
 
     points = list(rr.points)
-    for raw_track_id, (_, d_rel, y_rel, v_rel) in sorted(self.carnival_confirmation_tracks.items()):
+    for raw_track_id, (_, d_rel, y_rel, v_rel, qualified_primary) in sorted(self.carnival_confirmation_tracks.items()):
       pt = structs.RadarData.RadarPoint()
-      pt.trackId = CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE + raw_track_id
+      track_id_base = (CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_BASE if qualified_primary
+                       else CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE)
+      pt.trackId = track_id_base + raw_track_id
       pt.measured = True
       pt.dRel = float(d_rel)
       pt.yRel = float(y_rel)

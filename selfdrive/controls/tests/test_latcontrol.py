@@ -158,7 +158,6 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import (
   get_kia_carnival_friction_center_fade_scale,
   get_kia_carnival_friction_jerk_deadzone,
   get_kia_carnival_friction_threshold,
-  get_kia_carnival_driver_override_output_scale,
   get_kia_carnival_highway_transition_output_scale,
   get_kia_carnival_unwind_ff_scale,
   get_kia_stinger_2022_center_taper_scale,
@@ -707,7 +706,7 @@ class TestLatControl:
     assert get_kia_forte_center_taper_scale(0.0, 30.0) < get_kia_forte_center_taper_scale(0.20, 30.0) <= 1.0
 
   def test_kia_carnival_near_center_stabilization(self):
-    assert HYUNDAI.KIA_CARNIVAL_4TH_GEN in KIA_CARNIVAL_CARS
+    assert KIA_CARNIVAL_CARS == (HYUNDAI.KIA_CARNIVAL_2025, HYUNDAI.KIA_CARNIVAL_HEV_4TH_GEN)
 
     center_taper = get_kia_carnival_center_taper_scale(0.04, 8.5)
     turn_taper = get_kia_carnival_center_taper_scale(0.35, 8.5)
@@ -751,13 +750,6 @@ class TestLatControl:
     assert smooth_curve > 0.96
     assert low_speed_abrupt > 0.99
     assert large_curve_abrupt > 0.96
-
-  def test_kia_carnival_driver_override_releases_crawl_speed_torque(self):
-    assert get_kia_carnival_driver_override_output_scale(2.0, 500.0) == pytest.approx(0.0)
-    assert get_kia_carnival_driver_override_output_scale(7.7, 500.0) == pytest.approx(0.0)
-    assert 0.0 < get_kia_carnival_driver_override_output_scale(10.0, 500.0) < 1.0
-    assert get_kia_carnival_driver_override_output_scale(13.0, 500.0) == pytest.approx(1.0)
-    assert get_kia_carnival_driver_override_output_scale(7.7, 50.0) == pytest.approx(1.0)
 
   def test_kia_carnival_unwind_friction_jerk_deadzone_is_mid_speed_and_center_gated(self):
     low_speed = get_kia_carnival_friction_jerk_deadzone(8.5, 0.0, 1.5)
@@ -1799,13 +1791,13 @@ class TestLatControl:
     assert controller.is_kia_carnival
     assert lac_log.active
 
-  def test_kia_carnival_2024_uses_carnival_torque_path(self):
+  def test_kia_carnival_2024_uses_standard_torque_path(self):
     controller, VM, CS, params, starpilot_toggles = self._build_torque_controller(HYUNDAI.KIA_CARNIVAL_4TH_GEN)
     CS.vEgo = 8.5
 
     _, _, lac_log = controller.update(True, CS, VM, params, False, 0.0025, False, 0.2, None, None, starpilot_toggles)
 
-    assert controller.is_kia_carnival
+    assert not controller.is_kia_carnival
     assert lac_log.active
 
   def test_kia_stinger_2022_near_center_stabilization(self):

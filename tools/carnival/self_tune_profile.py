@@ -68,24 +68,6 @@ def read_param_values(params, keys) -> dict[str, float]:
   return values
 
 
-def apply_resolved_plan(params, resolved: dict[str, dict[str, Any]]) -> dict[str, Any]:
-  safe = {key: value for key, value in resolved.items() if key in SAFE_LIMITS and "before" in value and "after" in value}
-  snapshot = {"values": {key: value["before"] for key, value in safe.items()}, "applied": {key: value["after"] for key, value in safe.items()}}
-  for key, value in safe.items():
-    params.put(key, str(value["after"]))
-  return snapshot
-
-
-def revert_snapshot(params, snapshot: dict[str, Any]) -> bool:
-  values = snapshot.get("values", {}) if isinstance(snapshot, dict) else {}
-  restored = False
-  for key, value in values.items():
-    if key in SAFE_LIMITS:
-      params.put(key, str(value))
-      restored = True
-  return restored
-
-
 def ssh_base(device: str, ssh_key: Path | None) -> list[str]:
   command = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10"]
   if ssh_key is not None:
@@ -100,39 +82,26 @@ def remote_param(device: str, key: str, ssh_key: Path | None) -> str:
   return result.stdout.strip()
 
 
-def put_remote_param(device: str, key: str, value: str, ssh_key: Path | None) -> None:
-  code = f"from openpilot.common.params import Params; Params().put({key!r}, {value!r})"
-  subprocess.run(ssh_base(device, ssh_key) + [f"cd /data/openpilot && /usr/local/venv/bin/python3 -c {shlex.quote(code)}"],
-                 check=True, text=True, timeout=20)
-
-
 def resolve_plan(device: str, deltas: dict[str, float], ssh_key: Path | None) -> dict[str, dict[str, Any]]:
   current = {key: float(remote_param(device, key, ssh_key)) for key in deltas}
   return resolve_values(current, deltas)
 
 
 def main() -> int:
-  parser = argparse.ArgumentParser(description="Generate or explicitly apply a bounded Carnival self-tuning profile.")
+  parser = argparse.ArgumentParser(description="Generate a read-only Carnival tuning suggestion report.")
   parser.add_argument("report", type=Path, help="JSON output from collect_and_report.py")
   parser.add_argument("--device", help="comma SSH IP; required to resolve current values")
   parser.add_argument("--ssh-key", type=Path, default=Path.home() / ".ssh" / "id_ed25519")
-  parser.add_argument("--apply", action="store_true", help="Apply the resolved allowlisted values to the comma")
   parser.add_argument("--snapshot-dir", type=Path, default=Path("drive_reports"))
   args = parser.parse_args()
-  if args.apply and not args.device:
-    raise SystemExit("--apply requires --device")
 
   report = latest_report(args.report)
   deltas = build_delta_plan(report)
-  result: dict[str, Any] = {"route": report.get("route", ""), "deltas": deltas, "applied": False}
+  result: dict[str, Any] = {"route": report.get("route", ""), "deltas": deltas, "readOnly": True}
   if args.device and deltas:
     key = args.ssh_key if args.ssh_key.exists() else None
     resolved = resolve_plan(args.device, deltas, key)
     result["resolved"] = resolved
-    if args.apply:
-      for param, values in resolved.items():
-        put_remote_param(args.device, param, str(values["after"]), key)
-      result["applied"] = True
 
   args.snapshot_dir.mkdir(parents=True, exist_ok=True)
   snapshot = args.snapshot_dir / f"carnival-profile-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"

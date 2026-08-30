@@ -30,6 +30,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_torque import KP
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.starpilot.common.model_versions import is_tinygrad_model_version
 from openpilot.starpilot.common.lateral_delay import full_lateral_delay
+from openpilot.starpilot.common.nnff_eligibility import enforce_nnff_driving_model_eligibility
 from openpilot.starpilot.common.accel_profile import (
   ACCELERATION_PROFILES,
   CUSTOM_ACCEL_PROFILE_PARAM_KEYS,
@@ -639,6 +640,7 @@ class StarPilotVariables:
     toggle.has_cc_long = toggle.car_make == "gm" and bool(CP.flags & GMFlags.CC_LONG.value)
     toggle.has_sascm = toggle.car_make == "gm" and bool(CP.flags & GMFlags.SASCM.value)
     has_nnff = nnff_supported(toggle.car_model)
+    nnff_model_eligible = enforce_nnff_driving_model_eligibility(self.params_raw, toggle.car_model)
     toggle.has_pedal = CP.enableGasInterceptorDEPRECATED
     has_radar = not CP.radarUnavailable
     toggle.has_sdsu = toggle.car_make == "toyota" and bool(FPCP.flags & ToyotaStarPilotFlags.SMART_DSU.value)
@@ -727,9 +729,6 @@ class StarPilotVariables:
     toggle.lane_centering_pause_on_signal = self.get_value(
       "LaneCenteringPauseOnSignal", condition=toggle.lane_centering, default=True,
     )
-    toggle.lane_centering_road_aware = self.get_value(
-      "LaneCenteringRoadAware", condition=toggle.lane_centering,
-    )
     toggle.force_auto_tune = self.get_value("ForceAutoTune", condition=advanced_lateral_tuning and not has_auto_tune and is_torque_car and not is_angle_car)
     # Force-off is also meaningful on manually tuned torque cars: it locks the
     # vehicle-model parameters instead of allowing paramsd to learn over them.
@@ -755,11 +754,6 @@ class StarPilotVariables:
     toggle.honda_lateral_pid_kp_scale = self.get_value("HondaLateralPidKpScale", cast=float, condition=honda_pid_lateral, default=1.0, min=0.1, max=4.0)
     toggle.honda_lateral_pid_ki_scale = self.get_value("HondaLateralPidKiScale", cast=float, condition=honda_pid_lateral, default=1.0, min=0.1, max=4.0)
     toggle.lane_center_offset = self.get_value("LaneCenterOffset", cast=float, condition=toggle.lane_centering, default=0.0, min=-0.3, max=0.3)
-    toggle.lane_centering_road_edge_offset = self.get_value(
-      "LaneCenteringRoadEdgeOffset", cast=float,
-      condition=toggle.lane_centering and toggle.lane_centering_road_aware,
-      default=0.15, min=0.0, max=0.2,
-    )
     toggle.lane_centering_e2e_authority = self.get_value(
       "LaneCenteringE2EAuthority", cast=float, condition=toggle.lane_centering,
       default=1.0, min=0.0, max=1.0,
@@ -1123,8 +1117,8 @@ class StarPilotVariables:
 
     lateral_tuning = self.get_value("LateralTune")
     toggle.force_torque_controller = self.get_value("ForceTorqueController", condition=lateral_tuning and not is_angle_car)
-    toggle.nnff = self.get_value("NNFF", condition=lateral_tuning and has_nnff and not is_angle_car)
-    toggle.nnff_lite = self.get_value("NNFFLite", condition=not toggle.nnff and lateral_tuning and not is_angle_car)
+    toggle.nnff = self.get_value("NNFF", condition=lateral_tuning and has_nnff and nnff_model_eligible and not is_angle_car)
+    toggle.nnff_lite = self.get_value("NNFFLite", condition=not toggle.nnff and lateral_tuning and nnff_model_eligible and not is_angle_car)
     toggle.nav_desires_allowed = self.get_value("NavDesiresAllowed")
     toggle.nav_lane_positioning_allowed = self.get_value("NavLanePositioningAllowed")
     toggle.use_turn_desires = self.get_value("TurnDesires", condition=lateral_tuning)

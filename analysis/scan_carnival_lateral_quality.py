@@ -23,6 +23,7 @@ SATURATED_TORQUE_FRAC = 0.98
 PING_PONG_MIN_SPEED = 12.0
 PING_PONG_MIN_TORQUE_UNITS = 80
 PING_PONG_MAX_INTERVAL_S = 1.2
+PING_PONG_BURST_MIN_REVERSALS = 3
 CURVATURE_ERROR_WARN = 0.0015
 LAT_ACCEL_ERROR_WARN = 0.35
 SATURATED_UNDERTRACK_LAT_ACCEL_ERROR = 0.35
@@ -111,7 +112,7 @@ def expand_log_paths(paths: list[Path]) -> list[Path]:
 
 
 def current_commit() -> str:
-  for rev in ("origin/snithpilot", "HEAD"):
+  for rev in ("HEAD", "origin/snithpilot"):
     try:
       return subprocess.check_output(["git", "rev-parse", rev], text=True).strip()
     except Exception:
@@ -212,6 +213,12 @@ def read_quality_samples(path: Path, mode: ReadMode, sort_by_time: bool) -> tupl
     else:
       continue
 
+    # Keep one sample per physical car-state update. The other control streams
+    # arrive independently and otherwise duplicate the same state several
+    # times, exaggerating fault persistence and torque reversals.
+    if which != "carState":
+      continue
+
     if start_ns is None or "carState" not in latest:
       continue
 
@@ -281,10 +288,8 @@ def sample_key(sample: QualitySample) -> tuple[str, int]:
 
 
 def summarize_ping_pong(samples: list[QualitySample]) -> dict[str, Any]:
-  events: list[dict[str, Any]] = []
-  last_sign: dict[tuple[str, int], int] = {}
-  last_time: dict[tuple[str, int], float] = {}
-  counts: dict[tuple[str, int], int] = {}
+  reversals: dict[tuple[str, int], list[dict[str, Any]]] = {}
+  last_sample: dict[tuple[str, int], QualitySample] = {}
 
   for sample in samples:
     if not sample.lat_active or sample.steering_pressed or sample.v_ego < PING_PONG_MIN_SPEED:
@@ -293,17 +298,58 @@ def summarize_ping_pong(samples: list[QualitySample]) -> dict[str, Any]:
       continue
     sign = 1 if sample.output_torque_units > 0 else -1
     key = sample_key(sample)
-    if key in last_sign and sign != last_sign[key] and sample.t - last_time.get(key, -999.0) <= PING_PONG_MAX_INTERVAL_S:
-      counts[key] = counts.get(key, 0) + 1
-      if len(events) < 12:
-        events.append(event_dict(sample))
-    last_sign[key] = sign
-    last_time[key] = sample.t
+    previous = last_sample.get(key)
+    if previous is not None:
+      previous_sign = 1 if previous.output_torque_units > 0 else -1
+      interval = sample.t - previous.t
+      if sign != previous_sign and interval <= PING_PONG_MAX_INTERVAL_S:
+        desired_reversed = sample.desired_curvature * previous.desired_curvature < 0.0
+        reversal = event_dict(sample)
+        reversal.update({
+          "intervalS": round(interval, 3),
+          "previousT": round(previous.t, 3),
+          "previousOutputTorqueUnits": previous.output_torque_units,
+          "previousDesiredCurvature": round(previous.desired_curvature, 6),
+          "desiredCurvatureReversed": desired_reversed,
+        })
+        reversals.setdefault(key, []).append(reversal)
+    last_sample[key] = sample
+
+  bursts: list[dict[str, Any]] = []
+  for key, key_reversals in reversals.items():
+    current: list[dict[str, Any]] = []
+    for reversal in key_reversals:
+      if current and float(reversal["t"]) - float(current[-1]["t"]) > PING_PONG_MAX_INTERVAL_S:
+        if len(current) >= PING_PONG_BURST_MIN_REVERSALS:
+          bursts.append({
+            "route": key[0],
+            "segment": key[1],
+            "startT": current[0]["previousT"],
+            "endT": current[-1]["t"],
+            "reversals": len(current),
+            "pathDrivenReversals": sum(bool(event["desiredCurvatureReversed"]) for event in current),
+            "events": current,
+          })
+        current = []
+      current.append(reversal)
+    if len(current) >= PING_PONG_BURST_MIN_REVERSALS:
+      bursts.append({
+        "route": key[0],
+        "segment": key[1],
+        "startT": current[0]["previousT"],
+        "endT": current[-1]["t"],
+        "reversals": len(current),
+        "pathDrivenReversals": sum(bool(event["desiredCurvatureReversed"]) for event in current),
+        "events": current,
+      })
+
+  bursts.sort(key=lambda burst: (-int(burst["reversals"]), burst["route"], int(burst["segment"])))
 
   return {
-    "events": events,
-    "segments": [{"route": k[0], "segment": k[1], "count": v} for k, v in sorted(counts.items(), key=lambda item: -item[1])[:12]],
-    "totalEvents": sum(counts.values()),
+    "bursts": bursts[:12],
+    "totalBursts": len(bursts),
+    "totalReversalsInBursts": sum(int(burst["reversals"]) for burst in bursts),
+    "totalCandidateReversals": sum(len(events) for events in reversals.values()),
   }
 
 
@@ -451,11 +497,37 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
   ping_pong = summarize_ping_pong(lat)
   saturation_bursts = summarize_saturation_bursts(lat)
   matching_commits = [commit for commit in commits if commit == expected_commit]
+  by_route = {}
+  for route in sorted({sample.route for sample in samples}):
+    route_lat = [sample for sample in lat if sample.route == route]
+    route_highway = [sample for sample in route_lat if sample.v_ego >= HIGHWAY_SPEED_MPS]
+    route_errors = [abs(sample.lat_accel_error) for sample in route_lat if sample.v_ego >= 3.0]
+    route_ping_pong = summarize_ping_pong(route_lat)
+    by_route[route] = {
+      "latActiveFrames": len(route_lat),
+      "highwayLatActiveFrames": len(route_highway),
+      "tempFaultLatActiveFrames": sum(sample.steer_fault_temporary for sample in route_lat),
+      "steeringPressedFrames": sum(sample.steering_pressed for sample in route_lat),
+      "saturatedTorqueFrames": sum(
+        abs(sample.output_torque_units) >= round(CARNIVAL_STEER_MAX * SATURATED_TORQUE_FRAC)
+        for sample in route_lat
+      ),
+      "guardClippedTorqueFrames": sum(
+        abs(sample.requested_torque_units) - abs(sample.output_torque_units) >= 12
+        for sample in route_lat
+      ),
+      "latAccelErrorP95": None if not route_errors else round(percentile(route_errors, 95.0), 4),
+      "pingPongBursts": route_ping_pong["totalBursts"],
+      "pingPongCandidateReversals": route_ping_pong["totalCandidateReversals"],
+      "pingPongPathDrivenReversals": sum(
+        int(burst["pathDrivenReversals"]) for burst in route_ping_pong["bursts"]
+      ),
+    }
 
   status = "pass"
   if temp_lat or low_speed_alerts:
     status = "fail"
-  elif driver_interventions or saturated_undertrack or saturated or ping_pong["totalEvents"] > 0:
+  elif driver_interventions or saturated_undertrack or saturated or ping_pong["totalBursts"] > 0:
     status = "warn"
   elif not matching_commits:
     status = "warn"
@@ -515,6 +587,7 @@ def summarize(samples: list[QualitySample], commits: list[str], expected_commit:
       "warnFrames": sum(1 for value in lat_accel_errors if value >= LAT_ACCEL_ERROR_WARN),
     },
     "pingPong": ping_pong,
+    "byRoute": by_route,
     "saturationBursts": saturation_bursts,
     "examples": {
       "tempFaultLatActive": [event_dict(s) for s in temp_lat[:12]],
@@ -561,7 +634,9 @@ def console_summary(report: dict[str, Any]) -> dict[str, Any]:
     "curvatureErrorHighwayP95": report["curvatureError"]["highwayP95"],
     "latAccelErrorP95": report["latAccelError"]["p95"],
     "latAccelErrorHighwayP95": report["latAccelError"]["highwayP95"],
-    "pingPongEvents": report["pingPong"]["totalEvents"],
+    "pingPongBursts": report["pingPong"]["totalBursts"],
+    "pingPongReversals": report["pingPong"]["totalReversalsInBursts"],
+    "pingPongCandidates": report["pingPong"]["totalCandidateReversals"],
   }
 
 

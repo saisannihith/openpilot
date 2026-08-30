@@ -1,10 +1,6 @@
-import json
-
 from openpilot.selfdrive.controls import carnival_analyzerd
 from openpilot.selfdrive.controls.carnival_analyzerd import (
-  apply_pending_profile,
   discover_routes,
-  handle_profile_requests,
   prune_reports,
   scorecard_log_files,
 )
@@ -56,24 +52,8 @@ def test_scorecard_prefers_qlog_for_full_drive_with_rlog_fallback(tmp_path):
   assert [path.name for path in files] == ["qlog.zst", "rlog"]
 
 
-def test_apply_and_revert_pending_profile():
-  profile = {
-    "route": "route",
-    "resolved": {"StandardFollow": {"before": 1.45, "after": 1.5}},
-  }
-  params = FakeParams({"CarnivalPendingProfile": json.dumps(profile)})
-  assert apply_pending_profile(params)
-  assert params.values["StandardFollow"] == "1.5"
-  params.put_bool("CarnivalRevertProfile", True)
-  handle_profile_requests(params)
-  assert params.values["StandardFollow"] == "1.45"
-  assert params.values["CarnivalProfileSnapshot"] == {}
-
-
-def test_json_params_use_native_typed_values():
-  payload = {"overall_score": 91}
-  params = FakeParams({"CarnivalLastScorecard": payload})
-  assert carnival_analyzerd._json_param(params, "CarnivalLastScorecard") == payload
+def test_json_params_write_native_typed_values():
+  params = FakeParams()
   carnival_analyzerd._write_json_param(params, "CarnivalLastScorecard", {"overall_score": 92})
   assert params.values["CarnivalLastScorecard"] == {"overall_score": 92}
 
@@ -119,3 +99,4 @@ def test_analyzer_always_uses_compact_replay(monkeypatch, tmp_path):
   carnival_analyzerd.analyze_completed_route(params, "route", [tmp_path / "qlog"])
   assert calls == [("route", [tmp_path / "qlog"], True)]
   assert not params.get_bool("CarnivalAnalysisRunning")
+  assert "CarnivalPendingProfile" in params.values

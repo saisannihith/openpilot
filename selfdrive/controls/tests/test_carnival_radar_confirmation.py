@@ -2,10 +2,14 @@ from types import SimpleNamespace
 
 from openpilot.selfdrive.controls.radard import (
   CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN,
+  CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN,
   KalmanParams,
   Track,
+  carnival_confirmation_innovation_score,
   get_lead,
   is_carnival_confirmation_track,
+  is_carnival_primary_track,
+  is_carnival_r0100_track,
 )
 
 
@@ -37,12 +41,17 @@ def test_carnival_confirmation_track_id_range():
   assert is_carnival_confirmation_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1)
   assert not is_carnival_confirmation_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN - 1)
   assert not is_carnival_confirmation_track(42)
+  assert is_carnival_primary_track(CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN)
+  assert is_carnival_r0100_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN)
+  assert is_carnival_r0100_track(CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN)
+  assert not is_carnival_r0100_track(42)
 
 
 def test_carnival_confirmation_track_requires_path_and_maturity_for_radar_only_lead():
   track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1, d_rel=10.0, y_rel=0.0, v_ego=1.0)
 
-  assert track.confirmationOnly
+  assert track.carnivalR0100
+  assert not hasattr(track, "confirmationOnly")
   assert not track.potential_low_speed_lead(1.0)
   assert not track.potential_low_speed_lead(1.0, make_model_data())
 
@@ -136,7 +145,8 @@ def test_carnival_previously_selected_track_reacquires_with_shorter_history():
 def test_normal_track_can_still_be_low_speed_radar_only_lead():
   track = make_track(42, d_rel=10.0, y_rel=0.0, v_ego=1.0)
 
-  assert not track.confirmationOnly
+  assert not hasattr(track, "confirmationOnly")
+  assert not track.carnivalR0100
   assert track.potential_low_speed_lead(1.0)
 
 
@@ -188,8 +198,8 @@ def test_carnival_confirmation_track_can_confirm_matching_model_lead():
   assert confirmed["vLead"] == 11.0
 
 
-def test_carnival_confirmation_track_rejects_velocity_mismatch():
-  track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1, d_rel=20.0, y_rel=0.0, v_rel=-20.0, v_ego=10.0)
+def test_carnival_confirmation_velocity_mismatch_falls_back_to_vision():
+  track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1, d_rel=20.0, y_rel=0.0, v_rel=-5.0, v_ego=10.0)
   model_data = SimpleNamespace(
     meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
     laneLines=[],
@@ -221,9 +231,10 @@ def test_carnival_confirmation_track_rejects_velocity_mismatch():
   assert lead_state["status"]
   assert not lead_state["radar"]
   assert lead_state["radarTrackId"] == -1
+  assert lead_state["vRel"] == 1.0
 
 
-def test_carnival_confirmation_mature_consensus_blends_bounded_radar_velocity():
+def test_carnival_confirmation_mature_consensus_keeps_velocity_model_led():
   track = mature_track(make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
                                   d_rel=20.0, y_rel=0.0, v_rel=0.8, v_ego=10.0))
   model_data = SimpleNamespace(
@@ -255,8 +266,116 @@ def test_carnival_confirmation_mature_consensus_blends_bounded_radar_velocity():
   )
 
   assert lead_state["radar"]
-  assert lead_state["vRel"] == 0.93
-  assert lead_state["vLead"] == 10.93
+  assert lead_state["vRel"] == 1.0
+  assert lead_state["vLead"] == 11.0
+
+
+def test_carnival_primary_consistent_velocity_refines_model_velocity():
+  track = make_track(CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN + 1,
+                     d_rel=20.0, y_rel=0.0, v_rel=0.8, v_ego=10.0)
+  for frame in range(1, 8):
+    distance = 20.0 + 0.8 * 0.05 * frame
+    track.update(distance, 0.0, 0.8, 10.8, True)
+  model_data = make_model_data()
+  lead = SimpleNamespace(
+    prob=0.8,
+    x=[track.dRel + 1.52],
+    y=[0.0],
+    v=[11.0],
+    a=[0.0],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=10.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=10.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+
+  assert lead_state["radar"]
+  assert abs(lead_state["vRel"] - 0.8) < 1e-6
+  assert abs(lead_state["vLead"] - 10.8) < 1e-6
+  assert lead_state["aLeadK"] == track.aLeadK
+
+
+def test_carnival_primary_velocity_outside_consensus_stays_model_led():
+  track = make_track(CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN + 1,
+                     d_rel=20.0, y_rel=0.0, v_rel=0.4, v_ego=10.0)
+  for frame in range(1, 8):
+    distance = 20.0 + 0.4 * 0.05 * frame
+    track.update(distance, 0.0, 0.4, 10.4, True)
+  model_data = make_model_data()
+  lead = SimpleNamespace(
+    prob=0.8,
+    x=[track.dRel + 1.52],
+    y=[0.0],
+    v=[11.0],
+    a=[-0.2],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=10.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=10.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+
+  assert lead_state["radar"]
+  assert lead_state["vRel"] == 1.0
+  assert lead_state["vLead"] == 11.0
+  assert lead_state["aLeadK"] == -0.2
+
+
+def test_carnival_primary_inconsistent_distance_rate_keeps_velocity_model_led():
+  track = make_track(CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN + 1,
+                     d_rel=20.0, y_rel=0.0, v_rel=-0.6, v_ego=10.0)
+  for frame in range(1, 8):
+    track.update(20.0 + 0.05 * frame, 0.0, -0.6, 9.4, True)
+  model_data = make_model_data()
+  lead = SimpleNamespace(
+    prob=0.8,
+    x=[track.dRel + 1.52],
+    y=[0.0],
+    v=[9.8],
+    a=[0.0],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=10.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=10.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+
+  assert lead_state["radar"]
+  assert abs(lead_state["vRel"] + 0.2) < 1e-6
 
 
 def test_carnival_confirmation_velocity_disagreement_stays_model_led():
@@ -293,6 +412,96 @@ def test_carnival_confirmation_velocity_disagreement_stays_model_led():
   assert lead_state["radar"]
   assert lead_state["vRel"] == 1.0
   assert lead_state["vLead"] == 11.0
+
+
+def test_carnival_confirmation_distance_rate_stays_shadow_only():
+  track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                     d_rel=30.0, y_rel=0.0, v_rel=-14.0, v_ego=22.0)
+  for frame in range(1, 8):
+    distance = 30.0 - 12.0 * 0.05 * frame
+    track.update(distance, 0.0, -14.0, 8.0, True)
+  model_data = SimpleNamespace(
+    meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
+    laneLines=[],
+  )
+  lead = SimpleNamespace(
+    prob=0.9,
+    x=[track.dRel + 1.52],
+    y=[0.0],
+    v=[21.0],
+    a=[0.0],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=22.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=22.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+
+  assert not lead_state["radar"]
+  assert lead_state["vRel"] == -1.0
+
+  track.update(track.dRel, 0.0, -14.0, 8.0, True)
+  held_state = get_lead(
+    v_ego=22.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=22.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+  assert held_state["vRel"] == -1.0
+
+
+def test_carnival_confirmation_inconsistent_distance_rate_stays_model_led():
+  track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                     d_rel=30.0, y_rel=0.0, v_rel=-14.0, v_ego=22.0)
+  for frame in range(1, 8):
+    track.update(30.0 + 0.05 * frame, 0.0, -14.0, 8.0, True)
+  model_data = SimpleNamespace(
+    meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
+    laneLines=[],
+  )
+  lead = SimpleNamespace(
+    prob=0.9,
+    x=[track.dRel + 1.52],
+    y=[0.0],
+    v=[21.0],
+    a=[0.0],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=22.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=22.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+
+  assert not lead_state["radar"]
+  assert lead_state["vRel"] == -1.0
 
 
 def test_carnival_confirmation_track_cannot_create_lead_without_model_confidence():
@@ -398,3 +607,89 @@ def test_carnival_confirmation_track_is_preferred_over_generic_track_for_matchin
   assert lead_state["radar"]
   assert lead_state["radarTrackId"] == confirmation_track.identifier
   assert lead_state["vRel"] == 1.0
+
+
+def test_carnival_factory_primary_is_preferred_only_when_it_passes_nis() -> None:
+  primary = make_track(CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN + 7,
+                       d_rel=20.3, y_rel=0.1, v_rel=1.1, v_ego=10.0)
+  secondary = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 8,
+                         d_rel=20.0, y_rel=0.0, v_rel=1.0, v_ego=10.0)
+  model_data = SimpleNamespace(
+    meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
+    laneLines=[],
+  )
+  lead = SimpleNamespace(
+    prob=0.8, x=[21.52], y=[0.0], v=[11.0], a=[0.0],
+    xStd=[2.0], yStd=[0.3], vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=10.0, ready=True,
+    tracks={secondary.identifier: secondary, primary.identifier: primary},
+    lead_msg=lead, model_v_ego=10.0, model_data=model_data,
+    standstill=False, starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+  assert lead_state["radarTrackId"] == primary.identifier
+
+  primary.update(20.3, 0.1, -8.0, 2.0, True)
+  lead_state = get_lead(
+    v_ego=10.0, ready=True,
+    tracks={secondary.identifier: secondary, primary.identifier: primary},
+    lead_msg=lead, model_v_ego=10.0, model_data=model_data,
+    standstill=False, starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+  )
+  assert lead_state["radarTrackId"] == secondary.identifier
+
+
+def test_carnival_preferred_confirmation_track_rejects_large_model_distance_jump():
+  track = mature_track(make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                                  d_rel=50.0, y_rel=-0.4, v_rel=-4.0, v_ego=20.0))
+  model_data = SimpleNamespace(
+    meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
+    laneLines=[],
+  )
+  lead = SimpleNamespace(
+    prob=0.9,
+    x=[71.52],
+    y=[0.0],
+    v=[19.0],
+    a=[0.0],
+    xStd=[2.0],
+    yStd=[0.3],
+    vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=20.0,
+    ready=True,
+    tracks={track.identifier: track},
+    lead_msg=lead,
+    model_v_ego=20.0,
+    model_data=model_data,
+    standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True,
+    preferred_track_id=track.identifier,
+  )
+
+  assert not lead_state["radar"]
+  assert lead_state["radarTrackId"] == -1
+
+
+def test_carnival_confirmation_innovation_score_uses_distance_lateral_and_velocity():
+  track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
+                     d_rel=20.0, y_rel=-0.2, v_rel=-1.0, v_ego=10.0)
+  lead = SimpleNamespace(
+    x=[21.52], y=[0.2], v=[9.0], xStd=[1.0], yStd=[0.3], vStd=[0.7],
+  )
+  matching_score = carnival_confirmation_innovation_score(track, lead, 10.0)
+  lead.v[0] = 15.0
+  mismatching_score = carnival_confirmation_innovation_score(track, lead, 10.0)
+
+  assert matching_score == 0.0
+  assert mismatching_score > 11.345

@@ -51,12 +51,11 @@ class CarnivalConfidenceOutput:
   reason: str
 
 
-class CarnivalConfidenceGovernor:
+class CarnivalConfidenceMonitor:
   """Deterministic, bounded confidence estimator for the 4th-gen Carnival.
 
-  The estimator has no direct actuator authority. Consumers may use its bounded
-  speed/torque scales, but driver input and existing platform safety limits stay
-  authoritative.
+  This process has no actuator authority. The scale fields remain neutral for
+  schema compatibility; control belongs to the platform controllers.
   """
 
   def __init__(self, dt: float = 0.05):
@@ -102,10 +101,6 @@ class CarnivalConfidenceGovernor:
     self._overall += alpha * (target_overall - self._overall)
     overall = clip01(self._overall)
 
-    # These are advisory bounded scales. They cannot request more than the
-    # existing controller and never reduce steering below 82% by themselves.
-    torque_scale = max(0.82, 1.0 - 0.18 * clip01((eps_risk - 0.52) / 0.48))
-    speed_scale = max(0.72, 1.0 - 0.28 * clip01((0.62 - lateral) / 0.32))
     if not data.active:
       state, reason = "inactive", "controls inactive"
     elif data.steer_fault_temporary:
@@ -123,24 +118,6 @@ class CarnivalConfidenceGovernor:
       overall=overall, lateral=lateral, longitudinal=longitudinal, path=path,
       lane=lane, road_edge=edge, radar=radar, steering_saturation=saturation,
       eps_risk=eps_risk, intervention_risk=intervention,
-      recommended_speed_scale=speed_scale, torque_scale=torque_scale,
+      recommended_speed_scale=1.0, torque_scale=1.0,
       governor_state=state, reason=reason,
     )
-
-
-def get_vision_lead_accel_cap(car_fingerprint: str, confidence: float, lead_present: bool,
-                              radar_confirmed: bool, output_accel: float) -> float | None:
-  """Bound positive acceleration when vision lead confidence is weak.
-
-  This helper cannot request braking and has no effect for radar-confirmed
-  leads, no-lead cruise, other cars, or non-positive acceleration.
-  """
-  if (
-    str(car_fingerprint) != "KIA_CARNIVAL_4TH_GEN" or not lead_present or
-    radar_confirmed or float(output_accel) <= 0.0
-  ):
-    return None
-  confidence = clip01(confidence)
-  if confidence >= 0.65:
-    return None
-  return min(float(output_accel), 0.10 + (0.50 * clip01((confidence - 0.25) / 0.40)))

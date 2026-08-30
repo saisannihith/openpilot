@@ -10,14 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from openpilot.tools.lib.logreader import LogReader, ReadMode
-from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import get_kia_carnival_driver_override_output_scale
 from scan_longitudinal_quality import analyze as analyze_longitudinal
 from scan_longitudinal_quality import expand_logs, read_samples_and_metadata
-
-
-CARNIVAL_OVERRIDE_FULL_RELEASE_TORQUE = 300.0
-CARNIVAL_OVERRIDE_FULL_RELEASE_SPEED = 8.0
-CARNIVAL_OVERRIDE_FULL_RETURN_SPEED = 12.0
 
 
 @dataclass
@@ -36,7 +30,6 @@ class SteeringFaultSample:
   commanded_torque: float
   output_torque: float
   steering_angle_deg: float
-  override_release_scale: float
 
 
 def safe_attr(obj: Any, name: str, default: Any = None) -> Any:
@@ -110,7 +103,6 @@ def read_steering_fault_samples(path: Path, mode: ReadMode) -> list[SteeringFaul
     out_actuators = safe_attr(car_output, "actuatorsOutput") if car_output is not None else None
     steering_torque = safe_float(safe_attr(car_state, "steeringTorque", 0.0))
     v_ego = safe_float(safe_attr(car_state, "vEgo", 0.0))
-    release_scale = get_kia_carnival_driver_override_output_scale(v_ego, steering_torque)
     samples.append(SteeringFaultSample(
       route=route_name(path),
       segment=segment_number(path),
@@ -126,7 +118,6 @@ def read_steering_fault_samples(path: Path, mode: ReadMode) -> list[SteeringFaul
       commanded_torque=safe_float(safe_attr(actuators, "torque", 0.0)),
       output_torque=safe_float(safe_attr(out_actuators, "torque", safe_attr(actuators, "torque", 0.0))),
       steering_angle_deg=safe_float(safe_attr(car_state, "steeringAngleDeg", 0.0)),
-      override_release_scale=release_scale,
     ))
   return samples
 
@@ -143,30 +134,18 @@ def summarize_steering_faults(samples: list[SteeringFaultSample]) -> dict[str, A
   temp = [s for s in samples if s.steer_fault_temporary]
   temp_lat = [s for s in temp if s.lat_active]
   low_speed = [s for s in samples if s.low_speed_alert]
-  covered_by_override = [
-    s for s in temp_lat
-    if s.steering_pressed and get_kia_carnival_driver_override_output_scale(s.v_ego, s.steering_torque) <= 0.05
-  ]
-  partial_override = [
-    s for s in temp_lat
-    if s.steering_pressed and 0.05 < get_kia_carnival_driver_override_output_scale(s.v_ego, s.steering_torque) < 1.0
-  ]
-  uncovered = [
-    s for s in temp_lat
-    if not s.steering_pressed or get_kia_carnival_driver_override_output_scale(s.v_ego, s.steering_torque) >= 1.0
-  ]
+  driver_override = [s for s in temp_lat if s.steering_pressed]
+  spontaneous = [s for s in temp_lat if not s.steering_pressed]
   return {
     "tempFaultFrames": len(temp),
     "tempFaultLatActiveFrames": len(temp_lat),
     "lowSpeedAlertFrames": len(low_speed),
-    "coveredByCurrentOverrideFrames": len(covered_by_override),
-    "partialCurrentOverrideFrames": len(partial_override),
-    "uncoveredLatActiveTempFaultFrames": len(uncovered),
+    "driverOverrideLatActiveTempFaultFrames": len(driver_override),
+    "spontaneousLatActiveTempFaultFrames": len(spontaneous),
     "maxFaultSpeedMps": None if not temp else round(max(s.v_ego for s in temp), 3),
     "maxFaultDriverTorque": None if not temp else round(max(abs(s.steering_torque) for s in temp), 3),
-    "coveredExamples": [event_dict(s) for s in covered_by_override[:8]],
-    "partialExamples": [event_dict(s) for s in partial_override[:8]],
-    "uncoveredExamples": [event_dict(s) for s in uncovered[:8]],
+    "driverOverrideExamples": [event_dict(s) for s in driver_override[:8]],
+    "spontaneousExamples": [event_dict(s) for s in spontaneous[:8]],
   }
 
 
@@ -242,17 +221,16 @@ def build_report(logs: list[Path], include_stale: bool) -> dict[str, Any]:
     jumps[:8],
   )
 
-  uncovered = steering_summary["uncoveredLatActiveTempFaultFrames"]
   temp_lat = steering_summary["tempFaultLatActiveFrames"]
+  spontaneous = steering_summary["spontaneousLatActiveTempFaultFrames"]
   add_check(
     checks,
-    "steering_temp_fault_coverage",
-    "pass" if uncovered == 0 else "fail",
-    f"{temp_lat} temporary steering fault frames overlapped latActive; {uncovered} are not covered by the current strong-driver-override torque release.",
+    "steering_temp_faults_while_active",
+    "pass" if temp_lat == 0 else "fail",
+    f"{temp_lat} temporary steering fault frames overlapped latActive; {spontaneous} began without steeringPressed.",
     {
-      "coveredExamples": steering_summary["coveredExamples"],
-      "partialExamples": steering_summary["partialExamples"],
-      "uncoveredExamples": steering_summary["uncoveredExamples"],
+      "driverOverrideExamples": steering_summary["driverOverrideExamples"],
+      "spontaneousExamples": steering_summary["spontaneousExamples"],
     },
   )
 

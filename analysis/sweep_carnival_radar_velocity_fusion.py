@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import math
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+import numpy as np
+
+from openpilot.tools.lib.logreader import LogReader, ReadMode
+
+
+TRACK_MIN = 0xC4100
+TRACK_MAX = 0xC42FF
+PRIMARY_TRACK_MIN = 0xC4200
+PRIMARY_TRACK_MAX = 0xC42FF
+HISTORY_SECONDS = 1.0
+FUTURE_MIN_SECONDS = 0.25
+FUTURE_MAX_SECONDS = 0.60
+
+
+@dataclass(frozen=True)
+class Policy:
+  name: str
+  min_track_frames: int
+  min_selected_frames: int
+  max_consensus_residual: float
+  min_model_delta: float
+  max_distance: float
+  max_ttc: float
+  blend_weight: float
+  max_correction: float
+  primary_only: bool = False
+
+
+POLICIES = (
+  Policy("broad", 8, 3, 2.0, 1.0, 110.0, 7.0, 0.35, 4.0),
+  Policy("balanced", 12, 6, 1.5, 1.0, 90.0, 6.0, 0.35, 3.0),
+  Policy("strict", 16, 8, 1.0, 1.5, 75.0, 5.0, 0.30, 2.5),
+  Policy("very_strict", 20, 12, 0.75, 2.0, 60.0, 4.0, 0.25, 2.0),
+  Policy("primary_balanced", 12, 6, 1.0, 0.75, 80.0, 6.0, 0.30, 1.5, True),
+  Policy("primary_strict", 16, 8, 0.75, 1.0, 65.0, 5.0, 0.25, 1.25, True),
+)
+
+
+def finite(value, default=0.0):
+  try:
+    value = float(value)
+  except Exception:
+    return default
+  return value if math.isfinite(value) else default
+
+
+def percentile(values, pct):
+  if not values:
+    return None
+  return round(float(np.percentile(values, pct)), 4)
+
+
+def summarize(values):
+  return {
+    "count": len(values),
+    "p50": percentile(values, 50),
+    "p90": percentile(values, 90),
+    "p95": percentile(values, 95),
+    "max": round(max(values), 4) if values else None,
+  }
+
+
+def expand(patterns):
+  paths = []
+  for pattern in patterns:
+    matches = glob.glob(pattern)
+    paths.extend(matches if matches else [pattern])
+  return sorted({Path(path).resolve() for path in paths if Path(path).is_file()})
+
+
+def regression_rate(history):
+  if len(history) < 8:
+    return None
+  times = np.asarray([(t - history[-1][0]) / 1e9 for t, _d in history], dtype=float)
+  distances = np.asarray([d for _t, d in history], dtype=float)
+  if times[-1] - times[0] < 0.30 or not np.isfinite(distances).all():
+    return None
+  slope = np.polyfit(times, distances, 1)[0]
+  return float(slope) if math.isfinite(slope) else None
+
+
+def future_rate(observations, now, distance):
+  future = next(((t, d) for t, d in observations
+                 if FUTURE_MIN_SECONDS <= (t - now) / 1e9 <= FUTURE_MAX_SECONDS), None)
+  if future is None:
+    return None
+  dt = (future[0] - now) / 1e9
+  return (future[1] - distance) / dt
+
+
+def policy_output(policy, sample):
+  if policy.primary_only and not PRIMARY_TRACK_MIN <= sample["trackId"] <= PRIMARY_TRACK_MAX:
+    return None
+  if sample["trackFrames"] < policy.min_track_frames or sample["selectedFrames"] < policy.min_selected_frames:
+    return None
+  if sample["observedVRel"] is None or abs(sample["rawVRel"] - sample["observedVRel"]) > policy.max_consensus_residual:
+    return None
+
+  # Less-negative of two independent radar estimates is deliberately conservative.
+  consensus_vrel = max(sample["rawVRel"], sample["observedVRel"])
+  model_vrel = sample["modelVRel"]
+  if consensus_vrel >= model_vrel - policy.min_model_delta or sample["dRel"] > policy.max_distance:
+    return None
+  ttc = sample["dRel"] / max(-consensus_vrel, 0.1)
+  if ttc > policy.max_ttc:
+    return None
+
+  correction = min(policy.max_correction, policy.blend_weight * (model_vrel - consensus_vrel))
+  return model_vrel - correction
+
+
+def main():
+  parser = argparse.ArgumentParser(description="Evaluate conservative R0100 velocity fusion policies")
+  parser.add_argument("logs", nargs="+")
+  parser.add_argument("--out")
+  args = parser.parse_args()
+
+  paths = expand(args.logs)
+  samples = []
+  observations = defaultdict(list)
+
+  for path in paths:
+    route_segment = path.parent.name
+    histories = defaultdict(lambda: deque())
+    track_frames = defaultdict(int)
+    selected_track = {"leadOne": None, "leadTwo": None}
+    selected_frames = defaultdict(int)
+    latest = {}
+
+    for msg in LogReader(str(path), default_mode=ReadMode.AUTO_INTERACTIVE, sort_by_time=False):
+      now = int(msg.logMonoTime)
+      which = msg.which()
+      if which == "liveTracks":
+        seen = set()
+        latest = {}
+        for point in msg.liveTracks.points:
+          track_id = int(point.trackId)
+          if not TRACK_MIN <= track_id <= TRACK_MAX:
+            continue
+          seen.add(track_id)
+          d_rel = finite(point.dRel)
+          raw_vrel = finite(point.vRel)
+          track_frames[track_id] += 1
+          history = histories[track_id]
+          history.append((now, d_rel))
+          while history and (now - history[0][0]) / 1e9 > HISTORY_SECONDS:
+            history.popleft()
+          observations[(route_segment, track_id)].append((now, d_rel))
+          latest[track_id] = {
+            "time": now,
+            "dRel": d_rel,
+            "rawVRel": raw_vrel,
+            "observedVRel": regression_rate(history),
+            "trackFrames": track_frames[track_id],
+          }
+        for track_id in list(track_frames):
+          if track_id not in seen:
+            track_frames[track_id] = 0
+            histories[track_id].clear()
+      elif which == "radarState":
+        for lead_name in ("leadOne", "leadTwo"):
+          lead = getattr(msg.radarState, lead_name)
+          track_id = int(lead.radarTrackId)
+          if not lead.status or not lead.radar or track_id not in latest:
+            selected_track[lead_name] = None
+            continue
+          if selected_track[lead_name] == track_id:
+            selected_frames[(lead_name, track_id)] += 1
+          else:
+            selected_track[lead_name] = track_id
+            selected_frames[(lead_name, track_id)] = 1
+          sample = dict(latest[track_id])
+          sample.update({
+            "routeSegment": route_segment,
+            "lead": lead_name,
+            "trackId": track_id,
+            "selectedFrames": selected_frames[(lead_name, track_id)],
+            "modelVRel": finite(lead.vRel),
+          })
+          samples.append(sample)
+
+  reports = []
+  for policy in POLICIES:
+    model_errors = []
+    fused_errors = []
+    improvements = []
+    corrections = []
+    examples = []
+    events = defaultdict(list)
+    for sample in samples:
+      fused = policy_output(policy, sample)
+      if fused is None:
+        continue
+      future = future_rate(observations[(sample["routeSegment"], sample["trackId"])], sample["time"], sample["dRel"])
+      if future is None:
+        continue
+      model_error = abs(sample["modelVRel"] - future)
+      fused_error = abs(fused - future)
+      improvement = model_error - fused_error
+      model_errors.append(model_error)
+      fused_errors.append(fused_error)
+      improvements.append(improvement)
+      corrections.append(sample["modelVRel"] - fused)
+      event_key = (sample["routeSegment"], sample["lead"], sample["trackId"], sample["time"] // int(1e9))
+      events[event_key].append(improvement)
+      if improvement < -0.5 and len(examples) < 8:
+        examples.append({
+          "routeSegment": sample["routeSegment"],
+          "trackId": sample["trackId"],
+          "dRel": round(sample["dRel"], 3),
+          "rawVRel": round(sample["rawVRel"], 3),
+          "observedVRel": round(sample["observedVRel"], 3),
+          "modelVRel": round(sample["modelVRel"], 3),
+          "fusedVRel": round(fused, 3),
+          "futureVRel": round(future, 3),
+          "errorDelta": round(improvement, 3),
+        })
+    event_improvements = [float(np.median(values)) for values in events.values()]
+    harmful = sum(value < -0.5 for value in improvements)
+    harmful_events = sum(value < -0.5 for value in event_improvements)
+    reports.append({
+      "policy": asdict(policy),
+      "samples": len(improvements),
+      "events": len(event_improvements),
+      "correction": summarize(corrections),
+      "modelFutureError": summarize(model_errors),
+      "fusedFutureError": summarize(fused_errors),
+      "improvement": summarize(improvements),
+      "harmfulSamplesOver0_5": harmful,
+      "harmfulSampleFraction": round(harmful / max(len(improvements), 1), 4),
+      "harmfulEventsOver0_5": harmful_events,
+      "harmfulEventFraction": round(harmful_events / max(len(event_improvements), 1), 4),
+      "harmfulExamples": examples,
+      "actuationReady": bool(
+        len(event_improvements) >= 25 and
+        percentile(fused_errors, 95) < percentile(model_errors, 95) and
+        harmful_events == 0
+      ),
+    })
+
+  def group_diagnostics(primary_only):
+    group = [sample for sample in samples if (PRIMARY_TRACK_MIN <= sample["trackId"] <= PRIMARY_TRACK_MAX) == primary_only]
+    observed = [sample for sample in group if sample["observedVRel"] is not None]
+    residuals = [abs(sample["rawVRel"] - sample["observedVRel"]) for sample in observed]
+    model_deltas = [sample["modelVRel"] - max(sample["rawVRel"], sample["observedVRel"]) for sample in observed]
+    return {
+      "samples": len(group),
+      "observedSamples": len(observed),
+      "rawDistanceRateResidual": summarize(residuals),
+      "modelClosingDelta": summarize(model_deltas),
+      "trackFrames": summarize([sample["trackFrames"] for sample in group]),
+      "selectedFrames": summarize([sample["selectedFrames"] for sample in group]),
+    }
+
+  report = {
+    "files": len(paths),
+    "matchedSamples": len(samples),
+    "policies": reports,
+    "trackGroups": {
+      "confirmation": group_diagnostics(False),
+      "primary": group_diagnostics(True),
+    },
+    "conclusion": "no_policy_actuation_ready" if not any(item["actuationReady"] for item in reports) else "candidate_ready",
+  }
+  text = json.dumps(report, indent=2, sort_keys=True)
+  print(text)
+  if args.out:
+    Path(args.out).write_text(text + "\n")
+
+
+if __name__ == "__main__":
+  main()

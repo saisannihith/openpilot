@@ -37,8 +37,6 @@ SAFE_MODE_MANAGED_KEYS = (
   "CameraOffset",
   "LaneCentering",
   "LaneCenteringPauseOnSignal",
-  "LaneCenteringRoadAware",
-  "LaneCenteringRoadEdgeOffset",
   "LaneCenteringE2EAuthority",
   "LaneCenterOffset",
   "LaneChanges",

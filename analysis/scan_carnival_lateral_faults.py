@@ -10,28 +10,18 @@ from pathlib import Path
 from typing import Any
 
 from openpilot.tools.lib.logreader import LogReader, ReadMode
-from openpilot.selfdrive.controls.lib.latcontrol_vehicle_tunes import get_kia_carnival_driver_override_output_scale
-from opendbc.car.hyundai.carcontroller import (
-  CARNIVAL_4TH_GEN_EPS_GUARD_MIN_ANGLE,
-  CARNIVAL_4TH_GEN_EPS_GUARD_MIN_SPEED,
-  CARNIVAL_4TH_GEN_EPS_GUARD_TORQUE_FRACTION,
-  CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES,
-  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED,
-  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE,
-  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_RELEASE_FRAMES,
-  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE,
-  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_TOUCH_ANGLE,
-  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_ANGLE,
-  CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_MIN_DRIVER_TORQUE,
-  apply_carnival_4th_gen_eps_fault_guard,
-  apply_carnival_4th_gen_manual_turn_torque_guard,
-)
-from opendbc.car.hyundai.values import CAR
 
 
 CARNIVAL_STEER_MAX = 409
 HIGH_SPEED_FAULT_MPS = 17.0
 NEAR_FAULT_WINDOW_S = 2.0
+STRONG_DRIVER_OVERRIDE_TORQUE = 300.0
+EPS_RISK_MIN_SPEED = 8.0
+EPS_RISK_MIN_ANGLE = 3.0
+EPS_RISK_TORQUE_FRACTION = 0.88
+EPS_RISK_TRIGGER_FRAMES = 24
+MANUAL_TURN_MONITOR_MAX_SPEED = 10.5
+MANUAL_TURN_MONITOR_ANGLE = 35.0
 
 
 @dataclass
@@ -52,7 +42,6 @@ class LateralSample:
   commanded_torque: float
   output_torque: float
   output_torque_units: int
-  override_release_scale: float
   manual_turn_guard_candidate: bool
   eps_guard_near_limit: bool
 
@@ -104,7 +93,7 @@ def expand_log_paths(paths: list[Path]) -> list[Path]:
 
 
 def current_commit() -> str:
-  for rev in ("origin/snithpilot", "HEAD"):
+  for rev in ("HEAD", "origin/snithpilot"):
     try:
       return subprocess.check_output(["git", "rev-parse", rev], text=True).strip()
     except Exception:
@@ -139,6 +128,12 @@ def read_lateral_samples(path: Path, mode: ReadMode, include_lat_active_frames: 
       if start_ns is None:
         start_ns = mono_time
 
+    # Analyze each physical state update once. Sampling again when carControl,
+    # carOutput, or controlsState arrives inflates fault duration and guard
+    # persistence because all four messages reuse the same carState.
+    if which != "carState":
+      continue
+
     if start_ns is None or "carState" not in latest:
       continue
 
@@ -160,30 +155,19 @@ def read_lateral_samples(path: Path, mode: ReadMode, include_lat_active_frames: 
 
     manual_candidate = (
       steering_pressed and
-      v_ego <= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MAX_SPEED and
-      (
-        (
-          abs(steering_angle) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_START_ANGLE and
-          abs(steering_torque) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_MIN_DRIVER_TORQUE
-        ) or
-        (
-          abs(steering_angle) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_ANGLE and
-          abs(steering_torque) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_YIELD_MIN_DRIVER_TORQUE
-        ) or
-        (
-          abs(steering_angle) >= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_TOUCH_ANGLE
-        )
-      )
+      v_ego <= MANUAL_TURN_MONITOR_MAX_SPEED and
+      abs(steering_angle) >= MANUAL_TURN_MONITOR_ANGLE
     )
     eps_near_limit = (
       lat_active and
-      v_ego >= CARNIVAL_4TH_GEN_EPS_GUARD_MIN_SPEED and
-      abs(steering_angle) >= CARNIVAL_4TH_GEN_EPS_GUARD_MIN_ANGLE and
-      torque_fraction >= CARNIVAL_4TH_GEN_EPS_GUARD_TORQUE_FRACTION
+      v_ego >= EPS_RISK_MIN_SPEED and
+      abs(steering_angle) >= EPS_RISK_MIN_ANGLE and
+      torque_fraction >= EPS_RISK_TORQUE_FRACTION
     )
 
     interesting = (
       (include_lat_active_frames and lat_active) or
+      (lat_active and steering_pressed) or
       bool(safe_attr(car_state, "steerFaultTemporary", False)) or
       bool(safe_attr(car_state, "lowSpeedAlert", False)) or
       manual_candidate or
@@ -209,7 +193,6 @@ def read_lateral_samples(path: Path, mode: ReadMode, include_lat_active_frames: 
       commanded_torque=safe_float(safe_attr(actuators, "torque", 0.0)),
       output_torque=output_torque,
       output_torque_units=output_units,
-      override_release_scale=get_kia_carnival_driver_override_output_scale(v_ego, steering_torque),
       manual_turn_guard_candidate=manual_candidate,
       eps_guard_near_limit=eps_near_limit,
     ))
@@ -225,20 +208,66 @@ def event_dict(sample: LateralSample) -> dict[str, Any]:
   return data
 
 
-def eps_guard_event_dict(sample: LateralSample, guarded_torque: int, high_torque_frames: int,
-                         guard_frames: int) -> dict[str, Any]:
-  data = event_dict(sample)
-  data["guardedOutputTorqueUnits"] = guarded_torque
-  data["guardedTorqueReductionUnits"] = abs(sample.output_torque_units) - abs(guarded_torque)
-  data["guardedTorqueFraction"] = round(abs(guarded_torque) / CARNIVAL_STEER_MAX, 3)
-  data["rawTorqueFraction"] = round(abs(sample.output_torque_units) / CARNIVAL_STEER_MAX, 3)
-  data["simHighTorqueFrames"] = high_torque_frames
-  data["simGuardFrames"] = guard_frames
-  return data
-
-
 def sample_key(sample: LateralSample) -> tuple[str, int]:
   return sample.route, sample.segment
+
+
+def summarize_fault_episodes(samples: list[LateralSample]) -> list[dict[str, Any]]:
+  episodes: list[list[LateralSample]] = []
+  current: list[LateralSample] = []
+  for sample in samples:
+    if not sample.steer_fault_temporary:
+      continue
+    if (current and
+        (sample_key(sample) != sample_key(current[-1]) or sample.t - current[-1].t > 0.15)):
+      episodes.append(current)
+      current = []
+    current.append(sample)
+  if current:
+    episodes.append(current)
+
+  reports: list[dict[str, Any]] = []
+  for episode in episodes:
+    first = episode[0]
+    key = sample_key(first)
+    pre = [s for s in samples if sample_key(s) == key and 0.0 < first.t - s.t <= NEAR_FAULT_WINDOW_S]
+    strong_driver_override = [
+      s for s in pre
+      if s.steering_pressed and abs(s.steering_torque) >= STRONG_DRIVER_OVERRIDE_TORQUE
+    ]
+    reversals = 0
+    previous_sign = 0
+    for sample in pre:
+      if abs(sample.output_torque_units) < 40:
+        continue
+      sign = 1 if sample.output_torque_units > 0 else -1
+      if previous_sign and sign != previous_sign:
+        reversals += 1
+      previous_sign = sign
+    reports.append({
+      "route": first.route,
+      "segment": first.segment,
+      "startT": round(first.t, 3),
+      "endT": round(episode[-1].t, 3),
+      "durationS": round(max(episode[-1].t - first.t, 0.0), 3),
+      "frames": len(episode),
+      "latActiveFrames": sum(1 for s in episode if s.lat_active),
+      "maxSpeedMps": round(max(s.v_ego for s in episode), 3),
+      "maxAbsAngleDeg": round(max(abs(s.steering_angle_deg) for s in episode), 3),
+      "maxAbsOutputTorqueUnits": max(abs(s.output_torque_units) for s in episode),
+      "preFaultMaxAbsCommandTorque": round(max((abs(s.commanded_torque) for s in pre), default=0.0), 3),
+      "preFaultMaxAbsOutputTorqueUnits": max((abs(s.output_torque_units) for s in pre), default=0),
+      "preFaultNearLimitFrames": sum(1 for s in pre if s.eps_guard_near_limit),
+      "preFaultStrongDriverOverrideFrames": len(strong_driver_override),
+      "preFaultMaxAbsDriverTorque": round(max((abs(s.steering_torque) for s in pre), default=0.0), 3),
+      "preFaultLastStrongDriverOverrideAgoS": (
+        round(first.t - strong_driver_override[-1].t, 3) if strong_driver_override else None
+      ),
+      "preFaultTorqueReversals": reversals,
+      "firstFault": event_dict(first),
+      "lastPreFault": event_dict(pre[-1]) if pre else None,
+    })
+  return reports
 
 
 def summarize(samples: list[LateralSample], commits: list[str], expected_commit: str) -> dict[str, Any]:
@@ -246,82 +275,26 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
   temp_lat = [s for s in temp if s.lat_active]
   high_speed_temp_lat = [s for s in temp_lat if s.v_ego >= HIGH_SPEED_FAULT_MPS]
   low_speed_alerts = [s for s in samples if s.low_speed_alert]
-  covered_override = [
-    s for s in temp_lat
-    if s.steering_pressed and s.override_release_scale <= 0.05
-  ]
-  partial_override = [
-    s for s in temp_lat
-    if s.steering_pressed and 0.05 < s.override_release_scale < 1.0
-  ]
-  uncovered = [
-    s for s in temp_lat
-    if not s.steering_pressed or s.override_release_scale >= 1.0
-  ]
+  driver_override_faults = [s for s in temp_lat if s.steering_pressed]
+  non_driver_override_faults = [s for s in temp_lat if not s.steering_pressed]
   manual_candidates = [s for s in samples if s.manual_turn_guard_candidate]
   eps_near = [s for s in samples if s.eps_guard_near_limit]
+  fault_episodes = summarize_fault_episodes(samples)
+  driver_override_associated_episodes = [
+    episode for episode in fault_episodes
+    if episode["preFaultStrongDriverOverrideFrames"] > 0
+  ]
 
   eps_risk_bursts: list[dict[str, Any]] = []
-  eps_guard_sim_events: list[dict[str, Any]] = []
-  eps_guard_sim_active_frames = 0
-  eps_guard_sim_below_threshold_frames = 0
-  manual_guard_sim_active_frames = 0
-  max_eps_guard_sim_high_torque_frames = 0
   active_count: dict[tuple[str, int], int] = {}
-  eps_sim_state: dict[tuple[str, int], tuple[int, int]] = {}
-  manual_sim_state: dict[tuple[str, int], tuple[int, int]] = {}
-  manual_sim_active_ids: set[int] = set()
-  manual_sim_events: list[dict[str, Any]] = []
   for sample in samples:
     key = sample_key(sample)
     if sample.eps_guard_near_limit:
       active_count[key] = active_count.get(key, 0) + 1
-      if active_count[key] == CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES:
+      if active_count[key] == EPS_RISK_TRIGGER_FRAMES:
         eps_risk_bursts.append(event_dict(sample))
     else:
       active_count[key] = max(active_count.get(key, 0) - 2, 0)
-
-    high_torque_frames, guard_frames = eps_sim_state.get(key, (0, 0))
-    guarded_torque, high_torque_frames, guard_frames, guard_active, near_limit = apply_carnival_4th_gen_eps_fault_guard(
-      CAR.KIA_CARNIVAL_4TH_GEN, sample.output_torque_units, CARNIVAL_STEER_MAX, sample.v_ego,
-      sample.steering_angle_deg, sample.lat_active, sample.steering_pressed, sample.output_torque_units,
-      high_torque_frames, guard_frames,
-    )
-    eps_sim_state[key] = (high_torque_frames, guard_frames)
-    max_eps_guard_sim_high_torque_frames = max(max_eps_guard_sim_high_torque_frames, high_torque_frames)
-    if guard_active:
-      eps_guard_sim_active_frames += 1
-      if abs(guarded_torque) / CARNIVAL_STEER_MAX < CARNIVAL_4TH_GEN_EPS_GUARD_TORQUE_FRACTION:
-        eps_guard_sim_below_threshold_frames += 1
-      if near_limit and len(eps_guard_sim_events) < 12:
-        eps_guard_sim_events.append(eps_guard_event_dict(sample, guarded_torque, high_torque_frames, guard_frames))
-
-    manual_guard_frames, manual_last_torque = manual_sim_state.get(key, (0, sample.output_torque_units))
-    manual_guarded_torque, manual_guard_active, manual_guard_frames = apply_carnival_4th_gen_manual_turn_torque_guard(
-      CAR.KIA_CARNIVAL_4TH_GEN, sample.output_torque_units, CARNIVAL_STEER_MAX, sample.v_ego,
-      sample.steering_angle_deg, sample.steering_torque, sample.steering_pressed, manual_last_torque,
-      manual_guard_frames,
-    )
-    manual_sim_state[key] = (manual_guard_frames, manual_guarded_torque if manual_guard_active else sample.output_torque_units)
-    if manual_guard_active:
-      manual_guard_sim_active_frames += 1
-      manual_sim_active_ids.add(id(sample))
-      if sample.steer_fault_temporary and len(manual_sim_events) < 12:
-        data = event_dict(sample)
-        data["manualGuardedTorqueUnits"] = manual_guarded_torque
-        data["manualGuardFrames"] = manual_guard_frames
-        manual_sim_events.append(data)
-
-  covered_by_manual_sim = [s for s in temp_lat if id(s) in manual_sim_active_ids]
-  zero_output_temp = [s for s in temp_lat if abs(s.output_torque_units) <= CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_RELEASE_FRAMES]
-  uncovered_after_manual_sim = [
-    s for s in temp_lat
-    if (
-      id(s) not in manual_sim_active_ids and
-      abs(s.output_torque_units) > CARNIVAL_4TH_GEN_MANUAL_TURN_GUARD_RELEASE_FRAMES and
-      not (s.steering_pressed and s.override_release_scale <= 0.05)
-    )
-  ]
 
   near_fault_precursors = []
   for fault in temp_lat:
@@ -335,11 +308,16 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
         "maxAbsOutputTorqueUnitsBeforeFault": max(abs(s.output_torque_units) for s in window),
         "epsNearLimitFramesBeforeFault": sum(1 for s in window if s.eps_guard_near_limit),
         "manualTurnGuardCandidatesBeforeFault": sum(1 for s in window if s.manual_turn_guard_candidate),
+        "strongDriverOverrideFramesBeforeFault": sum(
+          1 for s in window
+          if s.steering_pressed and abs(s.steering_torque) >= STRONG_DRIVER_OVERRIDE_TORQUE
+        ),
+        "maxAbsDriverTorqueBeforeFault": round(max(abs(s.steering_torque) for s in window), 3),
       })
 
   matching_commits = [commit for commit in commits if commit == expected_commit]
   status = "pass"
-  if uncovered_after_manual_sim or high_speed_temp_lat:
+  if temp_lat:
     status = "fail"
   elif not matching_commits or low_speed_alerts or eps_risk_bursts:
     status = "warn"
@@ -354,30 +332,16 @@ def summarize(samples: list[LateralSample], commits: list[str], expected_commit:
     "tempFaultLatActiveFrames": len(temp_lat),
     "highSpeedTempFaultLatActiveFrames": len(high_speed_temp_lat),
     "lowSpeedAlertFrames": len(low_speed_alerts),
-    "coveredByStrongDriverOverrideFrames": len(covered_override),
-    "partialDriverOverrideFrames": len(partial_override),
-    "uncoveredLatActiveTempFaultFrames": len(uncovered),
-    "manualTurnGuardSimCoveredTempFaultFrames": len(covered_by_manual_sim),
-    "zeroOutputTempFaultFrames": len(zero_output_temp),
-    "uncoveredAfterManualTurnGuardSimFrames": len(uncovered_after_manual_sim),
-    "manualTurnGuardCandidateFrames": len(manual_candidates),
+    "driverOverrideTempFaultFrames": len(driver_override_faults),
+    "nonDriverOverrideTempFaultFrames": len(non_driver_override_faults),
+    "manualTurnMonitorFrames": len(manual_candidates),
     "epsNearLimitFrames": len(eps_near),
+    "faultEpisodes": fault_episodes,
+    "driverOverrideAssociatedFaultEpisodes": driver_override_associated_episodes,
     "epsRiskBursts": eps_risk_bursts[:12],
-    "epsGuardSimulation": {
-      "activeFrames": eps_guard_sim_active_frames,
-      "belowNearLimitThresholdFrames": eps_guard_sim_below_threshold_frames,
-      "maxHighTorqueFrames": max_eps_guard_sim_high_torque_frames,
-      "triggerFrames": CARNIVAL_4TH_GEN_EPS_GUARD_TRIGGER_FRAMES,
-      "events": eps_guard_sim_events[:12],
-    },
-    "manualTurnGuardSimulation": {
-      "activeFrames": manual_guard_sim_active_frames,
-      "events": manual_sim_events[:12],
-    },
     "highSpeedFaultExamples": [event_dict(s) for s in high_speed_temp_lat[:12]],
-    "uncoveredExamples": [event_dict(s) for s in uncovered[:12]],
-    "uncoveredAfterManualTurnGuardSimExamples": [event_dict(s) for s in uncovered_after_manual_sim[:12]],
-    "coveredExamples": [event_dict(s) for s in covered_override[:12]],
+    "nonDriverOverrideExamples": [event_dict(s) for s in non_driver_override_faults[:12]],
+    "driverOverrideExamples": [event_dict(s) for s in driver_override_faults[:12]],
     "nearFaultPrecursors": near_fault_precursors[:20],
   }
 
@@ -395,24 +359,16 @@ def console_summary(report: dict[str, Any]) -> dict[str, Any]:
     "tempFaultLatActiveFrames",
     "highSpeedTempFaultLatActiveFrames",
     "lowSpeedAlertFrames",
-    "coveredByStrongDriverOverrideFrames",
-    "partialDriverOverrideFrames",
-    "uncoveredLatActiveTempFaultFrames",
-    "manualTurnGuardSimCoveredTempFaultFrames",
-    "zeroOutputTempFaultFrames",
-    "uncoveredAfterManualTurnGuardSimFrames",
-    "manualTurnGuardCandidateFrames",
+    "driverOverrideTempFaultFrames",
+    "nonDriverOverrideTempFaultFrames",
+    "manualTurnMonitorFrames",
     "epsNearLimitFrames",
   )
   summary = {key: report.get(key) for key in keys if key in report}
   summary["epsRiskBurstCount"] = len(report.get("epsRiskBursts", []))
-  eps_guard_sim = report.get("epsGuardSimulation", {})
-  summary["epsGuardSimActiveFrames"] = eps_guard_sim.get("activeFrames")
-  summary["epsGuardSimBelowThresholdFrames"] = eps_guard_sim.get("belowNearLimitThresholdFrames")
-  summary["epsGuardSimMaxHighTorqueFrames"] = eps_guard_sim.get("maxHighTorqueFrames")
-  summary["epsGuardSimTriggerFrames"] = eps_guard_sim.get("triggerFrames")
+  summary["driverOverrideAssociatedFaultEpisodeCount"] = len(report.get("driverOverrideAssociatedFaultEpisodes", []))
   summary["highSpeedFaultExampleCount"] = len(report.get("highSpeedFaultExamples", []))
-  summary["uncoveredExampleCount"] = len(report.get("uncoveredExamples", []))
+  summary["nonDriverOverrideExampleCount"] = len(report.get("nonDriverOverrideExamples", []))
   return summary
 
 

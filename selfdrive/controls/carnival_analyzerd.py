@@ -12,11 +12,9 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.tools.carnival.collect_and_report import analyze_route, route_key, segment_index, write_markdown
 from openpilot.tools.carnival.self_tune_profile import (
-  apply_resolved_plan,
   build_delta_plan,
   read_param_values,
   resolve_values,
-  revert_snapshot,
 )
 
 LOG_ROOT = Path("/data/media/0/realdata")
@@ -25,17 +23,6 @@ ROUTE_SETTLE_SECONDS = 45.0
 POLL_SECONDS = 3.0
 MAX_STORED_REPORTS = 40
 LOG_NAMES = {"rlog", "rlog.zst", "rlog.bz2", "qlog", "qlog.zst", "qlog.bz2"}
-
-
-def _json_param(params: Params, key: str) -> dict:
-  try:
-    raw = params.get(key, return_default=True)
-    if isinstance(raw, dict):
-      return raw
-    payload = json.loads(raw.decode() if isinstance(raw, bytes) else (raw or "{}"))
-    return payload if isinstance(payload, dict) else {}
-  except (TypeError, ValueError):
-    return {}
 
 
 def scorecard_log_files(root: Path) -> list[Path]:
@@ -81,35 +68,9 @@ def resolve_local_profile(params: Params, report_payload: dict) -> dict:
     "route": report_payload.get("route", ""),
     "deltas": deltas,
     "resolved": resolve_values(current, deltas),
-    "applied": False,
+    "readOnly": True,
     "createdAt": datetime.now(UTC).isoformat(),
   }
-
-
-def apply_pending_profile(params: Params, *, automatic: bool = False) -> bool:
-  profile = _json_param(params, "CarnivalPendingProfile")
-  resolved = profile.get("resolved", {})
-  if not isinstance(resolved, dict) or not resolved:
-    return False
-  snapshot = apply_resolved_plan(params, resolved)
-  snapshot.update({"route": profile.get("route", ""), "appliedAt": datetime.now(UTC).isoformat()})
-  _write_json_param(params, "CarnivalProfileSnapshot", snapshot)
-  profile["applied"] = True
-  profile["automatic"] = automatic
-  profile["appliedAt"] = snapshot["appliedAt"]
-  _write_json_param(params, "CarnivalPendingProfile", profile)
-  return True
-
-
-def handle_profile_requests(params: Params) -> None:
-  if params.get_bool("CarnivalApplyProfile"):
-    params.put_bool("CarnivalApplyProfile", False)
-    apply_pending_profile(params)
-  if params.get_bool("CarnivalRevertProfile"):
-    params.put_bool("CarnivalRevertProfile", False)
-    snapshot = _json_param(params, "CarnivalProfileSnapshot")
-    if revert_snapshot(params, snapshot):
-      params.put("CarnivalProfileSnapshot", {})
 
 
 def analyze_completed_route(params: Params, route: str, files: list[Path]) -> None:
@@ -139,8 +100,6 @@ def analyze_completed_route(params: Params, route: str, files: list[Path]) -> No
     params.put("CarnivalLastAnalysisRoute", route)
     params.put("CarnivalLastAnalysisTime", scorecard["analyzedAt"])
     params.put("CarnivalLastReportPath", str(report_json))
-    if params.get_bool("CarnivalAutoTuneApply") and profile.get("resolved"):
-      apply_pending_profile(params, automatic=True)
     cloudlog.info("Carnival route scorecard complete route=%s overall=%s files=%d", route, scorecard.get("overall_score"), len(files))
   except Exception as exc:
     params.put("CarnivalAnalysisError", f"{type(exc).__name__}: {exc}"[:300])
@@ -153,7 +112,6 @@ def main() -> None:
   params = Params()
   params.put_bool("CarnivalAnalysisRunning", False)
   while True:
-    handle_profile_requests(params)
     force = params.get_bool("CarnivalAnalyzeNow")
     if force:
       # Keep manager's on-demand process gate latched while route discovery is

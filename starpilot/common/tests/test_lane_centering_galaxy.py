@@ -16,8 +16,7 @@ def _sections():
 def test_lane_centering_is_only_in_galaxy_developer_section():
   sections = _sections()
   keys = {
-    "LaneCentering", "LaneCenterOffset", "LaneCenteringRoadAware", "LaneCenteringRoadEdgeOffset",
-    "LaneCenteringPauseOnSignal", "LaneCenteringE2EAuthority",
+    "LaneCentering", "LaneCenterOffset", "LaneCenteringPauseOnSignal", "LaneCenteringE2EAuthority",
   }
 
   assert keys <= sections["Developer"].keys()
@@ -28,13 +27,15 @@ def test_lane_centering_is_only_in_galaxy_developer_section():
   for key in keys:
     assert sections["Developer"][key]["settings_tier"] == "advanced"
 
+  removed_keys = {"LaneCenteringRoadAware", "LaneCenteringRoadEdgeOffset"}
+  for params in sections.values():
+    assert removed_keys.isdisjoint(params)
+
 
 def test_lane_centering_galaxy_controls():
   developer = _sections()["Developer"]
   centering = developer["LaneCentering"]
   offset = developer["LaneCenterOffset"]
-  road_aware = developer["LaneCenteringRoadAware"]
-  road_edge_offset = developer["LaneCenteringRoadEdgeOffset"]
   pause_on_signal = developer["LaneCenteringPauseOnSignal"]
   e2e_authority = developer["LaneCenteringE2EAuthority"]
 
@@ -48,14 +49,6 @@ def test_lane_centering_galaxy_controls():
   assert offset["min"] == -0.3
   assert offset["max"] == 0.3
   assert offset["step"] == 0.01
-
-  assert road_aware["ui_type"] == "toggle"
-  assert road_aware["parent_key"] == "LaneCentering"
-
-  assert road_edge_offset["parent_key"] == "LaneCenteringRoadAware"
-  assert road_edge_offset["min"] == 0.0
-  assert road_edge_offset["max"] == 0.2
-  assert road_edge_offset["step"] == 0.01
 
   assert e2e_authority["parent_key"] == "LaneCentering"
   assert e2e_authority["min"] == 0.0

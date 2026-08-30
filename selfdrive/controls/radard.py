@@ -301,6 +301,53 @@ def g90_low_speed_radar_lead_sane(track: Track, v_ego: float) -> bool:
           abs(track.yRel) < G90_RADAR_LOW_SPEED_MAX_Y)
 
 
+def carnival_low_speed_radar_lead_sane(track: Track, v_ego: float, model_data: capnp._DynamicStructReader | None,
+                                       previously_selected: bool,
+                                       model_path: tuple[list[float], list[float]] | None = None) -> bool:
+  if model_data is None or not track.measured:
+    track.radar_only_path_frames = 0
+    return False
+
+  if model_path is None:
+    position = getattr(model_data, "position", None)
+    path_x = list(getattr(position, "x", []))
+    path_y = list(getattr(position, "y", []))
+  else:
+    path_x, path_y = model_path
+  if len(path_x) < 2 or len(path_x) != len(path_y):
+    track.radar_only_path_frames = 0
+    return False
+
+  object_x = track.dRel + RADAR_TO_CAMERA
+  if object_x < path_x[0] or object_x > path_x[-1]:
+    track.radar_only_path_frames = 0
+    return False
+  path_offset = abs(-track.yRel - float(np.interp(object_x, path_x, path_y)))
+  if len(track.radar_only_distance_history) < CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_FRAMES:
+    track.radar_only_path_frames = 0
+    return False
+  observed_v_rel = ((track.radar_only_distance_history[-1] - track.radar_only_distance_history[0]) /
+                    ((len(track.radar_only_distance_history) - 1) * DT_MDL))
+  distance_rate_sane = abs(observed_v_rel - track.vRel) <= CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_MAX_RESIDUAL
+
+  if previously_selected:
+    track.radar_only_path_frames = 0
+    return (track.cnt >= CARNIVAL_4TH_GEN_REACQUIRE_MIN_FRAMES and
+            v_ego < V_EGO_STATIONARY and
+            CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_DISTANCE < track.dRel < CARNIVAL_4TH_GEN_REACQUIRE_MAX_DISTANCE and
+            path_offset < CARNIVAL_4TH_GEN_REACQUIRE_PATH_OFFSET and
+            distance_rate_sane)
+
+  path_aligned = (track.cnt >= CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_FRAMES and
+                  v_ego < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_EGO and
+                  CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_DISTANCE < track.dRel < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_DISTANCE and
+                  abs(track.yRel) < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_ABS_Y and
+                  path_offset < CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_OFFSET and
+                  CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_V_LEAD < track.vLead < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_LEAD)
+  track.radar_only_path_frames = track.radar_only_path_frames + 1 if path_aligned else 0
+  return track.radar_only_path_frames >= CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_MIN_FRAMES and distance_rate_sane
+
+
 def honda_bosch_a_low_speed_radar_lead_sane(track: Track, v_ego: float) -> bool:
   """Require a few real Bosch sweeps before a radar-only low-speed takeover."""
   return track.cnt >= HONDA_BOSCH_A_LOW_SPEED_MIN_COUNT and track.potential_low_speed_lead(v_ego)

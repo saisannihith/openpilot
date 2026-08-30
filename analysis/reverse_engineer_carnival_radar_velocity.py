@@ -190,7 +190,9 @@ def align_route(route: str, frames: list[RawFrame], refs: list[Reference]) -> li
 
 
 def compare_stock_scc(frames: list[RawFrame], refs: list[SccReference]) -> dict[str, Any]:
-  rx_refs = [ref for ref in refs if ref.bus < 128]
+  # Bus 0 is the received factory SCC stream on this CAN-FD platform. Bus 2 is
+  # sparse and may contain gateway copies, while 128+ are transmitted frames.
+  rx_refs = [ref for ref in refs if ref.bus == 0]
   if not frames or not rx_refs:
     return {"references": len(refs), "receivedReferences": len(rx_refs), "aligned": 0,
             "buses": dict(Counter(ref.bus for ref in refs)), "velocityError": errors_summary([])}
@@ -198,6 +200,7 @@ def compare_stock_scc(frames: list[RawFrame], refs: list[SccReference]) -> dict[
   errors = []
   buses = Counter(ref.bus for ref in refs)
   aligned = 0
+  last_frame_index = -1
   for ref in rx_refs:
     if not (0.5 <= ref.d_rel <= 200.0):
       continue
@@ -205,12 +208,16 @@ def compare_stock_scc(frames: list[RawFrame], refs: list[SccReference]) -> dict[
     candidates = [pos for pos in (idx - 1, idx) if 0 <= pos < len(frames)]
     if not candidates:
       continue
-    frame = min((frames[pos] for pos in candidates), key=lambda candidate: abs(candidate.t - ref.t))
+    best = min(candidates, key=lambda pos: abs(frames[pos].t - ref.t))
+    frame = frames[best]
+    if best == last_frame_index:
+      continue
     if abs(frame.t - ref.t) > 0.06 or abs(frame.d_rel - ref.d_rel) > max(1.0, ref.d_rel * 0.03):
       continue
     raw_velocity = extract(frame.raw, 91, 11, True) * 0.05 + 2.4
     errors.append(abs(raw_velocity - ref.v_rel))
     aligned += 1
+    last_frame_index = best
   return {
     "references": len(refs),
     "receivedReferences": len(rx_refs),
@@ -218,6 +225,29 @@ def compare_stock_scc(frames: list[RawFrame], refs: list[SccReference]) -> dict[
     "buses": {str(bus): count for bus, count in sorted(buses.items())},
     "velocityError": errors_summary(errors),
   }
+
+
+def align_stock_scc(route: str, frames: list[RawFrame], refs: list[SccReference]) -> list[Sample]:
+  rx_refs = [ref for ref in refs if ref.bus == 0 and 0.5 <= ref.d_rel <= 200.0]
+  if not frames or not rx_refs:
+    return []
+  times = [frame.t for frame in frames]
+  samples = []
+  last_frame_index = -1
+  for ref in rx_refs:
+    idx = bisect.bisect_left(times, ref.t)
+    candidates = [pos for pos in (idx - 1, idx) if 0 <= pos < len(frames)]
+    if not candidates:
+      continue
+    best = min(candidates, key=lambda pos: abs(frames[pos].t - ref.t))
+    frame = frames[best]
+    if best == last_frame_index or abs(frame.t - ref.t) > 0.06:
+      continue
+    if abs(frame.d_rel - ref.d_rel) > max(1.0, ref.d_rel * 0.03):
+      continue
+    samples.append(Sample(route, frame, Reference(ref.t, ref.d_rel, ref.v_rel), None))
+    last_frame_index = best
+  return samples
 
 
 def percentile(values: list[float], pct: float) -> float | None:
@@ -267,6 +297,46 @@ def evaluate_fixed(samples: list[Sample], start: int, size: int, signed: bool,
                            for route, errors in sorted(derivative_by_route.items())},
     "derivativeState": {state: errors_summary(errors) for state, errors in sorted(derivative_by_state.items())},
   }
+
+
+def stock_scc_lag_sweep(frames: list[RawFrame], refs: list[SccReference]) -> dict[str, Any]:
+  """Measure fixed-field agreement without assuming both ECUs use the same filter clock."""
+  rx_refs = [ref for ref in refs if ref.bus == 0 and 0.5 <= ref.d_rel <= 200.0]
+  if not frames or not rx_refs:
+    return {"samples": 0, "zeroLag": errors_summary([]), "best": None, "lags": []}
+
+  times = [frame.t for frame in frames]
+  results = []
+  for lag_ms in range(-250, 251, 10):
+    errors = []
+    signed_errors = []
+    last_frame_index = -1
+    for ref in rx_refs:
+      target_time = ref.t + lag_ms / 1000.0
+      idx = bisect.bisect_left(times, target_time)
+      candidates = [pos for pos in (idx - 1, idx) if 0 <= pos < len(frames)]
+      if not candidates:
+        continue
+      best = min(candidates, key=lambda pos: abs(frames[pos].t - target_time))
+      frame = frames[best]
+      if best == last_frame_index or abs(frame.t - target_time) > 0.025:
+        continue
+      if abs(frame.d_rel - ref.d_rel) > max(1.0, ref.d_rel * 0.03):
+        continue
+      velocity = extract(frame.raw, 91, 11, True) * 0.05 + 2.4
+      signed_errors.append(velocity - ref.v_rel)
+      errors.append(abs(velocity - ref.v_rel))
+      last_frame_index = best
+    results.append({
+      "lagMs": lag_ms,
+      **errors_summary(errors),
+      "signedBias": None if not signed_errors else round(mean(signed_errors), 4),
+    })
+
+  zero_lag = next(result for result in results if result["lagMs"] == 0)
+  usable = [result for result in results if result["samples"] >= 200 and result["p95"] is not None]
+  best = min(usable, key=lambda result: (result["p95"], result["mae"], abs(result["lagMs"]))) if usable else None
+  return {"samples": zero_lag["samples"], "zeroLag": zero_lag, "best": best, "lags": results}
 
 
 def linear_fit(xs: list[float], ys: list[float]) -> tuple[float, float] | None:
@@ -344,6 +414,8 @@ def main() -> int:
   parser.add_argument("log_root", type=Path)
   parser.add_argument("--top", type=int, default=20)
   parser.add_argument("--no-search", action="store_true")
+  parser.add_argument("--stock-search", action="store_true",
+                      help="Search velocity bitfields against received factory-SCC targets")
   parser.add_argument("--route", action="append", default=[])
   parser.add_argument("--out", type=Path)
   args = parser.parse_args()
@@ -357,15 +429,20 @@ def main() -> int:
                                  if any(token in route for token in args.route)})
 
   all_samples = []
+  all_stock_samples = []
   route_report = {}
   metadata = {}
   stock_scc = {}
+  stock_scc_lags = {}
   for route, route_paths in sorted(grouped.items()):
     frames, refs, scc_refs, meta = collect_route(route_paths)
     samples = align_route(route, frames, refs)
+    stock_samples = align_stock_scc(route, frames, scc_refs)
     all_samples.extend(samples)
+    all_stock_samples.extend(stock_samples)
     metadata[route] = meta
     stock_scc[route] = compare_stock_scc(frames, scc_refs)
+    stock_scc_lags[route] = stock_scc_lag_sweep(frames, scc_refs)
     route_report[route] = {
       "files": len(route_paths),
       "rawFrames": len(frames),
@@ -380,13 +457,14 @@ def main() -> int:
   exact_pr = evaluate_fixed(all_samples, 91, 11, True, 0.05, 2.4)
   current_truncated = evaluate_fixed(all_samples, 91, 8, True, 0.050066083726851514, 2.4059439014445294)
   candidates = [] if args.no_search else candidate_search(all_samples, args.top, "derivative")
+  stock_candidates = candidate_search(all_stock_samples, args.top, "model") if args.stock_search else []
+  exact_stock_scc = evaluate_fixed(all_stock_samples, 91, 11, True, 0.05, 2.4)
+  exact_stock_scc_route_fit = leave_one_route_out(all_stock_samples, 91, 11, True, "model")
   exact_derivative_fit = leave_one_route_out(all_samples, 91, 11, True, "derivative")
   exact_p95 = exact_pr["vsModelVelocity"]["p95"] or 999.0
   exact_derivative_p95 = exact_pr["vsSmoothedDistanceDerivative"]["p95"] or 999.0
-  stock_scc_ready = any(
-    comparison["aligned"] >= 200 and (comparison["velocityError"]["p95"] or 999.0) < 1.0
-    for comparison in stock_scc.values()
-  )
+  stock_route_p95 = list(exact_stock_scc["modelRouteP95"].values())
+  stock_scc_ready = len(all_stock_samples) >= 200 and len(stock_route_p95) >= 2 and max(stock_route_p95) < 1.0
   control_promotion_ready = len(all_samples) >= 200 and exact_p95 < 1.0 and exact_derivative_p95 < 1.0
   report = {
     "status": "pass" if stock_scc_ready else "fail",
@@ -405,15 +483,22 @@ def main() -> int:
     "routes": route_report,
     "metadata": metadata,
     "stockSccComparison": stock_scc,
+    "stockSccLagSweep": stock_scc_lags,
     "alignedSamples": len(all_samples),
     "exactPublicPrField": exact_pr,
     "exactPublicPrRouteSeparatedDerivativeFit": exact_derivative_fit,
     "currentTruncatedState3Alt8Field": current_truncated,
     "topRouteSeparatedDerivativeCandidates": candidates,
+    "topStockSccVelocityCandidates": stock_candidates,
+    "stockSccAlignedSamples": len(all_stock_samples),
+    "exactPublicPrFieldVsFactoryScc": exact_stock_scc,
+    "exactPublicPrRouteSeparatedFactorySccFit": exact_stock_scc_route_fit,
     "notes": [
-      "radarState confirmation velocity is model-led in SNITHPilot and is an independent reference for raw velocity decoding",
+      "radarState velocity is model-led in SNITHPilot and is not independent decoder evidence",
       "distance derivative uses a local regression over stable track/state identity instead of adjacent-frame differencing",
       "candidate fits are trained without the evaluated route and therefore cannot pass solely by memorizing one drive",
+      "factory SCC comparisons use only received bus-0 frames; sparse bus-2 gateway copies and transmitted 128+ frames are excluded",
+      "the lag sweep is diagnostic only because R0100 and SCC_CONTROL have different filtering and publication rates",
       "a passing field still requires live shadow validation before any control use",
     ],
   }

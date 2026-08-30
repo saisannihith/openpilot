@@ -3,7 +3,6 @@ import numpy as np
 
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
-from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR
 
 from openpilot.starpilot.common.starpilot_variables import CITY_SPEED_LIMIT, CRUISING_SPEED, DEFAULT_LATERAL_ACCELERATION, PLANNER_TIME
 
@@ -11,11 +10,6 @@ CALIBRATION_PROGRESS_THRESHOLD = 10 / DT_MDL
 MIN_TRAINING_TIME = 5.0
 CSC_MIN_SPEED = CITY_SPEED_LIMIT * CV.MPH_TO_MS
 CSC_MAX_DECEL_RATE = 1.5
-CSC_VEHICLE_LIMITS = {
-  # Full-command route data shows roughly 1.5 m/s^2 of sustained external EPS authority
-  # on tight residential curves. Human steering data can otherwise train CSC too high.
-  HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN: (15.0 * CV.MPH_TO_MS, 1.5),
-}
 MAX_CURVATURE = 0.1
 MIN_CURVATURE = 0.001
 PERCENTILE = 90
@@ -50,7 +44,6 @@ class CurveSpeedController:
 
     self.enable_training = False
     self.target_set = False
-    self.car_model = ""
 
     self.training_timer = 0.0
     self.persistence_timer = 0.0
@@ -201,17 +194,12 @@ class CurveSpeedController:
 
   def update_target(self, v_ego):
     lateral_acceleration = self.lateral_acceleration
-    min_speed = CSC_MIN_SPEED
-    if self.car_model in CSC_VEHICLE_LIMITS:
-      min_speed, max_lateral_acceleration = CSC_VEHICLE_LIMITS[self.car_model]
-      lateral_acceleration = min(lateral_acceleration, max_lateral_acceleration)
-
     if self.starpilot_planner.starpilot_weather.weather_id != 0:
-      lateral_acceleration -= lateral_acceleration * self.starpilot_planner.starpilot_weather.reduce_lateral_acceleration
+      lateral_acceleration -= self.lateral_acceleration * self.starpilot_planner.starpilot_weather.reduce_lateral_acceleration
 
     if self.target_set:
       csc_speed = (lateral_acceleration / abs(self.starpilot_planner.road_curvature))**0.5
-      csc_speed = max(float(csc_speed), min_speed)
+      csc_speed = max(float(csc_speed), CSC_MIN_SPEED)
       if csc_speed >= v_ego:
         self.target = v_ego
       else:

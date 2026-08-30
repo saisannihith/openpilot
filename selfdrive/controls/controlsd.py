@@ -719,17 +719,7 @@ class Controls:
       CC.latActive,
       bool(self.sm.all_checks(['modelV2'])),
       self.starpilot_toggles.lane_centering_pause_on_signal,
-      bool(CS.leftBlinker or CS.rightBlinker),
-      bool(CS.steeringPressed),
-      self.starpilot_toggles.lane_centering_road_aware,
-      self.starpilot_toggles.lane_centering_road_edge_offset)
-    lane_centering_event = self.lane_centering.consume_diagnostic_event()
-    if lane_centering_event is not None:
-      active, topology, topology_bias, reason, topology_reason = lane_centering_event
-      cloudlog.info(
-        "lane centering state active=%s topology=%d bias=%.3f reason=%s topologyReason=%s",
-        active, topology, topology_bias, reason, topology_reason,
-      )
+      bool(CS.leftBlinker or CS.rightBlinker))
 
     jerk_factor = 1.0
     if self.starpilot_toggles.lane_change_pace < 10:

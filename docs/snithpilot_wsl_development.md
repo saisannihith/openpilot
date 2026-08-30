@@ -45,8 +45,8 @@ For a route replay, replace `--demo` with the route arguments accepted by `./onr
 Targeted Carnival longitudinal checks:
 
 ```bash
-./dev python analysis/run_carnival_stopped_lead_guard_check.py
 ./dev python analysis/run_targeted_longitudinal_pytest.py
+./dev python analysis/scan_longitudinal_quality.py <qlog-or-rlog-path>
 ```
 
 General state check:

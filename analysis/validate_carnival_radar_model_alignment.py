@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -23,6 +24,9 @@ RADAR_TO_CAMERA = 1.52
 MAX_RADAR_AGE = 0.12
 MIN_LEAD_PROB = 0.35
 MAX_DISTANCE_ERROR = 8.0
+NIS_GATE = 11.345
+PREFERRED_NIS_GATE = 14.156
+SWITCH_SCORE_MARGIN = 3.841
 
 
 @dataclass(frozen=True)
@@ -100,7 +104,19 @@ def iter_rlogs(root: Path) -> dict[str, list[Path]]:
 def valid(obj: RadarObject, model_time: float) -> bool:
   # The radar's own validity contract from the decoded object layout. The
   # previously inferred state/state_alt bits overlap unrelated payload data.
-  return obj.track_id != 0 and obj.heartbeat != 0 and 0.5 <= obj.distance <= 220.0 and 0.0 <= model_time - obj.t <= MAX_RADAR_AGE
+  # The 4-bit counter wraps through zero, so zero is a valid sample.
+  return obj.track_id != 0 and 0.5 <= obj.distance <= 220.0 and 0.0 <= model_time - obj.t <= MAX_RADAR_AGE
+
+
+def normalized_innovation(obj: RadarObject, model_d: float, model_y: float, model_v_rel: float,
+                          x_std: float, y_std: float, v_std: float) -> float:
+  residuals = (
+    (obj.distance - model_d, min(max(x_std, 0.75), 6.0), 0.25),
+    (obj.lateral + model_y, min(max(y_std, 0.25), 1.5), 0.25),
+    (obj.velocity - model_v_rel, min(max(v_std, 0.5), 3.0), 0.35),
+  )
+  return sum(error ** 2 / (model_sigma ** 2 + radar_sigma ** 2)
+             for error, model_sigma, radar_sigma in residuals)
 
 
 def analyze_route(paths: list[Path]) -> dict[str, Any]:
@@ -125,6 +141,12 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
   runtime_matches = primary_runtime_matches = 0
   runtime_continuity = runtime_handoffs = 0
   last_runtime: tuple[float, RadarObject] | None = None
+  nis_matches = nis_continuity = nis_handoffs = 0
+  nis_scores: list[float] = []
+  nis_distance_residuals: list[float] = []
+  nis_lateral_residuals: list[float] = []
+  nis_velocity_residuals: list[float] = []
+  last_nis: tuple[float, RadarObject] | None = None
 
   for path in paths:
     for msg in LogReader(str(path), default_mode=ReadMode.AUTO_INTERACTIVE, sort_by_time=False):
@@ -150,6 +172,40 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
         candidates = [obj for obj in latest.values() if valid(obj, t)]
         if not candidates:
           continue
+
+        scored_candidates = []
+        for obj in candidates:
+          position_sane = (
+            abs(obj.distance - model_d) < max(abs(model_d) * 0.22, 4.0)
+            and abs(obj.lateral + model_y) < max(1.2, 1.5 * max(float(lead.yStd[0]), 0.2))
+            and abs(obj.velocity - model_v_rel) < max(4.0, 3.0 * max(float(lead.vStd[0]), 0.5))
+          )
+          if not position_sane:
+            continue
+          score = normalized_innovation(
+            obj, model_d, model_y, model_v_rel,
+            float(lead.xStd[0]), float(lead.yStd[0]), float(lead.vStd[0]),
+          )
+          preferred = last_nis is not None and obj.track_id == last_nis[1].track_id
+          gate = PREFERRED_NIS_GATE if preferred else NIS_GATE
+          if math.isfinite(score) and score <= gate and obj.velocity + v_ego > -2.0:
+            scored_candidates.append((score, obj))
+        if scored_candidates:
+          score, nis = min(scored_candidates, key=lambda candidate: candidate[0])
+          preferred = next((candidate for candidate in scored_candidates
+                            if last_nis is not None and candidate[1].track_id == last_nis[1].track_id), None)
+          if preferred is not None and preferred[0] <= score + SWITCH_SCORE_MARGIN:
+            score, nis = preferred
+          nis_matches += 1
+          nis_scores.append(score)
+          nis_distance_residuals.append(abs(nis.distance - model_d))
+          nis_lateral_residuals.append(abs(nis.lateral + model_y))
+          nis_velocity_residuals.append(abs(nis.velocity - model_v_rel))
+          if last_nis is not None and 0.0 < t - last_nis[0] <= 0.12:
+            nis_continuity += 1
+            if nis.track_id != last_nis[1].track_id:
+              nis_handoffs += 1
+          last_nis = (t, nis)
 
         runtime_candidates = [obj for obj in candidates if (
           abs(obj.distance - model_d) < max(abs(model_d) * 0.22, 4.0) and
@@ -250,6 +306,17 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
       "trackIdHandoffs": runtime_handoffs,
       "trackIdHandoffRate": round(runtime_handoff_rate, 4),
       "integrationReady": runtime_integration_ready,
+    },
+    "normalizedInnovationGate": {
+      "matches": nis_matches,
+      "coverage": round(nis_matches / max(lead_frames, 1), 4),
+      "score": stats(nis_scores),
+      "distanceResidual": stats(nis_distance_residuals),
+      "lateralResidual": stats(nis_lateral_residuals),
+      "velocityResidual": stats(nis_velocity_residuals),
+      "continuousFrames": nis_continuity,
+      "trackIdHandoffs": nis_handoffs,
+      "trackIdHandoffRate": round(nis_handoffs / max(nis_continuity, 1), 4),
     },
     "selectedChannels": dict(selected_channels.most_common()),
     "selectedStates": dict(selected_states.most_common()),

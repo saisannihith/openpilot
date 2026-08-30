@@ -14,9 +14,11 @@ from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 CARNIVAL_CONFIRMATION_TRACK_ID_MIN = 0xC4100
 CARNIVAL_CONFIRMATION_TRACK_ID_MAX = 0xC41FF
-CARNIVAL_VELOCITY_BLEND_MAX_RESIDUAL = 1.0
-CARNIVAL_VELOCITY_BLEND_WEIGHT = 0.35
-CARNIVAL_VELOCITY_BLEND_MIN_FRAMES = 5
+CARNIVAL_PRIMARY_TRACK_ID_MIN = 0xC4200
+CARNIVAL_PRIMARY_TRACK_ID_MAX = 0xC42FF
+CARNIVAL_VELOCITY_BLEND_MAX_RESIDUAL = 0.75
+CARNIVAL_VELOCITY_BLEND_WEIGHT = 0.5
+CARNIVAL_VELOCITY_BLEND_MIN_FRAMES = 8
 
 
 def safe_attr(obj: Any, name: str, default: Any = None) -> Any:
@@ -61,7 +63,12 @@ def segment_number(path: Path) -> int:
 
 
 def is_confirmation_track(track_id: int) -> bool:
-  return CARNIVAL_CONFIRMATION_TRACK_ID_MIN <= int(track_id) <= CARNIVAL_CONFIRMATION_TRACK_ID_MAX
+  return (CARNIVAL_CONFIRMATION_TRACK_ID_MIN <= int(track_id) <= CARNIVAL_CONFIRMATION_TRACK_ID_MAX or
+          CARNIVAL_PRIMARY_TRACK_ID_MIN <= int(track_id) <= CARNIVAL_PRIMARY_TRACK_ID_MAX)
+
+
+def is_primary_track(track_id: int) -> bool:
+  return CARNIVAL_PRIMARY_TRACK_ID_MIN <= int(track_id) <= CARNIVAL_PRIMARY_TRACK_ID_MAX
 
 
 def current_commit() -> str:
@@ -271,22 +278,29 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
             derived = latest_derived_vrel.get(track_id)
             if derived is not None and 0.0 <= (mono_time - derived[0]) / 1e9 <= 0.15:
               derived_vrel = derived[1]
-              model_error = abs(state_vrel - derived_vrel)
               raw_error = abs(raw_vrel - derived_vrel)
               matched_raw_vs_derived_vrel_errors.append(raw_error)
+
+              # Current runtime publishes model velocity for an R0100-confirmed
+              # lead. Score a hypothetical bounded blend without pretending it
+              # was already active in radarState.
+              model_vrel = state_vrel
+              model_error = abs(model_vrel - derived_vrel)
               matched_model_vs_derived_vrel_errors.append(model_error)
 
-              blended_vrel = state_vrel
               blend_eligible = (
+                is_primary_track(track_id) and
                 live_track_ages.get(track_id, 0) >= CARNIVAL_VELOCITY_BLEND_MIN_FRAMES and
-                abs(raw_vrel - state_vrel) <= CARNIVAL_VELOCITY_BLEND_MAX_RESIDUAL
+                abs(raw_vrel - model_vrel) <= CARNIVAL_VELOCITY_BLEND_MAX_RESIDUAL
               )
               if blend_eligible:
-                blended_vrel += CARNIVAL_VELOCITY_BLEND_WEIGHT * (raw_vrel - state_vrel)
+                candidate_blended_vrel = (
+                  model_vrel + CARNIVAL_VELOCITY_BLEND_WEIGHT * (raw_vrel - model_vrel)
+                )
                 blend_eligible_raw_vs_derived_vrel_errors.append(raw_error)
                 blend_eligible_model_vs_derived_vrel_errors.append(model_error)
-                blend_eligible_blended_vs_derived_vrel_errors.append(abs(blended_vrel - derived_vrel))
-              matched_blended_vs_derived_vrel_errors.append(abs(blended_vrel - derived_vrel))
+                blend_eligible_blended_vs_derived_vrel_errors.append(abs(candidate_blended_vrel - derived_vrel))
+              matched_blended_vs_derived_vrel_errors.append(abs(state_vrel - derived_vrel))
             if vrel_error > 3.0 and len(raw_velocity_error_examples) < 12:
               example = lead_dict(lead, path, mono_time, start_ns)
               example.update({
@@ -333,13 +347,15 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
     (percentile(matched_blended_vs_derived_vrel_errors, 95.0) or 999.0) <=
     (percentile(matched_model_vs_derived_vrel_errors, 95.0) or 0.0)
   )
-  tandem_ready = (
+  geometry_tandem_ready = (
     distance_association_ready and
     confirmation_lead_with_live_track_frames > 0 and
     low_speed_confirmation_stop_frames > 0
   )
+  velocity_fusion_ready = velocity_control_ready or bounded_velocity_blend_ready
+  tandem_ready = geometry_tandem_ready and velocity_fusion_ready
   visual_radar_track_ready = live_track_frames > 0 and confirmation_point_samples > 0
-  phantom_brake_guard_ready = confirmation_track_without_state_lead_frames > 0
+  unpromoted_radar_track_frames_observed = confirmation_track_without_state_lead_frames > 0
   cut_in_tracking_evidence = cut_in_candidate_frames > 0
 
   return {
@@ -381,18 +397,20 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
     "distanceAssociationReady": distance_association_ready,
     "liveTrackVelocityEvidenceAvailable": live_track_velocity_evidence_available,
     "publishReady": distance_association_ready,
+    "geometryTandemReady": geometry_tandem_ready,
+    "velocityFusionReady": velocity_fusion_ready,
     "tandemReady": tandem_ready,
     "visualRadarTrackReady": visual_radar_track_ready,
-    "phantomBrakeGuardReady": phantom_brake_guard_ready,
+    "unpromotedRadarTrackFramesObserved": unpromoted_radar_track_frames_observed,
     "cutInTrackingEvidence": cut_in_tracking_evidence,
     "velocityControlReady": velocity_control_ready,
     "velocityPromotionReady": velocity_control_ready,
     "boundedVelocityBlendReady": bounded_velocity_blend_ready,
     "readinessConclusion": (
       "radar_bounded_velocity_blend_ready"
-      if tandem_ready and bounded_velocity_blend_ready else
-      "radar_confirmed_model_led_ready"
-      if tandem_ready else
+      if geometry_tandem_ready and bounded_velocity_blend_ready else
+      "radar_confirmed_geometry_model_velocity_only"
+      if geometry_tandem_ready else
       "velocity_control_candidate"
       if velocity_control_ready else
       "distance_only_confirmation"
@@ -402,7 +420,8 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
   }
 
 
-def build_report(paths: list[Path], radar_only: bool = False) -> dict[str, Any]:
+def build_report(paths: list[Path], radar_only: bool = False,
+                 qualification_report: Path | None = None) -> dict[str, Any]:
   if radar_only:
     long_summary = {
       "samples": 0,
@@ -426,6 +445,15 @@ def build_report(paths: list[Path], radar_only: bool = False) -> dict[str, Any]:
 
     long_summary = analyze_longitudinal(long_samples, long_metadata)
   radar_summary = scan_radar(paths)
+  if qualification_report is not None:
+    qualification = json.loads(qualification_report.read_text())["velocityControlQualification"]
+    radar_summary["velocityControlQualification"] = qualification
+    if qualification.get("actuationReady", False):
+      radar_summary["boundedVelocityBlendReady"] = True
+      radar_summary["velocityControlReady"] = True
+      radar_summary["velocityFusionReady"] = True
+      radar_summary["readinessConclusion"] = "model_matched_radar_velocity_ready"
+      radar_summary["tandemReady"] = bool(radar_summary["distanceAssociationReady"])
   status = "pass" if radar_summary["tandemReady"] else "warn" if radar_summary["publishReady"] else "fail"
   return {
     "status": status,
@@ -451,6 +479,8 @@ def main() -> int:
   parser.add_argument("--recent-first", action="store_true",
                       help="Scan newest files first after path expansion.")
   parser.add_argument("--out", help="Optional JSON output path")
+  parser.add_argument("--qualification-report", type=Path,
+                      help="Raw-CAN factory-SCC velocity qualification report")
   args = parser.parse_args()
 
   paths = expand_log_paths(args.logs)
@@ -458,7 +488,7 @@ def main() -> int:
     paths = sorted(paths, key=lambda path: path.stat().st_mtime, reverse=True)
   if args.max_files > 0:
     paths = paths[:args.max_files]
-  report = build_report(paths, radar_only=args.radar_only)
+  report = build_report(paths, radar_only=args.radar_only, qualification_report=args.qualification_report)
   text = json.dumps(report, indent=2, sort_keys=True)
   print(text)
   if args.out:

@@ -10,7 +10,11 @@ from typing import Any
 
 import numpy as np
 
-from openpilot.selfdrive.controls.lib.lane_centering import LaneCenteringController
+from openpilot.selfdrive.controls.lib import lane_centering
+from openpilot.selfdrive.controls.lib.lane_centering import (
+  LaneCenteringController,
+  get_raw_lane_centering_correction,
+)
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 
@@ -21,6 +25,8 @@ DRIVER_TORQUE = 50.0
 DRIVER_ERROR = 0.15
 LOOKAHEAD_MIN = 10.0
 LOOKAHEAD_MAX = 35.0
+CORRECTION_SIGN_EPSILON = 2e-6
+TARGET_REVERSAL_CAUSAL_WINDOW_FRAMES = 20
 
 
 def safe_attr(obj: Any, name: str, default: Any = None) -> Any:
@@ -58,7 +64,6 @@ def discover_logs(paths: list[Path]) -> dict[str, list[Path]]:
     elif path.name == "rlog.zst" and path.exists():
       candidates.append(path)
 
-  # Keep one copy of duplicate archived segments, preferring the first CLI root.
   unique: dict[tuple[str, int], Path] = {}
   for path in candidates:
     route, segment = route_and_segment(path)
@@ -95,14 +100,15 @@ def init_metadata(init_data: Any) -> dict[str, Any]:
     "laneCenterOffset": params.get("LaneCenterOffset", "unknown"),
     "laneCenteringE2EAuthority": params.get("LaneCenteringE2EAuthority", "unknown"),
     "laneCenteringPauseOnSignal": params.get("LaneCenteringPauseOnSignal", "unknown"),
+    "recordedLaneCenteringRoadAware": params.get("LaneCenteringRoadAware", "unknown"),
     "model": params.get("ModelName", params.get("Model", params.get("DrivingModel", "unknown"))),
   }
 
 
-def percentile(values: list[float], pct: float) -> float | None:
+def percentile(values: list[float], pct_value: float) -> float | None:
   if not values:
     return None
-  return float(np.percentile(np.asarray(values, dtype=float), pct))
+  return float(np.percentile(np.asarray(values, dtype=float), pct_value))
 
 
 def stats(values: list[float]) -> dict[str, float | int | None]:
@@ -122,6 +128,14 @@ def pct(count: int, total: int) -> float:
   return round(100.0 * count / total, 2) if total else 0.0
 
 
+def sign(value: float, epsilon: float = CORRECTION_SIGN_EPSILON) -> int:
+  if value > epsilon:
+    return 1
+  if value < -epsilon:
+    return -1
+  return 0
+
+
 def lane_geometry(model: Any, v_ego: float) -> tuple[bool, float, float, float, float, float, float, float]:
   try:
     lines = model.laneLines
@@ -137,30 +151,42 @@ def lane_geometry(model: Any, v_ego: float) -> tuple[bool, float, float, float, 
     lookahead_near = max(6.0, lookahead * 0.45)
     lookaheads = np.linspace(lookahead_near, lookahead, 5)
     arrays = (left_x, left_y, right_x, right_y, pos_x, pos_y)
-    valid = all(a.size >= 2 and np.isfinite(a).all() for a in arrays)
-    valid = valid and all(x[0] <= lookahead <= x[-1] and np.all(np.diff(x) > 0) for x in (left_x, right_x, pos_x))
+    valid = all(array.size >= 2 and np.isfinite(array).all() for array in arrays)
+    valid = valid and all(
+      x[0] <= lookahead <= x[-1] and np.all(np.diff(x) > 0)
+      for x in (left_x, right_x, pos_x)
+    )
     if not valid:
       return False, 0.0, 0.0, 0.0, lookahead, 0.0, 0.0, 0.0
+
     left = np.interp(lookaheads, left_x, left_y)
     right = np.interp(lookaheads, right_x, right_y)
     model_y = np.interp(lookaheads, pos_x, pos_y)
     widths = right - left
-    width = float(widths[-1])
-    confidence = float(min(probs[1], probs[2]))
-    lane_std = float(max(stds[1], stds[2]))
     center_errors = 0.5 * (left + right) - model_y
-    errors = np.copysign(np.maximum(np.abs(center_errors) - 0.08, 0.0), center_errors)
-    terms = np.linspace(0.7, 1.0, 5) * lookaheads ** 2 * errors
+    deadbanded = np.copysign(np.maximum(np.abs(center_errors) - 0.08, 0.0), center_errors)
+    terms = np.linspace(0.7, 1.0, 5) * lookaheads ** 2 * deadbanded
     term_magnitude = float(np.sum(np.abs(terms)))
     coherence = 1.0 if term_magnitude < 1e-9 else float(abs(np.sum(terms)) / term_magnitude)
-    width_spread = float(np.max(widths) - np.min(widths))
+    confidence = float(min(probs[1], probs[2]))
+    lane_std = float(max(stds[1], stds[2]))
+    width_spread = float(np.ptp(widths))
     strict = bool(
       np.all((2.6 <= widths) & (widths <= 4.8))
       and width_spread <= 0.45
-      and confidence >= 0.7
+      and confidence >= 0.70
       and 0.0 <= lane_std <= 0.25
     )
-    return strict, float(center_errors[-1]), width, confidence, lookahead, lane_std, width_spread, coherence
+    return (
+      strict,
+      float(center_errors[-1]),
+      float(widths[-1]),
+      confidence,
+      lookahead,
+      lane_std,
+      width_spread,
+      coherence,
+    )
   except Exception:
     return False, 0.0, 0.0, 0.0, float(np.clip(v_ego, LOOKAHEAD_MIN, LOOKAHEAD_MAX)), 0.0, 0.0, 0.0
 
@@ -169,24 +195,50 @@ def new_buckets() -> dict[str, list[float]]:
   return defaultdict(list)
 
 
-def analyze_route(route: str, paths: list[Path], road_aware: bool = False, road_edge_offset: float = 0.15) -> dict[str, Any]:
+def configured_center_gain() -> float:
+  return float(getattr(lane_centering, "_CENTER_GAIN", getattr(lane_centering, "_MAX_GAIN", 0.0)))
+
+
+def analyze_route(route: str, paths: list[Path], e2e_authority: float | None = 0.15) -> dict[str, Any]:
   controller = LaneCenteringController()
-  centered_reference = LaneCenteringController() if road_aware else None
   latest: dict[str, Any] = {}
   metadata: dict[str, Any] = {}
   values = new_buckets()
   counts: dict[str, int] = defaultdict(int)
   by_speed: dict[str, dict[str, list[float]]] = defaultdict(new_buckets)
   by_side: dict[str, dict[str, list[float]]] = defaultdict(new_buckets)
-  prev_correction: float | None = None
-  prev_frame_id: int | None = None
   source_counts: dict[str, int] = defaultdict(int)
+  max_step_sample: dict[str, Any] | None = None
+  previous_context: dict[str, Any] | None = None
+  previous_segment: int | None = None
+  previous_frame_id: int | None = None
+  previous_correction: float | None = None
+  previous_correction_sign = 0
+  previous_target_sign = 0
+  target_reversal_age: int | None = None
+  pending_target_sign = 0
+  reversal_samples: list[dict[str, Any]] = []
+  introduced_clearance_samples: list[dict[str, Any]] = []
 
   for path in paths:
+    segment = route_and_segment(path)[1]
+    if previous_segment is not None and segment != previous_segment + 1:
+      controller.reset()
+      previous_frame_id = None
+      previous_correction = None
+      previous_correction_sign = 0
+      previous_target_sign = 0
+      target_reversal_age = None
+      pending_target_sign = 0
+      previous_context = None
+    previous_segment = segment
+
     for msg in LogReader(str(path), default_mode=ReadMode.AUTO_INTERACTIVE, sort_by_time=True):
       which = msg.which()
       if which == "initData" and not metadata:
         metadata = init_metadata(msg.initData)
+        if e2e_authority is None:
+          e2e_authority = safe_float(metadata.get("laneCenteringE2EAuthority"), 0.15)
         continue
       if which in ("carState", "carControl", "controlsState"):
         latest[which] = getattr(msg, which)
@@ -196,9 +248,9 @@ def analyze_route(route: str, paths: list[Path], road_aware: bool = False, road_
 
       model = msg.modelV2
       frame_id = int(safe_attr(model, "frameId", 0))
-      if prev_frame_id == frame_id:
+      if previous_frame_id == frame_id:
         continue
-      prev_frame_id = frame_id
+      previous_frame_id = frame_id
       counts["modelFrames"] += 1
 
       car_state = latest.get("carState")
@@ -227,35 +279,33 @@ def analyze_route(route: str, paths: list[Path], road_aware: bool = False, road_
         model_curvature = safe_float(safe_attr(controls_state, "desiredCurvature", 0.0))
         source_counts["controlsStateFallback"] += 1
 
-      strict_geometry, center_error, width, confidence, lookahead, lane_std, width_spread, coherence = lane_geometry(
-        model, v_ego,
-      )
-      raw_valid, raw_geometry_correction = controller._calculate_raw_correction(
-        model, v_ego, model_curvature, 0.0, 1.0,
+      geometry = lane_geometry(model, v_ego)
+      strict_geometry, center_error, width, confidence, lookahead, lane_std, width_spread, coherence = geometry
+      raw_valid, raw_correction = get_raw_lane_centering_correction(
+        model, v_ego, 0.0, float(e2e_authority),
       )
       base_eligible = lat_active and v_ego >= MIN_SPEED and lane_change == 0 and not signal
       if base_eligible:
         counts["baseEligibleFrames"] += 1
-        if strict_geometry:
+        if strict_geometry and raw_valid:
           counts["strictGeometryFrames"] += 1
 
       output = model_curvature
-      centered_output = model_curvature
       for _ in range(MODEL_TICKS):
-        output = controller.update(model_curvature, model, v_ego, True, 0.0, 1.0, lat_active, True,
-                                   True, signal, steering_pressed, road_aware, road_edge_offset)
-        if centered_reference is not None:
-          centered_output = centered_reference.update(
-            model_curvature, model, v_ego, True, 0.0, 1.0, lat_active, True,
-            True, signal, steering_pressed, False, road_edge_offset,
-          )
+        output = controller.update(
+          model_curvature, model, v_ego, True, 0.0, float(e2e_authority), lat_active, True,
+          True, signal,
+        )
       correction = output - model_curvature
-      centered_correction = centered_output - model_curvature
 
-      if not (base_eligible and strict_geometry):
-        if base_eligible and prev_correction is not None:
-          values["releaseStepLatAccel"].append(abs(correction - prev_correction) * v_ego ** 2)
-        prev_correction = correction
+      if not (base_eligible and strict_geometry and raw_valid):
+        if base_eligible and previous_correction is not None:
+          values["releaseStepLatAccel"].append(abs(correction - previous_correction) * v_ego ** 2)
+        previous_correction = correction
+        previous_correction_sign = 0
+        previous_target_sign = 0
+        target_reversal_age = None
+        pending_target_sign = 0
         continue
 
       counts["eligibleFrames"] += 1
@@ -264,19 +314,12 @@ def analyze_route(route: str, paths: list[Path], road_aware: bool = False, road_
       else:
         counts["autonomousEligibleFrames"] += 1
 
-      residual = center_error - correction * lookahead ** 2 / 2.0
-      centered_residual = center_error - centered_correction * lookahead ** 2 / 2.0
-      topology_bias = controller._effective_road_topology_bias if road_aware else 0.0
-      topology_state = controller._road_topology_state if road_aware else 0
-      target_residual = center_error + topology_bias - correction * lookahead ** 2 / 2.0
-      extra_shift = (correction - centered_correction) * lookahead ** 2 / 2.0
-      half_width = width * 0.5
-      baseline_shift = centered_correction * lookahead ** 2 / 2.0
-      adaptive_shift = correction * lookahead ** 2 / 2.0
-      baseline_boundary_clearance = min(half_width - center_error + baseline_shift, half_width + center_error - baseline_shift)
-      adaptive_boundary_clearance = min(half_width - center_error + adaptive_shift, half_width + center_error - adaptive_shift)
+      projected_shift = correction * lookahead ** 2 / 2.0
+      residual = center_error - projected_shift
       raw_abs = abs(center_error)
       residual_abs = abs(residual)
+      baseline_clearance = width * 0.5 - raw_abs
+      projected_clearance = width * 0.5 - residual_abs
       added_lat_accel = abs(correction) * v_ego ** 2
       total_lat_accel = abs(output) * v_ego ** 2
       curve = abs(model_curvature) * v_ego ** 2 >= CURVE_LAT_ACCEL
@@ -284,17 +327,8 @@ def analyze_route(route: str, paths: list[Path], road_aware: bool = False, road_
       if not steering_pressed:
         values["rawError"].append(raw_abs)
         values["residualError"].append(residual_abs)
-        values["centeredReferenceResidual"].append(abs(centered_residual))
-        values["topologyTargetResidual"].append(abs(target_residual))
-        values["topologyBias"].append(abs(topology_bias))
-        values["baselineBoundaryClearance"].append(baseline_boundary_clearance)
-        values["adaptiveBoundaryClearance"].append(adaptive_boundary_clearance)
-        if topology_state:
-          counts["topologyOuterFrames"] += 1
-          counts["topologyLeftFrames" if topology_state < 0 else "topologyRightFrames"] += 1
-          values["adjacentClearanceGain"].append(topology_state * extra_shift)
-          if topology_state * extra_shift < -0.005:
-            counts["topologyAlignmentViolationFrames"] += 1
+        values["baselineClearance"].append(baseline_clearance)
+        values["projectedClearance"].append(projected_clearance)
         values["addedLatAccel"].append(added_lat_accel)
         values["totalLatAccel"].append(total_lat_accel)
         values["laneWidth"].append(width)
@@ -302,6 +336,26 @@ def analyze_route(route: str, paths: list[Path], road_aware: bool = False, road_
         values["laneStd"].append(lane_std)
         values["laneWidthSpread"].append(width_spread)
         values["correctionCoherence"].append(coherence)
+
+        if baseline_clearance < 1.4:
+          counts["baselineClearanceViolationFrames"] += 1
+        if projected_clearance < 1.4:
+          counts["projectedClearanceViolationFrames"] += 1
+          if baseline_clearance >= 1.4:
+            counts["introducedClearanceViolationFrames"] += 1
+            values["introducedClearanceDeficit"].append(1.4 - projected_clearance)
+            if len(introduced_clearance_samples) < 20:
+              introduced_clearance_samples.append({
+                "segment": segment,
+                "frameId": frame_id,
+                "logMonoTime": int(safe_attr(msg, "logMonoTime", 0)),
+                "vEgo": round(v_ego, 5),
+                "baselineClearance": round(baseline_clearance, 6),
+                "projectedClearance": round(projected_clearance, 6),
+                "centerError": round(center_error, 6),
+                "correction": round(correction, 9),
+                "rawCorrection": round(raw_correction, 9),
+              })
         if residual_abs > raw_abs + 1e-6:
           counts["worsenedFrames"] += 1
           values["worseningM"].append(residual_abs - raw_abs)
@@ -321,14 +375,56 @@ def analyze_route(route: str, paths: list[Path], road_aware: bool = False, road_
           counts["residualOver30cm"] += 1
         if added_lat_accel >= 0.594:
           counts["saturatedFrames"] += 1
+
+        correction_sign = sign(correction)
+        target_sign = sign(raw_correction)
+        if target_reversal_age is not None:
+          target_reversal_age += 1
+        if target_sign and previous_target_sign and target_sign != previous_target_sign:
+          counts["targetReversalFrames"] += 1
+          target_reversal_age = 0
+        if correction_sign and target_sign and correction_sign != target_sign:
+          pending_target_sign = target_sign
+        if correction_sign and previous_correction_sign and correction_sign != previous_correction_sign:
+          counts["correctionReversalFrames"] += 1
+          input_driven = (
+            (target_reversal_age is not None and target_reversal_age <= TARGET_REVERSAL_CAUSAL_WINDOW_FRAMES)
+            or (pending_target_sign != 0 and correction_sign == pending_target_sign)
+            or (target_sign != 0 and correction_sign == target_sign)
+          )
+          if input_driven:
+            counts["inputDrivenReversalFrames"] += 1
+          else:
+            counts["controllerOnlyReversalFrames"] += 1
+          if len(reversal_samples) < 40:
+            reversal_samples.append({
+              "segment": segment,
+              "frameId": frame_id,
+              "logMonoTime": int(safe_attr(msg, "logMonoTime", 0)),
+              "vEgo": round(v_ego, 5),
+              "correction": round(correction, 9),
+              "rawCorrection": round(raw_correction, 9),
+              "centerError": round(center_error, 6),
+              "targetSign": target_sign,
+              "targetReversalAgeFrames": target_reversal_age,
+              "classification": "input-driven" if input_driven else "controller-only",
+              "previousFrame": previous_context,
+            })
+          if input_driven and correction_sign == pending_target_sign:
+            pending_target_sign = 0
+        elif correction_sign and target_sign and correction_sign == target_sign:
+          pending_target_sign = 0
+        if correction_sign:
+          previous_correction_sign = correction_sign
+        if target_sign:
+          previous_target_sign = target_sign
+
         if curve:
           counts["autonomousCurveFrames"] += 1
           values["curveRawError"].append(raw_abs)
           values["curveResidualError"].append(residual_abs)
-          values["curveTargetResidual"].append(abs(target_residual))
-          values["curveBaselineBoundaryClearance"].append(baseline_boundary_clearance)
-          values["curveAdaptiveBoundaryClearance"].append(adaptive_boundary_clearance)
           values["curveAddedLatAccel"].append(added_lat_accel)
+          values["curveProjectedClearance"].append(projected_clearance)
 
         speed_band = "5-10mps" if v_ego < 10.0 else "10-20mps" if v_ego < 20.0 else "20mps+"
         by_speed[speed_band]["raw"].append(raw_abs)
@@ -337,22 +433,62 @@ def analyze_route(route: str, paths: list[Path], road_aware: bool = False, road_
         by_side[path_side]["raw"].append(raw_abs)
         by_side[path_side]["residual"].append(residual_abs)
 
-        if prev_correction is not None:
-          values["correctionStepLatAccel"].append(abs(correction - prev_correction) * v_ego ** 2)
+        if previous_correction is not None:
+          step_lat_accel = abs(correction - previous_correction) * v_ego ** 2
+          values["correctionStepLatAccel"].append(step_lat_accel)
+          if max_step_sample is None or step_lat_accel > max_step_sample["latAccelStep"]:
+            max_step_sample = {
+              "segment": segment,
+              "frameId": frame_id,
+              "logMonoTime": int(safe_attr(msg, "logMonoTime", 0)),
+              "vEgo": round(v_ego, 5),
+              "latAccelStep": round(step_lat_accel, 6),
+              "previousCorrection": round(previous_correction, 9),
+              "correction": round(correction, 9),
+              "rawCorrection": round(raw_correction, 9),
+              "centerError": round(center_error, 6),
+              "laneWidth": round(width, 6),
+              "laneCenteringReason": safe_attr(controller, "_lane_centering_reason", "starpilot-dom"),
+              "previousFrame": previous_context,
+            }
 
       if steering_pressed and raw_valid and abs(steering_torque) >= DRIVER_TORQUE and raw_abs >= DRIVER_ERROR:
         counts["driverComparisonFrames"] += 1
-        if raw_geometry_correction * steering_torque < 0.0:
+        if raw_correction * steering_torque < 0.0:
           counts["driverAgreementFrames"] += 1
+      if steering_pressed:
+        previous_correction_sign = 0
+        previous_target_sign = 0
+        target_reversal_age = None
+        pending_target_sign = 0
 
-      prev_correction = correction
+      previous_correction = correction
+      previous_context = {
+        "segment": segment,
+        "frameId": frame_id,
+        "vEgo": round(v_ego, 5),
+        "correction": round(correction, 9),
+        "rawCorrection": round(raw_correction, 9),
+        "centerError": round(center_error, 6),
+        "laneWidth": round(width, 6),
+        "laneCenteringReason": safe_attr(controller, "_lane_centering_reason", "starpilot-dom"),
+      }
 
   auto = counts["autonomousEligibleFrames"]
   driver = counts["driverComparisonFrames"]
-  result = {
+  return {
     "route": route,
     "segments": len(paths),
     "metadata": metadata,
+    "architecture": {
+      "referenceOwner": "trusted-primary-lane-pair",
+      "roadAwareActuation": False,
+      "roadEdgesConsumed": False,
+      "recordedRoadAwareParamIgnored": metadata.get("recordedLaneCenteringRoadAware", "unknown"),
+      "centerGain": configured_center_gain(),
+      "smoothTau": lane_centering._SMOOTH_TAU,
+      "e2eAuthority": e2e_authority,
+    },
     "curvatureSourceFrames": dict(source_counts),
     "coverage": {
       "modelFrames": counts["modelFrames"],
@@ -376,15 +512,35 @@ def analyze_route(route: str, paths: list[Path], road_aware: bool = False, road_
       "wrongDirectionPct": pct(counts["wrongDirectionFrames"], auto),
       "worseningM": stats(values["worseningM"]),
     },
+    "stability": {
+      "correctionReversals": counts["correctionReversalFrames"],
+      "targetReversals": counts["targetReversalFrames"],
+      "inputDrivenReversals": counts["inputDrivenReversalFrames"],
+      "controllerOnlyReversals": counts["controllerOnlyReversalFrames"],
+      "correctionReversalPct": pct(counts["correctionReversalFrames"], auto),
+      "targetReversalPct": pct(counts["targetReversalFrames"], auto),
+      "reversalSamples": reversal_samples,
+    },
+    "clearance": {
+      "baselineM": stats(values["baselineClearance"]),
+      "projectedM": stats(values["projectedClearance"]),
+      "baselineViolationPct": pct(counts["baselineClearanceViolationFrames"], auto),
+      "projectedViolationPct": pct(counts["projectedClearanceViolationFrames"], auto),
+      "introducedViolationPct": pct(counts["introducedClearanceViolationFrames"], auto),
+      "introducedDeficitM": stats(values["introducedClearanceDeficit"]),
+      "introducedSamples": introduced_clearance_samples,
+    },
     "curves": {
       "rawAbsM": stats(values["curveRawError"]),
       "projectedResidualAbsM": stats(values["curveResidualError"]),
       "addedLatAccel": stats(values["curveAddedLatAccel"]),
+      "projectedClearanceM": stats(values["curveProjectedClearance"]),
     },
     "demand": {
       "addedLatAccel": stats(values["addedLatAccel"]),
       "totalDesiredLatAccel": stats(values["totalLatAccel"]),
       "correctionStepLatAccel": stats(values["correctionStepLatAccel"]),
+      "maxCorrectionStepSample": max_step_sample,
       "confidenceReleaseStepLatAccel": stats(values["releaseStepLatAccel"]),
       "saturatedPct": pct(counts["saturatedFrames"], auto),
     },
@@ -401,51 +557,50 @@ def analyze_route(route: str, paths: list[Path], road_aware: bool = False, road_
       "frames": driver,
       "agreementPct": pct(counts["driverAgreementFrames"], driver),
     },
-    "roadPositioning": {
-      "enabled": road_aware,
-      "configuredOffsetM": road_edge_offset,
-      "outerFrames": counts["topologyOuterFrames"],
-      "leftFrames": counts["topologyLeftFrames"],
-      "rightFrames": counts["topologyRightFrames"],
-      "outerAvailabilityPct": pct(counts["topologyOuterFrames"], auto),
-      "controllerAlignmentViolationPct": pct(counts["topologyAlignmentViolationFrames"], counts["topologyOuterFrames"]),
-      "controllerAlignmentMeaning": "Checks only that output follows the inferred topology; it does not validate the topology classification.",
-      "groundTruthValidated": False,
-      "classificationVerdict": "unverified-no-labelled-road-topology",
-      "releaseEligible": False,
-      "biasAbsM": stats(values["topologyBias"]),
-      "targetResidualAbsM": stats(values["topologyTargetResidual"]),
-      "centeredReferenceResidualAbsM": stats(values["centeredReferenceResidual"]),
-      "adjacentClearanceGainM": stats(values["adjacentClearanceGain"]),
-      "baselineBoundaryClearanceM": stats(values["baselineBoundaryClearance"]),
-      "adaptiveBoundaryClearanceM": stats(values["adaptiveBoundaryClearance"]),
-      "curveTargetResidualAbsM": stats(values["curveTargetResidual"]),
-      "curveBaselineBoundaryClearanceM": stats(values["curveBaselineBoundaryClearance"]),
-      "curveAdaptiveBoundaryClearanceM": stats(values["curveAdaptiveBoundaryClearance"]),
-    },
     "speedBands": {
-      name: {"frames": len(bucket["raw"]), "rawP95M": round(percentile(bucket["raw"], 95) or 0.0, 4),
-             "projectedP95M": round(percentile(bucket["residual"], 95) or 0.0, 4)}
+      name: {
+        "frames": len(bucket["raw"]),
+        "rawP95M": round(percentile(bucket["raw"], 95) or 0.0, 4),
+        "projectedP95M": round(percentile(bucket["residual"], 95) or 0.0, 4),
+      }
       for name, bucket in sorted(by_speed.items())
     },
     "pathSide": {
-      name: {"frames": len(bucket["raw"]), "rawP95M": round(percentile(bucket["raw"], 95) or 0.0, 4),
-             "projectedP95M": round(percentile(bucket["residual"], 95) or 0.0, 4)}
+      name: {
+        "frames": len(bucket["raw"]),
+        "rawP95M": round(percentile(bucket["raw"], 95) or 0.0, 4),
+        "projectedP95M": round(percentile(bucket["residual"], 95) or 0.0, 4),
+      }
       for name, bucket in sorted(by_side.items())
     },
   }
-  return result
 
 
 def main() -> None:
-  parser = argparse.ArgumentParser(description="Replay the current lane-envelope controller over historical rlogs")
+  parser = argparse.ArgumentParser(description="Replay the lane-only centering controller over historical rlogs")
   parser.add_argument("paths", nargs="+", type=Path)
   parser.add_argument("--json", action="store_true", help="emit the complete machine-readable report")
-  parser.add_argument("--road-aware", action="store_true", help="enable topology-aware outer-lane positioning")
-  parser.add_argument("--road-edge-offset", type=float, default=0.15)
+  parser.add_argument("--output", type=Path, help="also write the JSON report to this path")
+  parser.add_argument("--e2e-authority", type=float, default=0.15)
+  parser.add_argument("--center-gain", type=float, help="override correction gain for counterfactual replay")
+  parser.add_argument("--smooth-tau", type=float, help="override filter time constant for counterfactual replay")
+  parser.add_argument("--use-log-settings", action="store_true", help="replay each route with its recorded E2E authority")
   args = parser.parse_args()
+
+  if args.center_gain is not None:
+    if hasattr(lane_centering, "_CENTER_GAIN"):
+      lane_centering._CENTER_GAIN = float(args.center_gain)
+    else:
+      lane_centering._MAX_GAIN = float(args.center_gain)
+  if args.smooth_tau is not None:
+    lane_centering._SMOOTH_TAU = float(args.smooth_tau)
+
   routes = discover_logs(args.paths)
-  reports = [analyze_route(route, paths, args.road_aware, args.road_edge_offset) for route, paths in routes.items()]
+  e2e_authority = None if args.use_log_settings else args.e2e_authority
+  reports = [analyze_route(route, paths, e2e_authority) for route, paths in routes.items()]
+  if args.output:
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(reports, indent=2, sort_keys=True) + "\n")
   if args.json:
     print(json.dumps(reports, indent=2, sort_keys=True))
     return
@@ -453,48 +608,30 @@ def main() -> None:
   for report in reports:
     coverage = report["coverage"]
     centering = report["centering"]
+    stability = report["stability"]
+    clearance = report["clearance"]
     curves = report["curves"]
     demand = report["demand"]
-    geometry = report["geometry"]
-    driver = report["driverComparison"]
-    road_positioning = report["roadPositioning"]
-    fields = [
+    print(" ".join([
       f'{report["route"]} seg={report["segments"]}',
       f'commit={report["metadata"].get("gitCommit", "unknown")[:9]}',
       f'LC={report["metadata"].get("laneCentering", "?")}',
-      f'model={report["metadata"].get("model", "?")}',
+      f'loggedRA={report["metadata"].get("recordedLaneCenteringRoadAware", "?")}',
       f'eligible={coverage["autonomousEligibleFrames"]}',
       f'avail={coverage["strictGeometryAvailabilityPct"]:.1f}%',
       f'p95={centering["rawAbsM"]["p95"]}->{centering["projectedResidualAbsM"]["p95"]}m',
-      f'curve_p95={curves["rawAbsM"]["p95"]}->{curves["projectedResidualAbsM"]["p95"]}m',
-      f'worse={centering["worsenedPct"]:.1f}%',
-      f'worse2cm={centering["worsenedOver2cmPct"]:.1f}%',
-      f'worse5cm={centering["worsenedOver5cmPct"]:.1f}%',
-      f'wrongDir={centering["wrongDirectionPct"]:.1f}%',
-      f'sat={demand["saturatedPct"]:.1f}%',
+      f'curveP95={curves["rawAbsM"]["p95"]}->{curves["projectedResidualAbsM"]["p95"]}m',
+      f'worse2cm={centering["worsenedOver2cmPct"]:.2f}%',
+      f'worse5cm={centering["worsenedOver5cmPct"]:.2f}%',
+      f'wrongDir={centering["wrongDirectionPct"]:.2f}%',
+      f'reversals={stability["correctionReversals"]}',
+      f'controllerOnlyRev={stability["controllerOnlyReversals"]}',
+      f'clearanceP05={clearance["baselineM"]["p05"]}->{clearance["projectedM"]["p05"]}m',
+      f'introducedClearance={clearance["introducedViolationPct"]:.2f}%',
       f'addP95={demand["addedLatAccel"]["p95"]}',
       f'stepMax={demand["correctionStepLatAccel"]["max"]}',
       f'releaseMax={demand["confidenceReleaseStepLatAccel"]["max"]}',
-      f'probP10={geometry["laneConfidenceP10"]}',
-      f'stdP95={geometry["laneStd"]["p95"]}',
-      f'widthSpreadP95={geometry["laneWidthSpreadM"]["p95"]}',
-      f'coherenceP10={geometry["correctionCoherenceP10"]}',
-      f'driverProxy={driver["agreementPct"]:.1f}%/{driver["frames"]}',
-    ]
-    if road_positioning["enabled"]:
-      fields.extend([
-        f'outer={road_positioning["outerAvailabilityPct"]:.1f}%',
-        f'outerL/R={road_positioning["leftFrames"]}/{road_positioning["rightFrames"]}',
-        f'biasP95={road_positioning["biasAbsM"]["p95"]}',
-        f'targetP95={road_positioning["targetResidualAbsM"]["p95"]}',
-        f'adjGainP50={road_positioning["adjacentClearanceGainM"]["p50"]}',
-        f'edgeP50={road_positioning["baselineBoundaryClearanceM"]["p50"]}/{road_positioning["adaptiveBoundaryClearanceM"]["p50"]}',
-        f'edgeP05={road_positioning["baselineBoundaryClearanceM"]["p05"]}/{road_positioning["adaptiveBoundaryClearanceM"]["p05"]}',
-        f'curveEdgeP05={road_positioning["curveBaselineBoundaryClearanceM"]["p05"]}/{road_positioning["curveAdaptiveBoundaryClearanceM"]["p05"]}',
-        f'controllerAlignViolation={road_positioning["controllerAlignmentViolationPct"]:.1f}%',
-        f'topologyVerdict={road_positioning["classificationVerdict"]}',
-      ])
-    print(" ".join(fields))
+    ]))
 
 
 if __name__ == "__main__":

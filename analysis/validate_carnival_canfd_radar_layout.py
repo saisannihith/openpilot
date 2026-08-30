@@ -233,10 +233,16 @@ def main() -> int:
     stock_scc_report = json.loads(args.stock_scc_report.read_text())
   stock_scc_velocity_ready = bool(stock_scc_report.get("decoderReady"))
   complete_object_bank = len(combined_results) == 10 and all(result["validFrames"] >= 100 for result in combined_results.values())
-  control_fields_ready = stock_scc_velocity_ready and complete_object_bank
+  decoder_fields_ready = stock_scc_velocity_ready and complete_object_bank
+  control_fields_ready = decoder_fields_ready and bool(stock_scc_report.get("controlPromotionReady"))
   report = {
-    "status": "pass" if control_fields_ready else "fail",
+    "status": "pass" if decoder_fields_ready else "fail",
+    "decoderFieldsReady": decoder_fields_ready,
     "controlFieldsReady": control_fields_ready,
+    "controlReadinessReason": (
+      "separate association and bounded-fusion replay required"
+      if decoder_fields_ready and not control_fields_ready else None
+    ),
     "completeTenObjectBank": complete_object_bank,
     "stockSccVelocityReady": stock_scc_velocity_ready,
     "layout": {
@@ -266,7 +272,7 @@ def main() -> int:
   if args.out:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(output + "\n")
-  return 0 if control_fields_ready else 1
+  return 0 if decoder_fields_ready else 1
 
 
 if __name__ == "__main__":

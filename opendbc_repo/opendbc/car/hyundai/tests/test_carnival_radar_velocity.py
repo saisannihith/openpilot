@@ -6,6 +6,7 @@ from opendbc.car import structs
 from opendbc.car.hyundai.radar_interface import (
   CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE,
   CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE,
+  CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_BASE,
   RadarInterface,
   carnival_radar_object_valid,
   decode_carnival_confirmation_velocity,
@@ -22,9 +23,13 @@ def encode_velocity(value: float, bit_offset: int = 0) -> bytes:
 
 
 def encode_object(track_id: int, heartbeat: int, distance: float, lateral: float,
-                  velocity: float, bit_offset: int = 0) -> bytes:
+                  velocity: float, bit_offset: int = 0, *, quality_byte: int = 0,
+                  state_alt: int = 0, state: int = 0) -> bytes:
   values = (
+    (quality_byte, bit_offset + 32, 8),
     (track_id, bit_offset + 42, 8),
+    (state_alt, bit_offset + 51, 4),
+    (state, bit_offset + 55, 3),
     (heartbeat, bit_offset + 124, 4),
     (round(distance / 0.05), bit_offset + 64, 13),
     (round(lateral / 0.05), bit_offset + 78, 11),
@@ -60,8 +65,10 @@ def test_carnival_r0100_second_slot_relative_velocity_decode() -> None:
 
 
 def test_carnival_r0100_full_object_decode_both_slots() -> None:
-  first = int.from_bytes(encode_object(17, 9, 42.5, -1.25, -3.4), "little")
-  second = int.from_bytes(encode_object(91, 4, 88.0, 2.15, 7.3, 128), "little")
+  first = int.from_bytes(encode_object(17, 9, 42.5, -1.25, -3.4,
+                                       quality_byte=73, state_alt=12, state=4), "little")
+  second = int.from_bytes(encode_object(91, 4, 88.0, 2.15, 7.3, 128,
+                                        quality_byte=46, state_alt=6, state=3), "little")
   dat = (first | second).to_bytes(32, "little")
 
   obj1 = decode_carnival_radar_object(dat, 0)
@@ -69,6 +76,8 @@ def test_carnival_r0100_full_object_decode_both_slots() -> None:
 
   assert (obj1.raw_track_id, obj1.heartbeat) == (17, 9)
   assert (obj2.raw_track_id, obj2.heartbeat) == (91, 4)
+  assert (obj1.quality_byte, obj1.state_alt, obj1.state) == (73, 12, 4)
+  assert (obj2.quality_byte, obj2.state_alt, obj2.state) == (46, 6, 3)
   assert (obj1.d_rel, obj1.y_rel, obj1.v_rel) == pytest.approx((42.5, -1.25, -3.4))
   assert (obj2.d_rel, obj2.y_rel, obj2.v_rel) == pytest.approx((88.0, 2.15, 7.3))
   assert carnival_radar_object_valid(obj1)
@@ -125,7 +134,47 @@ def test_carnival_radar_recycled_id_must_requalify() -> None:
   probe._update_carnival_object_probe(replacement)
   assert 37 not in probe.carnival_confirmation_tracks
   probe._update_carnival_object_probe(replacement)
-  assert probe.carnival_confirmation_tracks[37][1:] == pytest.approx((55.0, 3.0, 4.0))
+  assert probe.carnival_confirmation_tracks[37][1:4] == pytest.approx((55.0, 3.0, 4.0))
+  assert not probe.carnival_confirmation_tracks[37][4]
+
+
+def test_carnival_primary_slot_requires_factory_quality() -> None:
+  probe = make_probe()
+  unqualified = [(0, [(0x180, encode_object(37, 6, 31.0, -0.45, -2.0, quality_byte=254), 1)])]
+  qualified = [(0, [(0x180, encode_object(37, 7, 31.0, -0.45, -2.0, quality_byte=255), 1)])]
+
+  for _ in range(3):
+    probe._update_carnival_object_probe(unqualified)
+  rr = structs.RadarData()
+  probe._add_carnival_confirmation_tracks(rr)
+  assert rr.points[0].trackId == CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE + 37
+
+  # A quality transition must requalify before the object is promoted as the
+  # factory-selected primary target.
+  probe._update_carnival_object_probe(qualified)
+  assert 37 not in probe.carnival_confirmation_tracks
+  probe._update_carnival_object_probe(qualified)
+  assert 37 not in probe.carnival_confirmation_tracks
+  probe._update_carnival_object_probe(qualified)
+  rr = structs.RadarData()
+  probe._add_carnival_confirmation_tracks(rr)
+  assert rr.points[0].trackId == CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_BASE + 37
+
+
+def test_carnival_secondary_slot_cannot_be_factory_primary() -> None:
+  probe = make_probe()
+  primary = int.from_bytes(encode_object(21, 5, 22.0, 0.0, -1.0, quality_byte=20), "little")
+  secondary = int.from_bytes(encode_object(22, 5, 24.0, 0.2, -1.0, 128, quality_byte=255), "little")
+  frame = [(0, [(0x180, (primary | secondary).to_bytes(32, "little"), 1)])]
+
+  for _ in range(3):
+    probe._update_carnival_object_probe(frame)
+  rr = structs.RadarData()
+  probe._add_carnival_confirmation_tracks(rr)
+  ids = {point.trackId for point in rr.points}
+  assert CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE + 21 in ids
+  assert CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_BASE + 22 in ids
+  assert CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_BASE + 22 not in ids
 
 
 def test_carnival_radar_conflicting_id_is_withdrawn() -> None:
@@ -179,8 +228,9 @@ def test_carnival_radar_expires_stale_tracks() -> None:
     20.0,
     0.0,
     0.0,
+    False,
   )
-  probe.carnival_confirmation_prev[12] = (now, 20.0, 0.0, 0.0)
+  probe.carnival_confirmation_prev[12] = (now, 20.0, 0.0, 0.0, False)
   probe.carnival_confirmation_persist[12] = 4
 
   probe._expire_carnival_confirmation_tracks(now)

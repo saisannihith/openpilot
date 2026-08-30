@@ -151,6 +151,46 @@ def test_ccm_enters_chill_for_open_road_speed_recovery(monkeypatch):
   assert planner.params_memory.get_int("CCStatus") == CCStatus["SPEED"]
 
 
+def test_ccm_treats_a_distant_nonthreatening_lead_as_open_road_for_speed_recovery(monkeypatch):
+  planner, _detector, ccm = make_ccm()
+  sm = make_sm()
+  toggles = make_toggles()
+  monotonic_values = iter([10.0, 10.5])
+  monkeypatch.setattr("openpilot.starpilot.controls.lib.conditional_chill_mode.time.monotonic", lambda: next(monotonic_values))
+
+  planner.tracking_lead = True
+  planner.lead_one.status = True
+  planner.lead_one.dRel = 140.0
+  planner.lead_one.vLead = 55 * CV.MPH_TO_MS
+  planner.lead_one.radar = True
+
+  v_ego = 55 * CV.MPH_TO_MS
+  v_cruise = 65 * CV.MPH_TO_MS
+  ccm.update(v_ego, v_cruise, sm, toggles)
+  ccm.update(v_ego, v_cruise, sm, toggles)
+
+  assert not ccm.experimental_mode
+  assert ccm.status_value == CCStatus["SPEED"]
+
+
+def test_ccm_does_not_treat_a_close_untracked_lead_as_open_road(monkeypatch):
+  planner, _detector, ccm = make_ccm()
+  sm = make_sm()
+  toggles = make_toggles()
+  monkeypatch.setattr("openpilot.starpilot.controls.lib.conditional_chill_mode.time.monotonic", lambda: 10.0)
+
+  planner.tracking_lead = False
+  planner.lead_one.status = True
+  planner.lead_one.dRel = 35.0
+  planner.lead_one.vLead = 45 * CV.MPH_TO_MS
+  planner.lead_one.radar = True
+
+  ccm.update(55 * CV.MPH_TO_MS, 65 * CV.MPH_TO_MS, sm, toggles)
+
+  assert ccm.experimental_mode
+  assert ccm.status_value == CCStatus["OFF"]
+
+
 def test_ccm_enters_chill_for_stable_lead_cruising(monkeypatch):
   planner, _detector, ccm = make_ccm()
   sm = make_sm()

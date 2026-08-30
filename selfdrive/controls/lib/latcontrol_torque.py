@@ -627,8 +627,6 @@ class LatControlTorque(LatControl):
       elif kia_carnival_active:
         output_torque *= kia_carnival_center_taper
         output_torque *= get_kia_carnival_highway_transition_output_scale(setpoint, desired_lateral_jerk, CS.vEgo)
-        if CS.steeringPressed:
-          output_torque *= get_kia_carnival_driver_override_output_scale(CS.vEgo, CS.steeringTorque)
       elif palisade_active:
         output_torque *= get_palisade_center_output_scale(setpoint, CS.vEgo)
       elif tucson_4th_gen_active:

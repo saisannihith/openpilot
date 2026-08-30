@@ -2,10 +2,9 @@
 
 The comma 3x now exposes a dedicated `Carnival` settings page between `StarPilot` and `Device`. It contains:
 
-- Carnival Confidence Governor live state and enable control.
-- Self-Tuning Drive Profile recommendations with guarded apply and one-tap revert.
+- Carnival Confidence Monitor live state.
+- Read-only Self-Tuning Drive Profile recommendations.
 - Radar-Vision Lead Fusion HUD state and enable control.
-- Intersection Stop Controller live state and enable control.
 - EPS Fault Predictor live risk and enable control.
 - Route Replay Scorecard with on-device run status and scores.
 
@@ -16,7 +15,7 @@ The on-device path prefers qlogs and skips raw CAN object retention. A 33-segmen
 - `/data/media/0/carnival_reports/carnival-report-*.md`
 - `/data/media/0/carnival_reports/carnival-report-*.json`
 
-The latest scorecard, pending profile, applied snapshot, report path, and any error are also stored in Params for the native UI. Analysis never runs onroad.
+The latest scorecard, read-only suggestion profile, report path, and any error are also stored in Params for the native UI. Analysis never runs onroad.
 The on-device scorecard prefers each segment's compact qlog to keep CPU and memory bounded; the full-rate rlogs remain untouched for deep PC diagnostics.
 
 ## Optional PC Workflow
@@ -68,22 +67,16 @@ python tools/carnival/collect_and_report.py --skip-pull --route 00000006--b531e9
 - stop approach/hold state;
 - combined confidence and EPS risk.
 
-The confidence governor only softens positive acceleration for a low-confidence, vision-only lead. It cannot add braking. The EPS predictor is bounded to a 12% pre-taper before the existing platform guard, and the dedicated intersection controller only owns the final low-speed hold/release phase.
+The confidence monitor cannot change acceleration or braking. The EPS predictor is lateral-only and remains bounded by the existing platform guard. StarPilot owns stopping, launch, red-light, follow-distance, and curve-speed behavior.
 
 ## Self-Tuning Profile
 
-Preview bounded changes from a generated report:
+Preview read-only suggestions from a generated report:
 
 ```bash
 python tools/carnival/self_tune_profile.py drive_reports/carnival-report-YYYYMMDD-HHMMSS.json --device 192.168.68.68
 ```
 
-Apply only the allowlisted resolved changes and write a before/after snapshot:
-
-```bash
-python tools/carnival/self_tune_profile.py drive_reports/carnival-report-YYYYMMDD-HHMMSS.json --device 192.168.68.68 --apply
-```
-
-Automatic analysis and automatic application are disabled by default. When explicitly enabled in the Carnival UI, only tiny allowlisted follow-time and force-stop-offset changes can apply offroad. A before/after snapshot is always written for revert. Torque, lane offset, curve speed, radar velocity, and controller constants remain recommendation-only until directional and fault evidence is strong enough.
+The profile is diagnostic only. It never changes StarPilot settings locally or over SSH. Torque, follow distance, stop distance, lane offset, curve speed, radar velocity, and controller constants remain under their normal StarPilot owners.
 
 The radar candidate remains shadow-only until lateral and raw velocity fields are decoded safely.

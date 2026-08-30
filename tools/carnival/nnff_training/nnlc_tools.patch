@@ -1,0 +1,35 @@
+diff --git a/training/latmodel_temporal.jl b/training/latmodel_temporal.jl
+index a4e4a00..9afef1d 100644
+--- a/training/latmodel_temporal.jl
++++ b/training/latmodel_temporal.jl
+@@ -70,6 +70,10 @@ using Optim
+ 
+ using TeeStreams
+ 
++# Keep candidate generation reproducible so route-held-out comparisons are
++# meaningful. Override NNLC_SEED only when intentionally training an ensemble.
++Random.seed!(parse(Int, get(ENV, "NNLC_SEED", "20240828")))
++
+ # Custom AdaGrad optimizer that uses Float32 literals
+ struct CustomAdaGrad <: Optimisers.AbstractRule
+   eta::Float32
+@@ -152,7 +156,18 @@ function load_data(infile::String, use_existing_data::Bool, outdir::String, out_
+ 
+     # Compute lateral_jerk from temporal data (not output by extractor)
+     println(out_streams, "Computing lateral_jerk from temporal lateral accel")
+-    data[!, :lateral_jerk] = @fastmath @. (data[!, :actual_lateral_accel_tp03] - data[!, :actual_lateral_accel]) / 0.03f0
++    data[!, :lateral_jerk] = @fastmath @. (data[!, :actual_lateral_accel_tp03] - data[!, :actual_lateral_accel]) / 0.3f0
++
++    # Match LatControlNNFF's positional production contract exactly:
++    # speed, lateral accel, jerk/error input, roll, seven temporal lateral
++    # accelerations, then seven temporal rolls. JSON inference is positional;
++    # exporting DataFrame insertion order would silently swap these inputs.
++    select!(data, Symbol.(vcat(
++      ["v_ego", "actual_lateral_accel", "lateral_jerk", "roll"],
++      temporal_lat_accel_cols,
++      temporal_roll_cols,
++      ["torque_output"],
++    )))
+ 
+     println(out_streams, f"Loaded {nrow(data)} rows")
+     println(out_streams, f"Data {data[sample(1:nrow(data), 20), :]}")

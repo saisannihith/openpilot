@@ -9,22 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from openpilot.tools.lib.logreader import LogReader, ReadMode
-from openpilot.selfdrive.controls.lib.longitudinal_planner import (
-  CARNIVAL_PRE_RED_STOP_EVIDENCE_HOLD_TIME,
-  CARNIVAL_PRE_RED_STOP_EVIDENCE_MAX_LENGTH,
-  CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_BRAKE,
-  CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_DROP,
-  CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_LENGTH,
-  CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_RATIO,
-  CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_SPEED,
-  CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL,
-  RADAR_STANDSTILL_GAP_SETTLE_MAX_EXTRA_GAP,
-  RADAR_STANDSTILL_GAP_SETTLE_MAX_LATERAL_OFFSET,
-  RADAR_STANDSTILL_GAP_SETTLE_MAX_LEAD_SPEED,
-  get_carnival_red_light_stop_line_decel,
-  LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE,
-  update_carnival_lone_high_speed_red_light_suppression,
-)
 
 
 def safe_attr(obj: Any, name: str, default: Any = None) -> Any:
@@ -233,7 +217,7 @@ def summarize_stop(group: list[Sample]) -> dict[str, Any]:
     "shouldStopFrames": sum(s.should_stop for s in use),
     "redLightFrames": sum(s.red_light for s in use),
     "forcingStopFrames": sum(s.forcing_stop for s in use),
-    "sources": sorted(set(s.source for s in use)),
+    "sources": sorted({s.source for s in use}),
   }
 
 
@@ -339,13 +323,6 @@ def summarize_stop_releases(samples: list[Sample]) -> list[dict[str, Any]]:
     ego_move = next((s for s in window if s.v_ego >= 0.75), None)
     move_time = None if ego_move is None else ego_move.t
     max_early_plan_accel = max((s.plan_accel for s in window[:25]), default=0.0)
-    gap_settle_like = (
-      start.lead_status and
-      start.standstill and
-      start.lead_d_rel <= 3.0 + RADAR_STANDSTILL_GAP_SETTLE_MAX_EXTRA_GAP + 3.0 and
-      abs(start.lead_y_rel) <= RADAR_STANDSTILL_GAP_SETTLE_MAX_LATERAL_OFFSET and
-      abs(start.lead_v_lead) <= max(RADAR_STANDSTILL_GAP_SETTLE_MAX_LEAD_SPEED, 0.2)
-    )
     manual = next((
       s for s in window
       if (s.brake_pressed or s.gas_pressed) and (move_time is None or s.t < move_time)
@@ -365,9 +342,6 @@ def summarize_stop_releases(samples: list[Sample]) -> list[dict[str, Any]]:
       "startPlanAccel": round(start.plan_accel, 3),
       "startCmdAccel": round(start.cmd_accel, 3),
       "maxEarlyPlanAccel": round(max_early_plan_accel, 3),
-      "gapSettleLikeRelease": gap_settle_like,
-      "currentGapSettleFloorAccel": round(CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL, 3),
-      "currentGapSettleFloorWouldLiftAccel": bool(gap_settle_like and max_early_plan_accel < CARNIVAL_RADAR_STANDSTILL_GAP_SETTLE_ACCEL),
       "egoMoveDelay": None if ego_move is None else round(ego_move.t - start.t, 2),
       "egoMoveLongControlState": None if ego_move is None else ego_move.long_control_state,
       "manualOverrideBeforeMoveDelay": None if manual is None else round(manual.t - start.t, 2),
@@ -409,171 +383,18 @@ def summarize_accel_jumps(samples: list[Sample]) -> list[dict[str, Any]]:
   return jumps[:80]
 
 
-def summarize_current_red_light_gate(samples: list[Sample]) -> dict[str, Any]:
-  class CP:
-    carFingerprint = "KIA_CARNIVAL_4TH_GEN"
-
-  cap = -LONE_HIGH_SPEED_RED_LIGHT_MAX_BRAKE
-  suppressed = False
-  previous_route: str | None = None
-  previous_segment: int | None = None
-  summary: dict[str, Any] = {
-    "capAccel": round(cap, 3),
-    "redNoLeadNoModelStopFrames": 0,
-    "currentSuppressedFrames": 0,
-    "loggedBelowCurrentCapFrames": 0,
-    "allowedStrongBrakeFrames": 0,
-    "allowedStrongBrakeLongActiveFrames": 0,
-    "allowedStrongBrakeLongActiveEnabledFrames": 0,
-    "stopLineEvidenceFrames": 0,
-    "suppressedExamples": [],
-    "allowedStrongBrakeExamples": [],
-    "stopLineEvidenceExamples": [],
+def summarize_red_light_observations(samples: list[Sample]) -> dict[str, Any]:
+  frames = [sample for sample in samples if sample.red_light or sample.forcing_stop or sample.model_should_stop]
+  hard_brakes = [sample for sample in frames if sample.long_active and sample.cmd_accel <= -1.2]
+  return {
+    "frames": len(frames),
+    "longActiveFrames": sum(sample.long_active for sample in frames),
+    "modelShouldStopFrames": sum(sample.model_should_stop for sample in frames),
+    "forcingStopFrames": sum(sample.forcing_stop for sample in frames),
+    "leadFrames": sum(sample.lead_status for sample in frames),
+    "hardBrakeFrames": len(hard_brakes),
+    "hardBrakeExamples": [event_dict(sample) for sample in hard_brakes[:12]],
   }
-
-  for sample in sorted(samples, key=lambda s: (s.route, s.segment, s.t)):
-    if previous_route != sample.route or previous_segment != sample.segment:
-      suppressed = False
-      previous_route = sample.route
-      previous_segment = sample.segment
-
-    lead_control_active = bool(sample.tracking_lead or sample.lead_status)
-    stop_line_decel = get_carnival_red_light_stop_line_decel(
-      CP,
-      sample.v_ego,
-      sample.red_light,
-      sample.model_should_stop,
-      lead_control_active,
-      sample.forcing_stop,
-      sample.forcing_stop_length,
-    )
-    suppressed = update_carnival_lone_high_speed_red_light_suppression(
-      CP,
-      sample.v_ego,
-      sample.red_light,
-      sample.model_should_stop,
-      lead_control_active,
-      sample.forcing_stop,
-      suppressed,
-      sample.forcing_stop_length,
-    )
-
-    risk_context = (
-      sample.red_light and
-      not lead_control_active and
-      not sample.model_should_stop and
-      sample.v_ego >= 8.0
-    )
-    if not risk_context:
-      continue
-
-    summary["redNoLeadNoModelStopFrames"] += 1
-    if stop_line_decel is not None:
-      summary["stopLineEvidenceFrames"] += 1
-      if len(summary["stopLineEvidenceExamples"]) < 12:
-        summary["stopLineEvidenceExamples"].append({
-          "route": sample.route,
-          "segment": sample.segment,
-          "t": round(sample.t, 2),
-          "vEgo": round(sample.v_ego, 2),
-          "forcingStop": sample.forcing_stop,
-          "forcingStopLength": round(sample.forcing_stop_length, 1),
-          "requiredDecel": round(stop_line_decel, 3),
-          "loggedPlanAccel": round(sample.plan_accel, 3),
-          "loggedCmdAccel": round(sample.cmd_accel, 3),
-          "longActive": sample.long_active,
-          "enabled": sample.enabled,
-        })
-    if suppressed:
-      summary["currentSuppressedFrames"] += 1
-      if sample.plan_accel < cap:
-        summary["loggedBelowCurrentCapFrames"] += 1
-        if len(summary["suppressedExamples"]) < 12:
-          summary["suppressedExamples"].append({
-            "route": sample.route,
-            "segment": sample.segment,
-            "t": round(sample.t, 2),
-            "vEgo": round(sample.v_ego, 2),
-            "forcingStop": sample.forcing_stop,
-            "forcingStopLength": round(sample.forcing_stop_length, 1),
-            "loggedPlanAccel": round(sample.plan_accel, 3),
-            "loggedCmdAccel": round(sample.cmd_accel, 3),
-            "currentCapAccel": round(cap, 3),
-            "longActive": sample.long_active,
-            "enabled": sample.enabled,
-          })
-    elif sample.plan_accel <= -1.2:
-      summary["allowedStrongBrakeFrames"] += 1
-      if sample.long_active and sample.cmd_accel <= -1.2:
-        summary["allowedStrongBrakeLongActiveFrames"] += 1
-        if sample.enabled:
-          summary["allowedStrongBrakeLongActiveEnabledFrames"] += 1
-      if len(summary["allowedStrongBrakeExamples"]) < 12:
-        summary["allowedStrongBrakeExamples"].append({
-          "route": sample.route,
-          "segment": sample.segment,
-          "t": round(sample.t, 2),
-          "vEgo": round(sample.v_ego, 2),
-          "forcingStop": sample.forcing_stop,
-          "forcingStopLength": round(sample.forcing_stop_length, 1),
-          "loggedPlanAccel": round(sample.plan_accel, 3),
-          "loggedCmdAccel": round(sample.cmd_accel, 3),
-          "longActive": sample.long_active,
-          "enabled": sample.enabled,
-        })
-
-  return summary
-
-
-def pre_red_stop_context_keys(samples: list[Sample]) -> set[tuple[str, int, float]]:
-  keys: set[tuple[str, int, float]] = set()
-  previous_route: str | None = None
-  previous_segment: int | None = None
-  start_length: float | None = None
-  start_t = 0.0
-  evidence_until = 0.0
-
-  for sample in sorted(samples, key=lambda s: (s.route, s.segment, s.t)):
-    if sample.route != previous_route or sample.segment != previous_segment:
-      previous_route = sample.route
-      previous_segment = sample.segment
-      start_length = None
-      start_t = sample.t
-      evidence_until = 0.0
-
-    valid_length = (
-      math.isfinite(sample.forcing_stop_length) and
-      CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_LENGTH <= sample.forcing_stop_length <= CARNIVAL_PRE_RED_STOP_EVIDENCE_MAX_LENGTH
-    )
-    if sample.red_light:
-      if sample.t < evidence_until:
-        keys.add((sample.route, sample.segment, sample.t))
-      continue
-    if sample.forcing_stop or not valid_length or sample.v_ego < CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_SPEED:
-      start_length = None
-      start_t = sample.t
-      continue
-
-    if start_length is None or sample.forcing_stop_length > start_length + 10.0:
-      start_length = sample.forcing_stop_length
-      start_t = sample.t
-
-    elapsed = max(0.0, sample.t - start_t)
-    model_drop = max(0.0, start_length - sample.forcing_stop_length)
-    distance_travelled = max(1.0, sample.v_ego * max(elapsed, 0.05))
-    drop_ratio = model_drop / distance_travelled
-    braking_evidence = sample.plan_accel <= -CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_BRAKE
-    if (
-      braking_evidence and
-      model_drop >= CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_DROP and
-      drop_ratio >= CARNIVAL_PRE_RED_STOP_EVIDENCE_MIN_RATIO
-    ):
-      evidence_until = sample.t + CARNIVAL_PRE_RED_STOP_EVIDENCE_HOLD_TIME
-
-    if sample.t < evidence_until:
-      keys.add((sample.route, sample.segment, sample.t))
-
-  return keys
 
 
 def summarize_software_metadata(metadata: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -603,25 +424,20 @@ def summarize_software_metadata(metadata: list[dict[str, Any]]) -> list[dict[str
 
 def analyze(samples: list[Sample], software_metadata: list[dict[str, Any]] | None = None) -> dict[str, Any]:
   stop_groups = group_by_gap(samples, lambda s: s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop, max_gap=1.5)
-  pre_red_context = pre_red_stop_context_keys(samples)
   no_context_brakes = [
     event_dict(s) for s in samples
     if s.long_active and s.v_ego >= 12.0 and s.cmd_accel <= -1.8 and
-    not s.lead_status and not s.red_light and not s.forcing_stop and not s.should_stop and not s.model_should_stop and
-    (s.route, s.segment, s.t) not in pre_red_context
+    not s.lead_status and not s.red_light and not s.forcing_stop and not s.should_stop and not s.model_should_stop
   ][:80]
   stop_context_brakes = [
     event_dict(s) for s in samples
     if s.long_active and s.v_ego >= 12.0 and s.cmd_accel <= -1.8 and
-    not s.lead_status and (
-      s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop or
-      (s.route, s.segment, s.t) in pre_red_context
-    )
+    not s.lead_status and (s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop)
   ][:80]
   return {
     "samples": len(samples),
-    "routes": sorted(set(s.route for s in samples)),
-    "segments": len(set((s.route, s.segment) for s in samples)),
+    "routes": sorted({s.route for s in samples}),
+    "segments": len({(s.route, s.segment) for s in samples}),
     "software": summarize_software_metadata(software_metadata or []),
     "leadDepartureOpportunities": summarize_lead_departures(samples),
     "stopReleaseOpportunities": summarize_stop_releases(samples),
@@ -629,7 +445,7 @@ def analyze(samples: list[Sample], software_metadata: list[dict[str, Any]] | Non
     "stopContextHighwayHardBrakes": stop_context_brakes,
     "stopEpisodes": [summarize_stop(group) for group in stop_groups],
     "accelJumps": summarize_accel_jumps(samples),
-    "currentRedLightGateAudit": summarize_current_red_light_gate(samples),
+    "redLightObservations": summarize_red_light_observations(samples),
   }
 
 

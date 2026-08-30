@@ -777,13 +777,13 @@ def analyze_route(route: str, files: list[Path], *, compact: bool = False) -> Ro
     ))))
   recommendations: list[dict[str, Any]] = []
   if missed_stop_events:
-    recommendations.append({"target": "stop-hold distance", "delta": "+0.1 m maximum", "confidence": "medium",
+    recommendations.append({"target": "StarPilot stop evidence", "delta": "review route", "confidence": "medium",
                             "reason": f"{missed_stop_events} driver-brake stop interventions", "autoApply": False,
-                            "codePath": "selfdrive/controls/lib/carnival_intersection_controller.py"})
+                            "codePath": "selfdrive/controls/lib/longitudinal_planner.py"})
   if low_speed_creep_samples:
-    recommendations.append({"target": "stop-hold brake", "delta": "+0.05 m/s^2 maximum", "confidence": "high",
+    recommendations.append({"target": "StarPilot stop release", "delta": "review route", "confidence": "high",
                             "reason": f"{low_speed_creep_samples} low-speed creep samples", "autoApply": False,
-                            "codePath": "selfdrive/controls/lib/carnival_intersection_controller.py"})
+                            "codePath": "selfdrive/controls/lib/longcontrol.py"})
   if report.lateral.steering_temp_events:
     recommendations.append({"target": "EPS predictive risk onset", "delta": "-0.02 maximum", "confidence": "medium",
                             "reason": f"{report.lateral.steering_temp_events} temporary steering events", "autoApply": False,
@@ -791,11 +791,11 @@ def analyze_route(route: str, files: list[Path], *, compact: bool = False) -> Ro
   elif report.lateral.steer_saturated_events and report.lateral.steering_temp_events == 0:
     recommendations.append({"target": "curve speed", "delta": "-2% maximum", "confidence": "medium",
                             "reason": f"{report.lateral.steer_saturated_events} saturation events without EPS faults", "autoApply": False,
-                            "codePath": "selfdrive/controls/lib/longitudinal_planner.py"})
+                            "codePath": "starpilot/controls/lib/curve_speed_controller.py"})
   if false_brake_events:
     recommendations.append({"target": "radar confirmation gate", "delta": "+1 confirmation frame maximum", "confidence": "medium",
                             "reason": f"{false_brake_events} uncorroborated hard-brake events", "autoApply": False,
-                            "codePath": "selfdrive/controls/lib/carnival_confidence.py"})
+                            "codePath": "opendbc/car/hyundai/radar_interface.py"})
   if not recommendations:
     recommendations.append({"target": "none", "delta": "0", "confidence": "high",
                             "reason": "no bounded change justified by this route", "autoApply": False, "codePath": ""})

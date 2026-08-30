@@ -6,9 +6,9 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.widgets import DialogResult, Widget
+from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog, alert_dialog
-from openpilot.system.ui.widgets.list_view import button_item, dual_button_item, toggle_item
+from openpilot.system.ui.widgets.list_view import button_item, toggle_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 
@@ -26,17 +26,16 @@ class CarnivalLayout(Widget):
     self._master = toggle_item(
       lambda: tr("Carnival Enhancements"),
       description=lambda: tr(
-        "Master switch for the six optional Carnival systems below. Saved child choices are restored when re-enabled. "
+        "Master switch for Carnival monitoring and optional assistance tools. Saved child choices are restored when re-enabled. " +
         "Vehicle identification, CAN safety, steering limits, and the base EPS fault guard always remain active."
       ),
       initial_state=self._features_enabled(),
       callback=self._set_master,
     )
-    self._confidence = toggle_item(
-      lambda: tr("Carnival Confidence Governor"),
+    self._confidence = button_item(
+      lambda: tr("Carnival Confidence Monitor"), lambda: tr("VIEW"),
       description=self._confidence_description,
-      initial_state=self._params.get_bool("CarnivalConfidenceGovernor"),
-      callback=lambda state: self._set_feature("CarnivalConfidenceGovernor", state),
+      callback=self._show_confidence,
       enabled=self._features_enabled,
     )
     self._self_tuning = button_item(
@@ -51,18 +50,10 @@ class CarnivalLayout(Widget):
       callback=lambda state: self._set_feature("CarnivalFusionHUD", state),
       enabled=self._features_enabled,
     )
-    self._intersection = toggle_item(
-      lambda: tr("Intersection Stop Controller"),
-      description=self._intersection_description,
-      initial_state=self._params.get_bool("CarnivalIntersectionController"),
-      callback=lambda state: self._set_feature("CarnivalIntersectionController", state),
-      enabled=self._features_enabled,
-    )
-    self._eps = toggle_item(
-      lambda: tr("EPS Fault Predictor"),
+    self._eps = button_item(
+      lambda: tr("EPS Load Monitor"), lambda: tr("VIEW"),
       description=self._eps_description,
-      initial_state=self._params.get_bool("CarnivalEPSPredictor"),
-      callback=lambda state: self._set_feature("CarnivalEPSPredictor", state),
+      callback=self._show_eps,
       enabled=self._features_enabled,
     )
     self._scorecard = button_item(
@@ -79,32 +70,14 @@ class CarnivalLayout(Widget):
       callback=lambda state: self._set_feature("CarnivalAutoAnalyze", state),
       enabled=self._features_enabled,
     )
-    self._auto_apply = toggle_item(
-      lambda: tr("Automatically Apply Bounded Suggestions"),
-      description=lambda: tr(
-        "Only allowlisted follow and stop-distance changes can apply automatically. " +
-        "Steering torque, radar velocity, curve speed, and lane offset stay review-only."
-      ),
-      initial_state=self._params.get_bool("CarnivalAutoTuneApply"),
-      callback=self._set_auto_apply,
-      enabled=lambda: self._features_enabled() and ui_state.is_offroad(),
-    )
-    self._profile_actions = dual_button_item(
-      lambda: tr("APPLY SUGGESTION"), lambda: tr("REVERT LAST"),
-      left_callback=self._apply_profile, right_callback=self._revert_profile,
-      enabled=lambda: self._features_enabled() and ui_state.is_offroad(),
-    )
     self._scroller = Scroller([
       self._master,
       self._confidence,
       self._self_tuning,
       self._fusion_hud,
-      self._intersection,
       self._eps,
       self._scorecard,
       self._auto_analyze,
-      self._auto_apply,
-      self._profile_actions,
     ], line_separator=True, spacing=0)
     ui_state.add_offroad_transition_callback(self._refresh)
 
@@ -118,7 +91,7 @@ class CarnivalLayout(Widget):
   def _set_master(self, state: bool) -> None:
     self._params.put_bool("CarnivalFeaturesEnabled", state)
     if not state:
-      for key in ("CarnivalAnalyzeNow", "CarnivalApplyProfile", "CarnivalRevertProfile", "CarnivalAnalysisRunning"):
+      for key in ("CarnivalAnalyzeNow", "CarnivalAnalysisRunning"):
         self._params.put_bool(key, False)
     self._refresh()
 
@@ -147,11 +120,14 @@ class CarnivalLayout(Widget):
       longitudinal=round(float(state.longitudinalConfidence) * 100), status=str(state.governorState), reason=str(state.reason),
     )
 
+  def _show_confidence(self):
+    gui_app.push_widget(alert_dialog(self._confidence_description()))
+
   def _profile_description(self) -> str:
     profile = self._json_param("CarnivalPendingProfile")
     resolved = profile.get("resolved", {})
     if not resolved:
-      return tr("No bounded change is pending. Each completed route is still scored and saved for review.")
+      return tr("No parameter suggestion is pending. Each completed route is scored and saved for review.")
     summary = ", ".join(f"{key}: {values.get('before')} to {values.get('after')}" for key, values in resolved.items())
     return tr("Pending from {route}: {summary}").format(route=profile.get("route", tr("latest route")), summary=summary)
 
@@ -164,22 +140,16 @@ class CarnivalLayout(Widget):
       cutins=int(state.cutInCandidateCount), radar=tr("stale") if state.radarStale else tr("live"),
     )
 
-  def _intersection_description(self) -> str:
-    state = self._live_state()
-    if state is None:
-      return tr("Owns only the final low-speed stop, hold, and confirmed release. The driving model remains responsible for the high-speed approach.")
-    return tr("State: {state} | Brake hold: {hold}").format(
-      state=str(state.stopState), hold=tr("active") if state.stopHoldActive else tr("inactive"),
-    )
-
   def _eps_description(self) -> str:
     state = self._live_state()
     if state is None:
-      return tr("Predicts sustained EPS load and applies a small taper before the stronger platform safety guard. Steering-limit warnings remain visible.")
-    return tr("EPS risk: {risk}% | Saturation: {sat}% | Torque scale: {scale}%").format(
+      return tr("Reports sustained steering load and saturation for route diagnosis. It never modifies steering commands or hides warnings.")
+    return tr("EPS risk: {risk}% | Saturation: {sat}% | Monitoring only").format(
       risk=round(float(state.epsRisk) * 100), sat=round(float(state.steeringSaturation) * 100),
-      scale=round(float(state.torqueScale) * 100),
     )
+
+  def _show_eps(self):
+    gui_app.push_widget(alert_dialog(self._eps_description()))
 
   def _scorecard_button(self) -> str:
     return tr("RUNNING") if self._params.get_bool("CarnivalAnalysisRunning") else tr("RUN NOW")
@@ -213,68 +183,20 @@ class CarnivalLayout(Widget):
     apply_text = "<br>".join(f"{key}: {value.get('before')} to {value.get('after')}" for key, value in resolved.items())
     content = f"<h1>{tr('Carnival Drive Profile')}</h1><p>{recommendation_text}</p>"
     if apply_text:
-      content += f"<p><b>{tr('Bounded parameter changes')}</b><br>{apply_text}</p>"
+      content += f"<p><b>{tr('Informational parameter suggestions')}</b><br>{apply_text}</p>"
+      content += f"<p>{tr('Suggestions are never applied automatically. StarPilot remains the sole owner of driving behavior.')}</p>"
     gui_app.push_widget(ConfirmDialog(content, tr("OK"), cancel_text="", rich=True))
 
   def _run_analysis(self):
     if self._features_enabled() and ui_state.is_offroad():
       self._params.put_bool("CarnivalAnalyzeNow", True)
 
-  def _apply_profile(self):
-    if not self._features_enabled() or not ui_state.is_offroad():
-      return
-    profile = self._json_param("CarnivalPendingProfile")
-    if not profile.get("resolved"):
-      gui_app.push_widget(alert_dialog(tr("There is no bounded suggestion to apply.")))
-      return
-
-    def confirmed(result: int):
-      if result == DialogResult.CONFIRM:
-        self._params.put_bool("CarnivalApplyProfile", True)
-
-    gui_app.push_widget(ConfirmDialog(
-      tr("Apply the latest allowlisted Carnival profile? A snapshot will be saved for one-tap revert."),
-      tr("Apply"), callback=confirmed,
-    ))
-
-  def _revert_profile(self):
-    if not self._features_enabled() or not ui_state.is_offroad():
-      return
-    if not self._json_param("CarnivalProfileSnapshot"):
-      gui_app.push_widget(alert_dialog(tr("There is no applied Carnival profile to revert.")))
-      return
-    self._params.put_bool("CarnivalRevertProfile", True)
-
-  def _set_auto_apply(self, state: bool):
-    if not self._features_enabled():
-      return
-    if not state:
-      self._params.put_bool("CarnivalAutoTuneApply", False)
-      return
-
-    def confirmed(result: int):
-      enabled = result == DialogResult.CONFIRM
-      self._params.put_bool("CarnivalAutoTuneApply", enabled)
-      self._auto_apply.action_item.set_state(enabled)
-
-    gui_app.push_widget(ConfirmDialog(
-      tr(
-        "Automatically apply only allowlisted follow-time and stop-distance suggestions after completed drives? " +
-        "Steering and radar control values remain review-only."
-      ),
-      tr("Enable"), callback=confirmed,
-    ))
-
   def _refresh(self):
     enabled = self._features_enabled()
     self._master.action_item.set_state(enabled)
     for key, item in (
-      ("CarnivalConfidenceGovernor", self._confidence),
       ("CarnivalFusionHUD", self._fusion_hud),
-      ("CarnivalIntersectionController", self._intersection),
-      ("CarnivalEPSPredictor", self._eps),
       ("CarnivalAutoAnalyze", self._auto_analyze),
-      ("CarnivalAutoTuneApply", self._auto_apply),
     ):
       item.action_item.set_state(enabled and self._params.get_bool(key))
 

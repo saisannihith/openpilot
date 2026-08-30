@@ -7,7 +7,7 @@ import numpy as np
 from cereal import car, messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import Priority, config_realtime_process
-from openpilot.selfdrive.controls.lib.carnival_confidence import CarnivalConfidenceGovernor, CarnivalConfidenceInput
+from openpilot.selfdrive.controls.lib.carnival_confidence import CarnivalConfidenceInput, CarnivalConfidenceMonitor
 
 
 CARNIVAL = "KIA_CARNIVAL_4TH_GEN"
@@ -76,10 +76,9 @@ def main() -> None:
     "controlsState", "selfdriveState", "longitudinalPlan", "starpilotPlan", "liveTracks",
   ], poll="modelV2")
   pm = messaging.PubMaster(["carnivalState"])
-  governor = CarnivalConfidenceGovernor()
+  monitor = CarnivalConfidenceMonitor()
   frame = 0
   features_enabled = params.get_bool("CarnivalFeaturesEnabled")
-  governor_enabled = features_enabled and params.get_bool("CarnivalConfidenceGovernor")
 
   while True:
     sm.update()
@@ -88,12 +87,11 @@ def main() -> None:
     frame += 1
     if frame % 20 == 1:
       features_enabled = params.get_bool("CarnivalFeaturesEnabled")
-      governor_enabled = features_enabled and params.get_bool("CarnivalConfidenceGovernor")
 
     active_car = str(CP.carFingerprint) == CARNIVAL
     lead = _lead(sm["radarState"])
     torque = float(getattr(sm["carControl"].actuators, "torque", 0.0))
-    output = governor.update(CarnivalConfidenceInput(
+    output = monitor.update(CarnivalConfidenceInput(
       active=active_car and bool(getattr(sm["carControl"], "latActive", False) or getattr(sm["carControl"], "longActive", False)),
       lane_confidence=_lane_confidence(sm["modelV2"]),
       road_edge_confidence=_road_edge_confidence(sm["modelV2"]),
@@ -132,10 +130,10 @@ def main() -> None:
     state.radarStale = not bool(sm.alive.get("radarState", False) and sm.valid.get("radarState", False))
     state.stopState = stop_state
     state.stopHoldActive = stop_hold
-    state.governorState = output.governor_state if governor_enabled else "monitor"
+    state.governorState = "monitor"
     state.recommendedSpeedScale = output.recommended_speed_scale
     state.torqueScale = output.torque_scale
-    state.reason = output.reason if governor_enabled else "governor disabled; logging only" if features_enabled else "Carnival enhancements disabled"
+    state.reason = output.reason if features_enabled else "Carnival enhancements disabled"
     state.visionLeadPresent = lead is not None
     state.radarLeadPresent = bool(lead is not None and getattr(lead, "radar", False))
     state.cutInCandidateCount = _cut_in_candidates(sm["liveTracks"])

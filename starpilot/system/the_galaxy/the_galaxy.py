@@ -81,6 +81,7 @@ from openpilot.starpilot.common.longitudinal_mode import (
   set_experimental_mode,
   set_openpilot_long_disabled,
 )
+from openpilot.starpilot.common.nnff_eligibility import enforce_nnff_driving_model_eligibility
 from openpilot.starpilot.common.favorite_slots import (
   FAVORITE_SLOTS_PARAM,
   SETTINGS_CATALOG_PATH,
@@ -5919,9 +5920,11 @@ def setup(app):
                   break
           except Exception:
             pass
+        enforce_nnff_driving_model_eligibility(params, params.get("CarModel"))
       elif key in ("ModelVersion", "DrivingModelVersion"):
         params.put("ModelVersion", str_val)
         params.put("DrivingModelVersion", str_val)
+        enforce_nnff_driving_model_eligibility(params, params.get("CarModel"))
       elif key in CUSTOM_ACCEL_PROFILE_PARAM_KEYS:
         params.put(key, str_val)
         params.put_bool(CUSTOM_ACCEL_PROFILE_INITIALIZED_KEY, True)

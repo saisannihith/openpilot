@@ -201,8 +201,17 @@ class ConditionalChillMode:
     lead_status = bool(getattr(lead, "status", False))
     tracking_lead = bool(getattr(self.starpilot_planner, "tracking_lead", False))
     set_speed_error = max(0.0, v_cruise - v_ego)
+    lead_distance = float(getattr(lead, "dRel", float("inf")))
+    stable_lead_max_distance = min(
+      self.STABLE_LEAD_MAX_DISTANCE,
+      max(35.0, v_ego * self.STABLE_LEAD_MAX_DISTANCE_TIME),
+    )
+    open_road = bool(
+      (not lead_status and not tracking_lead) or
+      (lead_status and lead_distance >= stable_lead_max_distance)
+    )
 
-    if (not lead_status and not tracking_lead and
+    if (open_road and
         v_ego >= starpilot_toggles.conditional_chill_speed and
         set_speed_error >= starpilot_toggles.conditional_chill_speed_margin):
       return CCStatus["SPEED"], False
@@ -213,19 +222,17 @@ class ConditionalChillMode:
     if v_ego < starpilot_toggles.conditional_chill_speed_lead or not lead_status or not tracking_lead:
       return CCStatus["OFF"], False
 
-    lead_distance = float(getattr(lead, "dRel", float("inf")))
     lead_speed = float(getattr(lead, "vLead", 0.0))
     lead_brake = max(0.0, -float(getattr(lead, "aLeadK", 0.0)))
     lead_prob = float(getattr(lead, "modelProb", 0.0))
     closing_speed = max(0.0, v_ego - lead_speed)
     max_closing_speed = max(self.STABLE_LEAD_MAX_CLOSING_SPEED, self.STABLE_LEAD_MAX_CLOSING_RATIO * v_ego)
-    max_distance = min(self.STABLE_LEAD_MAX_DISTANCE, max(35.0, v_ego * self.STABLE_LEAD_MAX_DISTANCE_TIME))
     lead_confident = bool(getattr(lead, "radar", False)) or lead_prob >= self.STABLE_LEAD_MIN_MODEL_PROB
 
     if not lead_confident:
       return CCStatus["OFF"], False
 
-    if lead_distance >= max_distance or lead_speed <= self.STABLE_LEAD_MIN_SPEED:
+    if lead_distance >= stable_lead_max_distance or lead_speed <= self.STABLE_LEAD_MIN_SPEED:
       return CCStatus["OFF"], False
 
     if lead_brake > self.STABLE_LEAD_MAX_BRAKE or closing_speed > max_closing_speed:

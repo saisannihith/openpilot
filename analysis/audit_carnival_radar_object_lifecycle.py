@@ -32,7 +32,7 @@ def extract(raw: int, start: int, size: int, signed: bool = False) -> int:
 def decode(dat: bytes, offset: int) -> RadarObject:
   raw = int.from_bytes(dat, "little")
   return RadarObject(
-    extract(raw, offset + 42, 8), extract(raw, offset + 51, 4), extract(raw, offset + 55, 4),
+    extract(raw, offset + 42, 8), extract(raw, offset + 51, 4), extract(raw, offset + 55, 3),
     extract(raw, offset + 64, 13) * 0.05, extract(raw, offset + 78, 11, True) * 0.05,
     extract(raw, offset + 91, 11, True) * 0.05 + 2.4, extract(raw, offset + 124, 4),
   )

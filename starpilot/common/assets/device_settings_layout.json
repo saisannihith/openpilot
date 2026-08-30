@@ -4722,29 +4722,6 @@
         "settings_tier": "advanced"
       },
       {
-        "key": "LaneCenteringRoadAware",
-        "label": "Road-Aware Lane Position",
-        "description": "Use sustained multi-distance lane and road-edge agreement to add a small outside-lane offset. A manual lane offset disables this behavior, and ambiguous, narrow-shoulder, or interior lanes remain centered.",
-        "picker_description": "Adds a conservative outer-lane clearance offset.",
-        "data_type": "bool",
-        "ui_type": "toggle",
-        "parent_key": "LaneCentering",
-        "settings_tier": "advanced"
-      },
-      {
-        "key": "LaneCenteringRoadEdgeOffset",
-        "label": "Outer-Lane Offset",
-        "description": "Set the maximum requested offset toward a confirmed outside road edge. Runtime geometry, path uncertainty, and shoulder-clearance gates can reduce it to zero.",
-        "data_type": "float",
-        "ui_type": "numeric",
-        "min": 0.0,
-        "max": 0.2,
-        "step": 0.01,
-        "precision": 2,
-        "parent_key": "LaneCenteringRoadAware",
-        "settings_tier": "advanced"
-      },
-      {
         "key": "LaneCenteringPauseOnSignal",
         "label": "Pause Lane Centering On Turn Signal",
         "description": "Fade lane-centering correction out when a turn signal is active so it does not fight a lane change or turn.",

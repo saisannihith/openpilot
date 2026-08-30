@@ -1,17 +1,7 @@
 from openpilot.tools.carnival.self_tune_profile import (
-  apply_resolved_plan,
   build_delta_plan,
   resolve_values,
-  revert_snapshot,
 )
-
-
-class FakeParams:
-  def __init__(self):
-    self.values = {}
-
-  def put(self, key, value):
-    self.values[key] = str(value)
 
 
 def test_profile_is_empty_without_route_evidence():
@@ -45,16 +35,3 @@ def test_profile_resolution_clips_and_ignores_unknown_keys():
   assert resolved["TrafficFollow"]["after"] == 2.5
   assert "ForceStopDistanceOffset" not in resolved
   assert "UnsafeTorque" not in resolved
-
-
-def test_profile_apply_and_revert_are_allowlisted_transactions():
-  params = FakeParams()
-  resolved = {
-    "StandardFollow": {"before": 1.45, "after": 1.5},
-    "UnsafeTorque": {"before": 1, "after": 99},
-  }
-  snapshot = apply_resolved_plan(params, resolved)
-  assert params.values == {"StandardFollow": "1.5"}
-  assert snapshot["values"] == {"StandardFollow": 1.45}
-  assert revert_snapshot(params, snapshot)
-  assert params.values["StandardFollow"] == "1.45"

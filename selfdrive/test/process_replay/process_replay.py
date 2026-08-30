@@ -29,6 +29,7 @@ from openpilot.selfdrive.test.process_replay.migration import migrate_all
 from openpilot.selfdrive.test.process_replay.capture import ProcessOutputCapture
 from openpilot.tools.lib.logreader import LogIterable
 from openpilot.tools.lib.framereader import FrameReader
+from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles
 
 # Numpy gives different results based on CPU features after version 19
 NUMPY_TOLERANCE = 1e-2
@@ -354,7 +355,10 @@ def get_car_params_callback(rc, pm, msgs, fingerprint):
       with car.CarParams.from_bytes(cached_params_raw) as _cached_params:
         cached_params = _cached_params
 
-    CP = get_car(can_recv, lambda _msgs: None, lambda obd: None, params.get_bool("AlphaLongitudinalEnabled"), False, cached_params=cached_params).CP
+    CP = get_car(can_recv, lambda _msgs: None, lambda obd: None,
+                 params.get_bool("AlphaLongitudinalEnabled"), False, params,
+                 cached_params=cached_params,
+                 starpilot_toggles=get_starpilot_toggles(read_persisted_force_params=True)).CP
 
   params.put("CarParams", CP.to_bytes())
 
