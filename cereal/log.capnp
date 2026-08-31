@@ -2457,6 +2457,15 @@ struct LiveDelayData {
   points @4 :List(Float32);
   calPerc @6 :Int8;
 
+  # Shadow command-to-vehicle longitudinal response estimate. This is diagnostic
+  # evidence only; modeld and the planner continue to use CarParams.
+  longitudinalDelay @7 :Float32;
+  longitudinalDelayEstimate @8 :Float32;
+  longitudinalDelayEstimateStd @9 :Float32;
+  longitudinalValidBlocks @10 :Int32;
+  longitudinalCalPerc @11 :Int8;
+  longitudinalStatus @12 :Status;
+
   enum Status {
     unestimated @0;
     estimated @1;

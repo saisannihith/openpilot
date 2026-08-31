@@ -37,6 +37,24 @@ LAG_CANDIDATE_CORR_THRESHOLD = 0.9
 SMOOTH_K = 5
 SMOOTH_SIGMA = 1.0
 
+LONG_BLOCK_SIZE = 12
+LONG_BLOCK_NUM = 20
+LONG_BLOCK_NUM_NEEDED = 3
+LONG_MOVING_WINDOW_SEC = 45.0
+LONG_MIN_OKAY_WINDOW_SEC = 12.0
+LONG_MIN_RECOVERY_BUFFER_SEC = 1.0
+LONG_MIN_VEGO = 2.0
+LONG_MIN_ABS_COMMAND = 0.12
+LONG_MAX_STEERING_ANGLE = 15.0
+LONG_MIN_NCC = 0.70
+LONG_MAX_LAG = 1.20
+LONG_MAX_LAG_STD = 0.12
+LONG_MIN_COMMAND_RANGE = 0.50
+LONG_MIN_ACCEL_RANGE = 0.25
+LONG_MIN_CONFIDENCE = 0.50
+LONG_DELAY_MIN = 0.05
+LONG_DELAY_MAX = 1.20
+
 
 def masked_symmetric_moving_average(x: np.ndarray, mask: np.ndarray, k: int, sigma: float) -> np.ndarray:
   assert k >= 1 and k % 2 == 1, "k must be positive and odd"
@@ -363,6 +381,123 @@ class LateralLagEstimator:
     return lag, corr, confidence
 
 
+class LongitudinalLagEstimator:
+  """Estimate command-to-vehicle acceleration delay without owning control."""
+  inputs = {"carControl", "carState"}
+
+  def __init__(self, CP: car.CarParams, dt: float,
+               block_count: int = LONG_BLOCK_NUM, min_valid_block_count: int = LONG_BLOCK_NUM_NEEDED,
+               block_size: int = LONG_BLOCK_SIZE, window_sec: float = LONG_MOVING_WINDOW_SEC,
+               okay_window_sec: float = LONG_MIN_OKAY_WINDOW_SEC,
+               min_recovery_buffer_sec: float = LONG_MIN_RECOVERY_BUFFER_SEC,
+               min_vego: float = LONG_MIN_VEGO, min_ncc: float = LONG_MIN_NCC,
+               min_confidence: float = LONG_MIN_CONFIDENCE):
+    self.dt = dt
+    self.window_sec = window_sec
+    self.okay_window_sec = okay_window_sec
+    self.min_recovery_buffer_sec = min_recovery_buffer_sec
+    self.initial_lag = float(np.clip(CP.longitudinalActuatorDelay, LONG_DELAY_MIN, LONG_DELAY_MAX))
+    self.block_count = block_count
+    self.block_size = block_size
+    self.min_valid_block_count = min_valid_block_count
+    self.min_vego = min_vego
+    self.min_ncc = min_ncc
+    self.min_confidence = min_confidence
+    self.enabled = bool(CP.openpilotLongitudinalControl and str(CP.carFingerprint) == "KIA_CARNIVAL_4TH_GEN")
+
+    self.t = 0.0
+    self.long_active = False
+    self.gas_pressed = False
+    self.brake_pressed = False
+    self.standstill = False
+    self.v_ego = 0.0
+    self.a_ego = 0.0
+    self.steering_angle = 0.0
+    self.command_accel = 0.0
+    self.last_invalid_t = 0.0
+    self.last_estimate_t = 0.0
+    self.reset(self.initial_lag, 0)
+
+  def reset(self, initial_lag: float, valid_blocks: int):
+    self.points = Points(int(self.window_sec / self.dt))
+    self.block_avg = BlockAverage(self.block_count, self.block_size, valid_blocks, initial_lag)
+
+  def handle_log(self, t: float, which: str, msg: capnp._DynamicStructReader):
+    if which == "carControl":
+      self.long_active = bool(msg.longActive)
+      self.command_accel = float(msg.actuators.accel)
+    elif which == "carState":
+      self.gas_pressed = bool(msg.gasPressed)
+      self.brake_pressed = bool(msg.brakePressed)
+      self.standstill = bool(msg.standstill)
+      self.v_ego = float(msg.vEgo)
+      self.a_ego = float(msg.aEgo)
+      self.steering_angle = float(msg.steeringAngleDeg)
+    self.t = t
+
+  def update_points(self):
+    finite = np.isfinite((self.command_accel, self.a_ego, self.v_ego, self.steering_angle)).all()
+    sample_valid = bool(
+      self.enabled and self.long_active and not self.gas_pressed and not self.brake_pressed and not self.standstill and
+      self.v_ego >= self.min_vego and abs(self.command_accel) >= LONG_MIN_ABS_COMMAND and
+      abs(self.steering_angle) <= LONG_MAX_STEERING_ANGLE and finite
+    )
+    if not sample_valid:
+      self.last_invalid_t = self.t
+    recovered = self.t - self.last_invalid_t >= self.min_recovery_buffer_sec
+    self.points.update(self.t, self.command_accel, self.a_ego, sample_valid and recovered)
+
+  def update_estimate(self):
+    times, desired, actual, okay = self.points.get()
+    enough_points = self.points.num_okay >= int(self.okay_window_sec / self.dt)
+    enough_excitation = (np.ptp(desired[okay]) >= LONG_MIN_COMMAND_RANGE and
+                         np.ptp(actual[okay]) >= LONG_MIN_ACCEL_RANGE) if np.any(okay) else False
+    if not enough_points or not enough_excitation:
+      return
+
+    if self.last_estimate_t != 0 and times[0] <= self.last_estimate_t:
+      if not np.any(okay & (times > self.last_estimate_t)):
+        return
+
+    desired = masked_symmetric_moving_average(desired, okay, SMOOTH_K, SMOOTH_SIGMA)
+    actual = masked_symmetric_moving_average(actual, okay, SMOOTH_K, SMOOTH_SIGMA)
+    delay, corr, confidence = LateralLagEstimator.actuator_delay(desired, actual, okay, self.dt, LONG_MAX_LAG)
+    if not np.isfinite((delay, corr, confidence)).all():
+      return
+    # Closed-loop command and measured acceleration can correlate at zero delay even when the
+    # physical plant is delayed. A boundary optimum is not identifiable evidence and must never
+    # graduate into the persistent estimate.
+    if delay <= LONG_DELAY_MIN + self.dt or delay >= LONG_MAX_LAG - self.dt:
+      return
+    if corr < self.min_ncc or confidence < self.min_confidence:
+      return
+
+    self.block_avg.update(float(np.clip(delay, LONG_DELAY_MIN, LONG_DELAY_MAX)))
+    self.last_estimate_t = self.t
+
+  def apply_to_msg(self, live_delay: capnp._DynamicStructBuilder):
+    valid_mean, valid_std, current_mean, current_std = self.block_avg.get()
+    if self.block_avg.valid_blocks >= self.min_valid_block_count and np.isfinite((valid_mean, valid_std)).all():
+      status = log.LiveDelayData.Status.invalid if valid_std > LONG_MAX_LAG_STD else log.LiveDelayData.Status.estimated
+    else:
+      status = log.LiveDelayData.Status.unestimated
+
+    live_delay.longitudinalStatus = status
+    live_delay.longitudinalDelay = (float(np.clip(valid_mean, LONG_DELAY_MIN, LONG_DELAY_MAX))
+                                    if status == log.LiveDelayData.Status.estimated else self.initial_lag)
+    if np.isfinite((current_mean, current_std)).all():
+      live_delay.longitudinalDelayEstimate = float(current_mean)
+      live_delay.longitudinalDelayEstimateStd = float(current_std)
+    else:
+      live_delay.longitudinalDelayEstimate = self.initial_lag
+      live_delay.longitudinalDelayEstimateStd = 0.0
+    live_delay.longitudinalValidBlocks = self.block_avg.valid_blocks
+    live_delay.longitudinalCalPerc = min(
+      100 * (self.block_avg.valid_blocks * self.block_size + self.block_avg.idx) //
+      (self.min_valid_block_count * self.block_size), 100,
+    )
+
+
 def retrieve_initial_lag(params: Params, CP: car.CarParams):
   last_lag_data = params.get("LiveDelay")
   last_carparams_data = params.get("CarParamsPrevRoute")
@@ -385,6 +520,28 @@ def retrieve_initial_lag(params: Params, CP: car.CarParams):
   return None
 
 
+def retrieve_initial_longitudinal_lag(params: Params, CP: car.CarParams):
+  last_lag_data = params.get("LiveDelay")
+  last_carparams_data = params.get("CarParamsPrevRoute")
+  if last_lag_data is None or last_carparams_data is None:
+    return None
+
+  try:
+    with log.Event.from_bytes(last_lag_data) as last_lag_msg, car.CarParams.from_bytes(last_carparams_data) as last_CP:
+      if last_CP.carFingerprint != CP.carFingerprint:
+        raise Exception("Car model mismatch")
+      ld = last_lag_msg.liveDelay
+      lag = float(ld.longitudinalDelayEstimate)
+      valid_blocks = int(ld.longitudinalValidBlocks)
+      assert LONG_DELAY_MIN + 1e-3 < lag < LONG_DELAY_MAX - 1e-3, "Boundary longitudinal lag"
+      assert 0 <= valid_blocks <= LONG_BLOCK_NUM, "Invalid longitudinal block count"
+      assert ld.longitudinalStatus != log.LiveDelayData.Status.invalid, "Longitudinal lag estimate is invalid"
+      return lag, valid_blocks
+  except Exception as e:
+    cloudlog.error(f"Failed to retrieve initial longitudinal lag: {e}")
+    return None
+
+
 def main():
   config_realtime_process([0, 1, 2, 3], 5)
 
@@ -397,9 +554,13 @@ def main():
   CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
 
   lag_learner = LateralLagEstimator(CP, 1. / SERVICE_LIST['livePose'].frequency)
+  longitudinal_lag_learner = LongitudinalLagEstimator(CP, 1. / SERVICE_LIST['livePose'].frequency)
   if (initial_lag_params := retrieve_initial_lag(params, CP)) is not None:
     lag, valid_blocks = initial_lag_params
     lag_learner.reset(lag, valid_blocks)
+  if (initial_long_lag_params := retrieve_initial_longitudinal_lag(params, CP)) is not None:
+    lag, valid_blocks = initial_long_lag_params
+    longitudinal_lag_learner.reset(lag, valid_blocks)
 
   sm = sm.extend(['starpilotPlan'])
 
@@ -412,12 +573,16 @@ def main():
         if sm.updated[which]:
           t = sm.logMonoTime[which] * 1e-9
           lag_learner.handle_log(t, which, sm[which])
+          longitudinal_lag_learner.handle_log(t, which, sm[which])
       lag_learner.update_points()
+      longitudinal_lag_learner.update_points()
 
     # 4Hz driven by livePose
     if sm.frame % 5 == 0:
       lag_learner.update_estimate()
+      longitudinal_lag_learner.update_estimate()
       lag_msg = lag_learner.get_msg(sm.all_checks(), DEBUG)
+      longitudinal_lag_learner.apply_to_msg(lag_msg.liveDelay)
       lag_msg_dat = lag_msg.to_bytes()
       pm.send('liveDelay', lag_msg_dat)
 

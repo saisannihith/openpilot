@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 
 from cereal import messaging, log, car
-from openpilot.selfdrive.locationd.lagd import LateralLagEstimator, retrieve_initial_lag, masked_normalized_cross_correlation, \
+from openpilot.selfdrive.locationd.lagd import LateralLagEstimator, LongitudinalLagEstimator, retrieve_initial_lag, \
+                                               retrieve_initial_longitudinal_lag, masked_normalized_cross_correlation, \
                                                BLOCK_NUM_NEEDED, BLOCK_SIZE, MIN_OKAY_WINDOW_SEC, MAX_LAG
 from openpilot.selfdrive.test.process_replay.migration import migrate, migrate_carParams
 from openpilot.selfdrive.locationd.test.test_locationd_scenarios import TEST_ROUTE
@@ -42,6 +43,22 @@ def process_messages(estimator, lag_frames, n_frames, vego=20.0, rejection_thres
     ]
     for t, w, m in msgs:
       estimator.handle_log(t, w, m)
+    estimator.update_points()
+    estimator.update_estimate()
+
+
+def process_longitudinal_messages(estimator, lag_frames, n_frames, vego=20.0, pedal_override=False):
+  for i in range(n_frames):
+    t = i * estimator.dt
+    command = float(0.7 * np.sin(0.8 * t) + 0.25 * np.sin(2.1 * t))
+    actual = float(0.7 * np.sin(0.8 * (t - lag_frames * estimator.dt)) +
+                   0.25 * np.sin(2.1 * (t - lag_frames * estimator.dt)))
+    cc = car.CarControl(longActive=True)
+    cc.actuators.accel = command
+    cs = car.CarState(vEgo=vego, aEgo=actual, steeringAngleDeg=0.0,
+                      gasPressed=pedal_override, brakePressed=False, standstill=False)
+    estimator.handle_log(t, "carControl", cc)
+    estimator.handle_log(t, "carState", cs)
     estimator.update_points()
     estimator.update_estimate()
 
@@ -111,6 +128,43 @@ class TestLagd:
     assert np.allclose(msg.liveDelay.lateralDelayEstimate, estimator.initial_lag)
     assert msg.liveDelay.validBlocks == 0
     assert msg.liveDelay.calPerc == 0
+
+  def test_longitudinal_estimator_and_pedal_rejection(self):
+    mocked_CP = car.CarParams(
+      carFingerprint="KIA_CARNIVAL_4TH_GEN", openpilotLongitudinalControl=True,
+      longitudinalActuatorDelay=0.5,
+    )
+    lag_frames = 7
+    estimator = LongitudinalLagEstimator(
+      mocked_CP, DT, min_recovery_buffer_sec=0.0, min_valid_block_count=1,
+      block_size=4, okay_window_sec=8.0, min_ncc=0.6, min_confidence=0.4,
+    )
+    process_longitudinal_messages(estimator, lag_frames, int(10.0 / DT) + 20)
+    msg = messaging.new_message('liveDelay')
+    estimator.apply_to_msg(msg.liveDelay)
+    assert msg.liveDelay.longitudinalStatus == 'estimated'
+    assert msg.liveDelay.longitudinalDelay == pytest.approx(lag_frames * DT, abs=0.03)
+
+    rejected = LongitudinalLagEstimator(
+      mocked_CP, DT, min_recovery_buffer_sec=0.0, min_valid_block_count=1,
+      block_size=2, okay_window_sec=2.0,
+    )
+    process_longitudinal_messages(rejected, lag_frames, int(5.0 / DT), pedal_override=True)
+    rejected_msg = messaging.new_message('liveDelay')
+    rejected.apply_to_msg(rejected_msg.liveDelay)
+    assert rejected_msg.liveDelay.longitudinalStatus == 'unestimated'
+    assert rejected_msg.liveDelay.longitudinalDelay == pytest.approx(0.5)
+
+  def test_read_saved_longitudinal_params(self):
+    params = Params()
+    CP = car.CarParams(carFingerprint="KIA_CARNIVAL_4TH_GEN", longitudinalActuatorDelay=0.5)
+    msg = messaging.new_message('liveDelay')
+    msg.liveDelay.longitudinalDelayEstimate = 0.42
+    msg.liveDelay.longitudinalValidBlocks = 3
+    msg.liveDelay.longitudinalStatus = 'estimated'
+    params.put("LiveDelay", msg.to_bytes())
+    params.put("CarParamsPrevRoute", CP.as_builder().to_bytes())
+    assert retrieve_initial_longitudinal_lag(params, CP) == pytest.approx((0.42, 3))
 
   def test_estimator_basics(self, subtests):
     for lag_frames in range(LAGD_MAX_LAG_FRAMES - 1):
