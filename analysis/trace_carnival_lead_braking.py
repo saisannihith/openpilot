@@ -13,15 +13,10 @@ from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 CARNIVAL_CONFIRMATION_TRACK_ID_MIN = 0xC4100
 CARNIVAL_CONFIRMATION_TRACK_ID_MAX = 0xC41FF
-CARNIVAL_PRIMARY_TRACK_ID_MIN = 0xC4200
-CARNIVAL_PRIMARY_TRACK_ID_MAX = 0xC42FF
 
 
 def is_carnival_r0100_track(track_id: int) -> bool:
-  return (
-    CARNIVAL_CONFIRMATION_TRACK_ID_MIN <= track_id <= CARNIVAL_CONFIRMATION_TRACK_ID_MAX or
-    CARNIVAL_PRIMARY_TRACK_ID_MIN <= track_id <= CARNIVAL_PRIMARY_TRACK_ID_MAX
-  )
+  return CARNIVAL_CONFIRMATION_TRACK_ID_MIN <= track_id <= CARNIVAL_CONFIRMATION_TRACK_ID_MAX
 
 
 def safe_attr(obj: Any, name: str, default: Any = None) -> Any:

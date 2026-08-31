@@ -55,8 +55,6 @@ ADJACENT_STOP_MAX_Y = 7.5         # m — beyond this is roadside, not an adjace
 ADJACENT_STOP_MAX_D = 110.0       # m
 CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN = 0xC4100
 CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MAX = 0xC41FF
-CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN = 0xC4200
-CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MAX = 0xC42FF
 CARNIVAL_4TH_GEN_CONFIRMATION_DIST_SCALE = 0.22
 CARNIVAL_4TH_GEN_CONFIRMATION_DIST_FLOOR = 4.0
 CARNIVAL_4TH_GEN_CONFIRMATION_Y_STD_SCALE = 1.5
@@ -69,14 +67,6 @@ CARNIVAL_4TH_GEN_CONFIRMATION_SWITCH_SCORE_MARGIN = 3.841
 CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_D_STD = 0.25
 CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_Y_STD = 0.25
 CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_V_STD = 0.35
-CARNIVAL_4TH_GEN_VELOCITY_MIN_FRAMES = 8
-CARNIVAL_4TH_GEN_VELOCITY_MAX_ABS_Y = 0.75
-CARNIVAL_4TH_GEN_VELOCITY_MAX_PATH_OFFSET = 0.35
-CARNIVAL_4TH_GEN_VELOCITY_MAX_NIS = 5.991
-CARNIVAL_4TH_GEN_VELOCITY_MAX_RATE_RESIDUAL = 0.75
-CARNIVAL_4TH_GEN_VELOCITY_MAX_MODEL_RESIDUAL = 1.0
-CARNIVAL_4TH_GEN_VELOCITY_BLEND_WEIGHT = 0.35
-CARNIVAL_4TH_GEN_VELOCITY_MAX_CORRECTION = 0.35
 CARNIVAL_4TH_GEN_REACQUIRE_MIN_FRAMES = 8
 CARNIVAL_4TH_GEN_REACQUIRE_MAX_DISTANCE = 25.0
 CARNIVAL_4TH_GEN_REACQUIRE_PATH_OFFSET = 1.1
@@ -101,12 +91,8 @@ ADJACENT_STOP_QUEUE_GAP_M = 5.0   # m — anything stopped beyond the furthest q
                                   # the bar is past it too, so the hint would stop us short
 
 
-def is_carnival_primary_track(identifier: int) -> bool:
-  return CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MIN <= identifier <= CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_MAX
-
-
 def is_carnival_r0100_track(identifier: int) -> bool:
-  return is_carnival_confirmation_track(identifier) or is_carnival_primary_track(identifier)
+  return is_carnival_confirmation_track(identifier)
 
 
 class KalmanParams:
@@ -132,7 +118,6 @@ class Track:
   def __init__(self, identifier: int, v_lead: float, kalman_params: KalmanParams):
     self.identifier = identifier
     self.carnivalR0100 = is_carnival_r0100_track(identifier)
-    self.carnivalPrimary = is_carnival_primary_track(identifier)
     self.cnt = 0
     self.aLeadTau = FirstOrderFilter(_LEAD_ACCEL_TAU, 0.45, DT_MDL)
     self.K_A = kalman_params.A
@@ -418,62 +403,14 @@ def carnival_confirmation_innovation_score(track: Track, lead: capnp._DynamicStr
     return math.inf
 
 
-def carnival_primary_velocity_refinement(track: Track, lead_msg: capnp._DynamicStructReader,
-                                         model_data: capnp._DynamicStructReader, model_v_ego: float) -> float | None:
-  """Fuse one source-qualified R0100 velocity into an associated model lead."""
-  if (not track.carnivalPrimary or not track.measured or
-      track.cnt < CARNIVAL_4TH_GEN_VELOCITY_MIN_FRAMES or
-      abs(track.yRel) > CARNIVAL_4TH_GEN_VELOCITY_MAX_ABS_Y or
-      carnival_confirmation_innovation_score(track, lead_msg, model_v_ego) > CARNIVAL_4TH_GEN_VELOCITY_MAX_NIS):
-    return None
-
-  position = getattr(model_data, "position", None)
-  path_x = list(getattr(position, "x", []))
-  path_y = list(getattr(position, "y", []))
-  object_x = track.dRel + RADAR_TO_CAMERA
-  if len(path_x) < 2 or len(path_x) != len(path_y) or object_x < path_x[0] or object_x > path_x[-1]:
-    return None
-  path_offset = abs(-track.yRel - float(np.interp(object_x, path_x, path_y)))
-  if path_offset > CARNIVAL_4TH_GEN_VELOCITY_MAX_PATH_OFFSET:
-    return None
-
-  history = track.radar_only_distance_history
-  if len(history) < CARNIVAL_4TH_GEN_VELOCITY_MIN_FRAMES:
-    return None
-  samples = np.asarray(history, dtype=float)
-  sample_indices = np.arange(len(samples), dtype=float)
-  centered_indices = sample_indices - np.mean(sample_indices)
-  denominator = float(np.dot(centered_indices, centered_indices)) * DT_MDL
-  if denominator <= 0.0:
-    return None
-  observed_v_rel = float(np.dot(centered_indices, samples - np.mean(samples)) / denominator)
-  if not math.isfinite(observed_v_rel) or abs(track.vRel - observed_v_rel) > CARNIVAL_4TH_GEN_VELOCITY_MAX_RATE_RESIDUAL:
-    return None
-
-  model_v_rel = float(lead_msg.v[0] - model_v_ego)
-  radar_v_rel = float(track.vRel)
-  velocity_residual = radar_v_rel - model_v_rel
-  if abs(velocity_residual) > CARNIVAL_4TH_GEN_VELOCITY_MAX_MODEL_RESIDUAL:
-    return None
-  correction = float(np.clip(
-    CARNIVAL_4TH_GEN_VELOCITY_BLEND_WEIGHT * velocity_residual,
-    -CARNIVAL_4TH_GEN_VELOCITY_MAX_CORRECTION,
-    CARNIVAL_4TH_GEN_VELOCITY_MAX_CORRECTION,
-  ))
-  return model_v_rel + correction
-
-
 def get_RadarState_from_carnival_confirmation(track: Track, lead_msg: capnp._DynamicStructReader,
-                                              model_data: capnp._DynamicStructReader, v_ego: float,
-                                              model_v_ego: float, model_prob: float):
+                                              v_ego: float, model_v_ego: float, model_prob: float):
   model_v_rel = float(lead_msg.v[0] - model_v_ego)
-  refinement = carnival_primary_velocity_refinement(track, lead_msg, model_data, model_v_ego)
-  v_rel = model_v_rel if refinement is None else refinement
-  v_lead = float(v_ego + v_rel)
+  v_lead = float(v_ego + model_v_rel)
   return {
     "dRel": float(track.dRel),
     "yRel": float(track.yRel),
-    "vRel": v_rel,
+    "vRel": model_v_rel,
     "vLead": v_lead,
     "vLeadK": v_lead,
     "aLeadK": float(lead_msg.a[0]),
@@ -515,10 +452,6 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, model_
       confirmation_candidates.append((score, identifier, track))
   if confirmation_candidates:
     best_score, _, best_track = min(confirmation_candidates, key=lambda candidate: candidate[0])
-    primary = min((candidate for candidate in confirmation_candidates if candidate[2].carnivalPrimary),
-                  default=None, key=lambda candidate: candidate[0])
-    if primary is not None:
-      return primary[2]
     preferred = next((candidate for candidate in confirmation_candidates
                       if candidate[1] == preferred_track_id), None)
     # A new object must improve the normalized innovation by a chi-square 95%
@@ -594,8 +527,7 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
   lead_dict = {'status': False}
   if track is not None:
     if track.carnivalR0100:
-      lead_dict = get_RadarState_from_carnival_confirmation(track, lead_msg, model_data, v_ego,
-                                                            model_v_ego, filtered_lead_prob)
+      lead_dict = get_RadarState_from_carnival_confirmation(track, lead_msg, v_ego, model_v_ego, filtered_lead_prob)
     else:
       lead_dict = track.get_RadarState(filtered_lead_prob)
   elif (track is None) and ready and (filtered_lead_prob > lead_detection_probability):

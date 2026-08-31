@@ -15,9 +15,7 @@ from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 
 TRACK_MIN = 0xC4100
-TRACK_MAX = 0xC42FF
-PRIMARY_TRACK_MIN = 0xC4200
-PRIMARY_TRACK_MAX = 0xC42FF
+TRACK_MAX = 0xC41FF
 HISTORY_SECONDS = 1.0
 FUTURE_MIN_SECONDS = 0.25
 FUTURE_MAX_SECONDS = 0.60
@@ -34,7 +32,6 @@ class Policy:
   max_ttc: float
   blend_weight: float
   max_correction: float
-  primary_only: bool = False
   min_distance: float = 0.0
   bidirectional: bool = False
   max_model_residual: float = math.inf
@@ -47,18 +44,6 @@ POLICIES = (
   Policy("balanced", 12, 6, 1.5, 1.0, 90.0, 6.0, 0.35, 3.0),
   Policy("strict", 16, 8, 1.0, 1.5, 75.0, 5.0, 0.30, 2.5),
   Policy("very_strict", 20, 12, 0.75, 2.0, 60.0, 4.0, 0.25, 2.0),
-  Policy("primary_balanced", 12, 6, 1.0, 0.75, 80.0, 6.0, 0.30, 1.5, True),
-  Policy("primary_strict", 16, 8, 0.75, 1.0, 65.0, 5.0, 0.25, 1.25, True),
-  Policy("primary_far_fixed", 8, 6, 0.75, 0.0, 60.0, math.inf, 0.35, 0.35,
-         True, 40.0, True, 1.0),
-  Policy("primary_global_bounded", 8, 6, 0.75, 0.0, 220.0, math.inf, 0.35, 0.35,
-         primary_only=True, bidirectional=True, max_model_residual=1.0),
-  Policy("primary_global_tight", 8, 6, 0.75, 0.0, 220.0, math.inf, 0.25, 0.25,
-         primary_only=True, bidirectional=True, max_model_residual=0.75),
-  Policy("primary_direct_consistent", 8, 6, 0.75, 0.0, 220.0, math.inf, 1.0, math.inf,
-         primary_only=True, direct_radar=True),
-  Policy("primary_direct_with_radar_acceleration", 8, 6, 0.75, 0.0, 220.0, math.inf, 1.0, math.inf,
-         primary_only=True, direct_radar=True, relative_accel_forecast=True),
 )
 
 
@@ -122,8 +107,6 @@ def extract(raw, start, size, signed=False):
 
 
 def policy_output(policy, sample):
-  if policy.primary_only and not PRIMARY_TRACK_MIN <= sample["trackId"] <= PRIMARY_TRACK_MAX:
-    return None
   if sample["trackFrames"] < policy.min_track_frames or sample["selectedFrames"] < policy.min_selected_frames:
     return None
   if sample["observedVRel"] is None or abs(sample["rawVRel"] - sample["observedVRel"]) > policy.max_consensus_residual:
@@ -322,8 +305,8 @@ def main():
       ),
     })
 
-  def group_diagnostics(primary_only):
-    group = [sample for sample in samples if (PRIMARY_TRACK_MIN <= sample["trackId"] <= PRIMARY_TRACK_MAX) == primary_only]
+  def group_diagnostics():
+    group = samples
     observed = [sample for sample in group if sample["observedVRel"] is not None]
     residuals = [abs(sample["rawVRel"] - sample["observedVRel"]) for sample in observed]
     model_deltas = [sample["modelVRel"] - max(sample["rawVRel"], sample["observedVRel"]) for sample in observed]
@@ -341,8 +324,7 @@ def main():
     "matchedSamples": len(samples),
     "policies": reports,
     "trackGroups": {
-      "confirmation": group_diagnostics(False),
-      "primary": group_diagnostics(True),
+      "r0100": group_diagnostics(),
     },
     "conclusion": "no_policy_actuation_ready" if not any(item["actuationReady"] for item in reports) else "candidate_ready",
   }

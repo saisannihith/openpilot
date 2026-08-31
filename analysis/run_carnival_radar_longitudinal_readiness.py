@@ -14,11 +14,6 @@ from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 CARNIVAL_CONFIRMATION_TRACK_ID_MIN = 0xC4100
 CARNIVAL_CONFIRMATION_TRACK_ID_MAX = 0xC41FF
-CARNIVAL_PRIMARY_TRACK_ID_MIN = 0xC4200
-CARNIVAL_PRIMARY_TRACK_ID_MAX = 0xC42FF
-CARNIVAL_VELOCITY_BLEND_MAX_RESIDUAL = 0.75
-CARNIVAL_VELOCITY_BLEND_WEIGHT = 0.5
-CARNIVAL_VELOCITY_BLEND_MIN_FRAMES = 8
 
 
 def safe_attr(obj: Any, name: str, default: Any = None) -> Any:
@@ -63,12 +58,7 @@ def segment_number(path: Path) -> int:
 
 
 def is_confirmation_track(track_id: int) -> bool:
-  return (CARNIVAL_CONFIRMATION_TRACK_ID_MIN <= int(track_id) <= CARNIVAL_CONFIRMATION_TRACK_ID_MAX or
-          CARNIVAL_PRIMARY_TRACK_ID_MIN <= int(track_id) <= CARNIVAL_PRIMARY_TRACK_ID_MAX)
-
-
-def is_primary_track(track_id: int) -> bool:
-  return CARNIVAL_PRIMARY_TRACK_ID_MIN <= int(track_id) <= CARNIVAL_PRIMARY_TRACK_ID_MAX
+  return CARNIVAL_CONFIRMATION_TRACK_ID_MIN <= int(track_id) <= CARNIVAL_CONFIRMATION_TRACK_ID_MAX
 
 
 def current_commit() -> str:
@@ -155,10 +145,6 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
   raw_vs_derived_vrel_errors: list[float] = []
   matched_raw_vs_derived_vrel_errors: list[float] = []
   matched_model_vs_derived_vrel_errors: list[float] = []
-  matched_blended_vs_derived_vrel_errors: list[float] = []
-  blend_eligible_raw_vs_derived_vrel_errors: list[float] = []
-  blend_eligible_model_vs_derived_vrel_errors: list[float] = []
-  blend_eligible_blended_vs_derived_vrel_errors: list[float] = []
   confirmation_examples: list[dict[str, Any]] = []
   low_speed_stop_examples: list[dict[str, Any]] = []
   raw_velocity_error_examples: list[dict[str, Any]] = []
@@ -281,26 +267,11 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
               raw_error = abs(raw_vrel - derived_vrel)
               matched_raw_vs_derived_vrel_errors.append(raw_error)
 
-              # Current runtime publishes model velocity for an R0100-confirmed
-              # lead. Score a hypothetical bounded blend without pretending it
-              # was already active in radarState.
+              # Current runtime intentionally publishes model velocity for an
+              # R0100-associated lead; raw velocity remains association evidence.
               model_vrel = state_vrel
               model_error = abs(model_vrel - derived_vrel)
               matched_model_vs_derived_vrel_errors.append(model_error)
-
-              blend_eligible = (
-                is_primary_track(track_id) and
-                live_track_ages.get(track_id, 0) >= CARNIVAL_VELOCITY_BLEND_MIN_FRAMES and
-                abs(raw_vrel - model_vrel) <= CARNIVAL_VELOCITY_BLEND_MAX_RESIDUAL
-              )
-              if blend_eligible:
-                candidate_blended_vrel = (
-                  model_vrel + CARNIVAL_VELOCITY_BLEND_WEIGHT * (raw_vrel - model_vrel)
-                )
-                blend_eligible_raw_vs_derived_vrel_errors.append(raw_error)
-                blend_eligible_model_vs_derived_vrel_errors.append(model_error)
-                blend_eligible_blended_vs_derived_vrel_errors.append(abs(candidate_blended_vrel - derived_vrel))
-              matched_blended_vs_derived_vrel_errors.append(abs(state_vrel - derived_vrel))
             if vrel_error > 3.0 and len(raw_velocity_error_examples) < 12:
               example = lead_dict(lead, path, mono_time, start_ns)
               example.update({
@@ -338,21 +309,12 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
     (percentile(raw_vs_state_vrel_errors, 95.0) or 999.0) < 1.0 and
     (percentile(matched_raw_vs_derived_vrel_errors, 95.0) or 999.0) < 1.0
   )
-  bounded_velocity_blend_ready = (
-    len(blend_eligible_blended_vs_derived_vrel_errors) >= 200 and
-    len(blend_eligible_blended_vs_derived_vrel_errors) / max(len(matched_raw_vs_derived_vrel_errors), 1) >= 0.5 and
-    (percentile(blend_eligible_blended_vs_derived_vrel_errors, 95.0) or 999.0) < 1.0 and
-    (percentile(blend_eligible_blended_vs_derived_vrel_errors, 95.0) or 999.0) <
-    (percentile(blend_eligible_model_vs_derived_vrel_errors, 95.0) or 0.0) and
-    (percentile(matched_blended_vs_derived_vrel_errors, 95.0) or 999.0) <=
-    (percentile(matched_model_vs_derived_vrel_errors, 95.0) or 0.0)
-  )
   geometry_tandem_ready = (
     distance_association_ready and
     confirmation_lead_with_live_track_frames > 0 and
     low_speed_confirmation_stop_frames > 0
   )
-  velocity_fusion_ready = velocity_control_ready or bounded_velocity_blend_ready
+  velocity_fusion_ready = geometry_tandem_ready
   tandem_ready = geometry_tandem_ready and velocity_fusion_ready
   visual_radar_track_ready = live_track_frames > 0 and confirmation_point_samples > 0
   unpromoted_radar_track_frames_observed = confirmation_track_without_state_lead_frames > 0
@@ -381,16 +343,6 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
     "rawVsDerivedVRelError": summarize_values(raw_vs_derived_vrel_errors),
     "matchedRawVsDerivedVRelError": summarize_values(matched_raw_vs_derived_vrel_errors),
     "matchedModelVsDerivedVRelError": summarize_values(matched_model_vs_derived_vrel_errors),
-    "matchedBlendedVsDerivedVRelError": summarize_values(matched_blended_vs_derived_vrel_errors),
-    "velocityBlend": {
-      "eligibleSamples": len(blend_eligible_blended_vs_derived_vrel_errors),
-      "eligibleFraction": round(
-        len(blend_eligible_blended_vs_derived_vrel_errors) / max(len(matched_raw_vs_derived_vrel_errors), 1), 4
-      ),
-      "rawVsDerivedError": summarize_values(blend_eligible_raw_vs_derived_vrel_errors),
-      "modelVsDerivedError": summarize_values(blend_eligible_model_vs_derived_vrel_errors),
-      "blendedVsDerivedError": summarize_values(blend_eligible_blended_vs_derived_vrel_errors),
-    },
     "confirmationExamples": confirmation_examples,
     "lowSpeedStopExamples": low_speed_stop_examples,
     "rawVelocityErrorExamples": raw_velocity_error_examples,
@@ -405,10 +357,8 @@ def scan_radar(paths: list[Path]) -> dict[str, Any]:
     "cutInTrackingEvidence": cut_in_tracking_evidence,
     "velocityControlReady": velocity_control_ready,
     "velocityPromotionReady": velocity_control_ready,
-    "boundedVelocityBlendReady": bounded_velocity_blend_ready,
+    "boundedVelocityBlendReady": False,
     "readinessConclusion": (
-      "radar_bounded_velocity_blend_ready"
-      if geometry_tandem_ready and bounded_velocity_blend_ready else
       "radar_confirmed_geometry_model_velocity_only"
       if geometry_tandem_ready else
       "velocity_control_candidate"

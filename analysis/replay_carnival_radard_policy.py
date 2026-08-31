@@ -17,18 +17,12 @@ from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 
 R0100_TRACK_MIN = 0xC4100
-R0100_TRACK_MAX = 0xC42FF
-PRIMARY_TRACK_MIN = 0xC4200
-PRIMARY_TRACK_MAX = 0xC42FF
+R0100_TRACK_MAX = 0xC41FF
 RADAR_TO_CAMERA = 1.52
 
 
 def is_r0100(track_id: int) -> bool:
   return R0100_TRACK_MIN <= track_id <= R0100_TRACK_MAX
-
-
-def is_primary(track_id: int) -> bool:
-  return PRIMARY_TRACK_MIN <= track_id <= PRIMARY_TRACK_MAX
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -186,8 +180,6 @@ def replay_path(path: Path, with_card: bool) -> dict[str, Any]:
       if not is_r0100(track_id):
         continue
       metrics["r0100LeadFrames"] += 1
-      if is_primary(track_id):
-        metrics["primaryLeadFrames"] += 1
       if previous_r0100_id >= 0 and previous_r0100_id != track_id:
         metrics["r0100Switches"] += 1
         if len(switch_examples) < 20:
@@ -209,10 +201,10 @@ def replay_path(path: Path, with_card: bool) -> dict[str, Any]:
       if model_delta is not None and model_delta <= 0.03:
         metrics["modelVelocityCompatible"] += 1
       distinct_model_raw_authority = bool(
-        is_primary(track_id) and raw_delta <= 0.03 and model_delta is not None and
+        raw_delta <= 0.03 and model_delta is not None and
         abs(raw_v_rel - model_v_rel) > 0.03 and selected_model_prob > 1e-6
       )
-      if is_primary(track_id) and raw_delta <= 0.03 and model_delta is not None and abs(raw_v_rel - model_v_rel) > 0.03:
+      if raw_delta <= 0.03 and model_delta is not None and abs(raw_v_rel - model_v_rel) > 0.03:
         # get_lead preserves the filtered model probability for every model-associated
         # lead. Only the low-speed radar override calls get_RadarState() without a
         # probability and therefore publishes exactly zero.
@@ -298,26 +290,25 @@ def replay_path(path: Path, with_card: bool) -> dict[str, Any]:
               raw_error = abs(raw_v_rel - scc_v_rel)
               model_error = abs(model_v_rel - scc_v_rel)
               model_vs_scc.append(model_error)
-              if is_primary(track_id):
-                degradation = raw_error - model_error
-                full_raw_counterfactual_degradation.append(degradation)
-                if degradation > 0.5:
-                  metrics["fullRawCounterfactualHarmfulOver0_5"] += 1
-                  if len(full_raw_harmful_examples) < 20:
-                    full_raw_harmful_examples.append({
-                      "t": mono_time,
-                      "leadIndex": lead_index,
-                      "trackId": track_id,
-                      "dRel": round(safe_float(lead.dRel), 3),
-                      "sccDRel": round(scc_d_rel, 3),
-                      "vEgo": round(v_ego, 3),
-                      "selectedModelProb": round(selected_model_prob, 3),
-                      "sccVRel": round(scc_v_rel, 3),
-                      "rawVRel": round(raw_v_rel, 3),
-                      "modelVRel": round(model_v_rel, 3),
-                      "rawError": round(raw_error, 3),
-                      "modelError": round(model_error, 3),
-                    })
+              degradation = raw_error - model_error
+              full_raw_counterfactual_degradation.append(degradation)
+              if degradation > 0.5:
+                metrics["fullRawCounterfactualHarmfulOver0_5"] += 1
+                if len(full_raw_harmful_examples) < 20:
+                  full_raw_harmful_examples.append({
+                    "t": mono_time,
+                    "leadIndex": lead_index,
+                    "trackId": track_id,
+                    "dRel": round(safe_float(lead.dRel), 3),
+                    "sccDRel": round(scc_d_rel, 3),
+                    "vEgo": round(v_ego, 3),
+                    "selectedModelProb": round(selected_model_prob, 3),
+                    "sccVRel": round(scc_v_rel, 3),
+                    "rawVRel": round(raw_v_rel, 3),
+                    "modelVRel": round(model_v_rel, 3),
+                    "rawError": round(raw_error, 3),
+                    "modelError": round(model_error, 3),
+                  })
               if distinct_model_raw_authority:
                 replay_error = abs(replay_v_rel - scc_v_rel)
                 authority_raw_vs_scc.append(raw_error)
@@ -365,7 +356,7 @@ def replay_path(path: Path, with_card: bool) -> dict[str, Any]:
         "replayed": summary(authority_replay_vs_scc),
         "model": summary(authority_model_vs_scc),
       },
-      "fullRawPrimaryCounterfactualDegradation": summary(full_raw_counterfactual_degradation),
+      "fullRawCounterfactualDegradation": summary(full_raw_counterfactual_degradation),
     },
     "futureVelocityError": {
       "raw": summary(future_raw_errors),
@@ -404,20 +395,12 @@ def main() -> int:
     totals.update(result.get("metrics", {}))
 
   process_pass = bool(results) and all(result["status"] in ("pass", "skip") for result in results)
-  authority_truth_samples = sum(
-    result.get("factorySccError", {}).get("distinctModelMatchedRawAuthority", {}).get("replayed", {}).get("count", 0)
-    for result in results
-  )
-  authority_truth_routes = sum(
-    result.get("factorySccError", {}).get("distinctModelMatchedRawAuthority", {}).get("replayed", {}).get("count", 0) > 0
-    for result in results
-  )
   acceptance = {
     "processReplayPass": process_pass,
-    "primaryPublisherObserved": totals["primaryLeadFrames"] > 0,
-    "independentFactoryTruthSamples": authority_truth_samples,
-    "independentFactoryTruthRoutes": authority_truth_routes,
-    "twoRouteAuthorityProof": authority_truth_routes >= 2 and authority_truth_samples >= 50,
+    "r0100PublisherObserved": totals["r0100LeadFrames"] > 0,
+    "modelLedR0100Frames": totals["modelVelocityCompatible"],
+    "rawVelocityAuthorityFrames": totals["modelMatchedRawAuthority"],
+    "zeroRawVelocityAuthority": totals["modelMatchedRawAuthority"] == 0,
     "harmfulAuthorityRegressionsOver0_5": totals["harmfulAuthorityRegressionsOver0_5"],
     "zeroHarmfulAuthorityRegressions": totals["harmfulAuthorityRegressionsOver0_5"] == 0,
     "highwayRadarOnlyFrames": totals["highwayRadarOnlyFrames"],
@@ -425,8 +408,9 @@ def main() -> int:
   }
   semantic_pass = all((
     acceptance["processReplayPass"],
-    acceptance["primaryPublisherObserved"],
-    acceptance["twoRouteAuthorityProof"],
+    acceptance["r0100PublisherObserved"],
+    acceptance["modelLedR0100Frames"] > 0,
+    acceptance["zeroRawVelocityAuthority"],
     acceptance["zeroHarmfulAuthorityRegressions"],
     acceptance["zeroHighwayRadarOnlyPromotions"],
   ))
@@ -434,8 +418,9 @@ def main() -> int:
   report = {
     "status": "pass" if semantic_pass else "fail",
     "policy": {
-      "velocityAuthority": "decoded raw R0100 primary track inside production qualification envelope",
-      "fallback": "model velocity and acceleration atomically",
+      "geometry": "CRC-checked R0100 distance and lateral position after model association",
+      "velocityAuthority": "model velocity and acceleration for every model-associated R0100 lead",
+      "radarVelocity": "association and low-speed qualification only",
     },
     "files": len(results),
     "acceptance": acceptance,

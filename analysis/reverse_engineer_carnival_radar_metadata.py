@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 
 from openpilot.tools.lib.logreader import LogReader, ReadMode
-from opendbc.car.hyundai.radar_interface import carnival_radar_frame_valid
+from opendbc.car.hyundai.radar_interface import carnival_radar_frame_valid, decode_carnival_radar_object
 
 
 RADAR_TO_CAMERA = 1.52
@@ -27,10 +27,8 @@ MIN_MODEL_LEAD_PROB = 0.35
 NIS_GATE = 11.345
 MIN_STATE_GATE_ROUTES = 5
 MIN_STATE_GATE_SELECTED_SAMPLES = 50_000
-PRIMARY_ADDR = 0x180
-PRIMARY_SLOT = 1
-PRIMARY_QUALITY = 0xFF
-UNKNOWN_BITS = (*range(0, 32), 40, 41, *range(50, 64), 77, 89, 90, *range(102, 106), 114, 115)
+MAX_VALID_COUNT = 0xFF
+UNKNOWN_BITS = (*range(32), 40, 41, *range(50, 64), 77, 89, 90, 102, 103, 113, 114)
 METADATA_WINDOWS = tuple(
   (start, width)
   for width in range(2, 7)
@@ -77,6 +75,7 @@ def decode(t: float, addr: int, dat: bytes) -> list[RadarObject]:
   objects = []
   for slot, offset in ((1, 0), (2, 128)):
     raw = (raw_message >> offset) & ((1 << 128) - 1)
+    decoded = decode_carnival_radar_object(dat, offset)
     objects.append(RadarObject(
       t=t,
       addr=addr,
@@ -85,18 +84,18 @@ def decode(t: float, addr: int, dat: bytes) -> list[RadarObject]:
       prefix_word=extract(raw, 0, 32),
       prefix_byte2=extract(raw, 16, 8),
       prefix_byte3=extract(raw, 24, 8),
-      valid_count=extract(raw, 32, 8),
+      valid_count=decoded.valid_count,
       status_40_41=extract(raw, 40, 2),
-      track_id=extract(raw, 42, 8),
-      metadata_50_63=extract(raw, 50, 14),
-      state_alt_candidate=extract(raw, 51, 4),
-      state_candidate=extract(raw, 55, 3),
-      d_rel=extract(raw, 64, 13) * 0.05,
-      y_rel=extract(raw, 78, 11, True) * 0.05,
-      v_rel=extract(raw, 91, 11, True) * 0.05 + 2.4,
-      yv_rel=extract(raw, 106, 8) * 0.2 - 25.0,
-      a_rel=extract(raw, 116, 8, True) * 0.1,
-      heartbeat=extract(raw, 124, 4),
+      track_id=decoded.raw_track_id,
+      metadata_50_63=decoded.metadata_50_63,
+      state_alt_candidate=decoded.state_alt,
+      state_candidate=decoded.state,
+      d_rel=decoded.d_rel,
+      y_rel=decoded.y_rel,
+      v_rel=decoded.v_rel,
+      yv_rel=decoded.yv_rel,
+      a_rel=decoded.a_rel,
+      heartbeat=decoded.heartbeat,
     ))
   return objects
 
@@ -337,7 +336,7 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
           old = previous.get(track_id)
           if old is not None and 0.0 < obj.t - old.t <= 0.15:
             lifecycle["continuous"] += 1
-            lifecycle["validCountIncrement"] += obj.valid_count == min(old.valid_count + 1, PRIMARY_QUALITY)
+            lifecycle["validCountIncrement"] += obj.valid_count == min(old.valid_count + 1, MAX_VALID_COUNT)
             lifecycle["validCountSame"] += obj.valid_count == old.valid_count
             lifecycle["status40_41Same"] += obj.status_40_41 == old.status_40_41
             lifecycle["heartbeatIncrement"] += ((obj.heartbeat - old.heartbeat) & 0xF) == 1
@@ -409,20 +408,9 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
 
         association_policy["truthSamples"] += 1
         best = min(scored, key=lambda item: item[0])[1]
-        primary_candidates = [item for item in scored
-                              if item[1].addr == PRIMARY_ADDR and item[1].slot == PRIMARY_SLOT and
-                              item[1].valid_count == PRIMARY_QUALITY]
-        current = min(primary_candidates, key=lambda item: item[0])[1] if primary_candidates else best
-
         truth_key = (truth.addr, truth.slot)
         best_key = (best.addr, best.slot)
-        current_key = (current.addr, current.slot)
         association_policy["bestExact"] += best_key == truth_key
-        association_policy["currentExact"] += current_key == truth_key
-        association_policy["currentPrimarySelected"] += bool(primary_candidates)
-        association_policy["primaryChangedBest"] += current_key != best_key
-        association_policy["primaryChangedBestCorrectToWrong"] += best_key == truth_key and current_key != truth_key
-        association_policy["primaryChangedBestWrongToCorrect"] += best_key != truth_key and current_key == truth_key
 
   continuous = lifecycle["continuous"]
   lifecycle_summary = {
@@ -454,16 +442,9 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
     "frameIntegrity": dict(frame_integrity),
     "associationPolicy": {
       "truthSamples": association_policy["truthSamples"],
-      "currentPrimaryPreferenceExact": association_policy["currentExact"],
-      "currentPrimaryPreferenceExactRate": round(
-        association_policy["currentExact"] / max(association_policy["truthSamples"], 1), 6),
       "bestInnovationExact": association_policy["bestExact"],
       "bestInnovationExactRate": round(
         association_policy["bestExact"] / max(association_policy["truthSamples"], 1), 6),
-      "currentPrimarySelected": association_policy["currentPrimarySelected"],
-      "primaryChangedBest": association_policy["primaryChangedBest"],
-      "primaryChangedBestCorrectToWrong": association_policy["primaryChangedBestCorrectToWrong"],
-      "primaryChangedBestWrongToCorrect": association_policy["primaryChangedBestWrongToCorrect"],
     },
     "groups": {name: summarize_group(group) for name, group in sorted(groups.items())},
     "lifecycle": lifecycle_summary,
@@ -519,10 +500,10 @@ def aggregate(routes: dict[str, dict[str, Any]]) -> dict[str, Any]:
     state_reason = "States 3/4 cover independently selected leads consistently across substantial routes."
   elif state_like_field_located and mrr30_state_gate_compatible and not state_gate_evidence_complete:
     verdict = "state_like_field_found_but_state_gate_evidence_incomplete"
-    state_reason = (
-      f"States 3/4 fit this sample, but deployment requires at least {MIN_STATE_GATE_ROUTES} substantial routes "
-      f"and {MIN_STATE_GATE_SELECTED_SAMPLES} independently selected leads."
-    )
+    state_reason = " ".join((
+      f"States 3/4 fit this sample, but deployment requires at least {MIN_STATE_GATE_ROUTES} substantial routes",
+      f"and {MIN_STATE_GATE_SELECTED_SAMPLES} independently selected leads.",
+    ))
   elif state_like_field_located:
     verdict = "state_like_field_found_but_do_not_apply_mrr30_state_gate"
     state_reason = "The field separates active slots, but states 3/4 do not cover independently selected leads consistently."
@@ -575,11 +556,12 @@ def main() -> int:
         "rollingCounter@16 unsigned 8-bit; 99.994% consecutive increments in fresh routes",
       ],
       "provenKinematics": ["trackId", "dRel", "yRel", "vRel"],
-      "decodedDynamics": ["yvRel@106 unsigned 8-bit * 0.2 - 25.0", "aRel@116 signed 8-bit * 0.1"],
+      "candidateDynamics": ["yvRel@104 signed 9-bit * 0.05 + 0.6", "aRel@115 signed 9-bit * 0.1"],
       "decodedLifecycle": ["validCount@32 unsigned 8-bit saturating at 255", "heartbeat@124"],
-      "unresolvedMetadata": "slot-1 class byte 24..31, slot-2 prefix 128..159, object bits 40..41, bits 50..63, and sparse gaps 77, 89..90, 102..105, 114..115",
+      "unresolvedMetadata": "slot-1 class byte 24..31, slot-2 prefix 128..159, object bits 40..41, bits 50..63, and sparse gaps 77, 89..90, 102..103, 113..114",
       "openpilotRequiredRadarPointFields": ["dRel", "yRel", "vRel"],
       "openpilotOptionalRadarPointFields": ["aRel", "yvRel"],
+      "publicationBoundary": "candidate dynamics remain analysis-only until independently validated",
       "notInRadarPointSchema": ["classification", "OEM lane assignment"],
     },
     "aggregate": aggregate(routes),
