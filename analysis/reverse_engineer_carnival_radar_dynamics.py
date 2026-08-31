@@ -28,7 +28,7 @@ class Point:
   track_id: int
   quality: int
   state: int
-  raw_hi: int
+  raw: int
   d_rel: float
   y_rel: float
   v_rel: float
@@ -37,7 +37,9 @@ class Point:
 @dataclass(frozen=True)
 class Sample:
   route: str
-  raw_hi: int
+  raw: int
+  d_rel: float
+  y_rel: float
   v_rel: float
   d_dot: float
   y_dot: float
@@ -87,7 +89,7 @@ def decode(t: float, route: str, segment: str, dat: bytes) -> list[Point]:
     point = Point(
       t=t, route=route, segment=segment,
       track_id=extract(raw, 42, 8), quality=extract(raw, 32, 8), state=extract(raw, 55, 3),
-      raw_hi=raw >> 64,
+      raw=raw,
       d_rel=extract(raw, 64, 13) * 0.05,
       y_rel=extract(raw, 78, 11, True) * 0.05,
       v_rel=extract(raw, 91, 11, True) * 0.05 + 2.4,
@@ -164,14 +166,13 @@ def make_samples(route_sequences: list[list[Point]]) -> list[Sample]:
     for index, point in enumerate(sequence):
       derivatives = [slope(times, field, index) for field in fields]
       if all(value is not None for value in derivatives):
-        result.append(Sample(point.route, point.raw_hi, point.v_rel, *derivatives))
+        result.append(Sample(point.route, point.raw, point.d_rel, point.y_rel, point.v_rel, *derivatives))
   return result
 
 
 def values(samples: list[Sample], start: int, size: int, signed: bool) -> np.ndarray:
-  shift = start - 64
   mask = (1 << size) - 1
-  result = np.asarray([(sample.raw_hi >> shift) & mask for sample in samples], dtype=float)
+  result = np.asarray([(sample.raw >> start) & mask for sample in samples], dtype=float)
   if signed:
     result[result >= (1 << (size - 1))] -= 1 << size
   return result
@@ -226,12 +227,13 @@ def evaluate(samples: list[Sample], start: int, size: int, signed: bool, target_
   return result
 
 
-def search(samples: list[Sample], starts: range, sizes: range, target_name: str, limit: int) -> list[dict[str, Any]]:
+def search(samples: list[Sample], starts: range, sizes: range, target_name: str, limit: int,
+           max_end: int = 124) -> list[dict[str, Any]]:
   search_samples = samples[::max(1, len(samples) // 100000)]
   candidates = []
   for start in starts:
     for size in sizes:
-      if start + size > 124:
+      if start + size > max_end:
         continue
       for signed in (False, True):
         result = evaluate(search_samples, start, size, signed, target_name)
@@ -269,6 +271,10 @@ def main() -> int:
     "routes": route_summary, "samples": len(all_samples),
     "relativeAccelerationSearch": search(all_samples, range(110, 120), range(7, 13), "v_dot", args.top),
     "lateralVelocitySearch": search(all_samples, range(100, 110), range(7, 14), "y_dot", args.top),
+    "prefixDistanceSearch": search(all_samples, range(0, 32), range(4, 17), "d_rel", args.top, max_end=32),
+    "prefixLateralSearch": search(all_samples, range(0, 32), range(4, 17), "y_rel", args.top, max_end=32),
+    "prefixVelocitySearch": search(all_samples, range(0, 32), range(4, 17), "v_rel", args.top, max_end=32),
+    "prefixDistanceRateSearch": search(all_samples, range(0, 32), range(4, 17), "d_dot", args.top, max_end=32),
     "exactAccelerationCandidate": evaluate(all_samples, 115, 9, True, "v_dot"),
     "exactLateralCandidate": evaluate(all_samples, 104, 9, True, "y_dot"),
     "distanceVelocityConsistency": metrics(
@@ -279,6 +285,7 @@ def main() -> int:
       "All candidate fits are leave-one-route-out.",
       "Object histories split on gaps, segment changes, and physical discontinuities.",
       "Derivatives use centered local regression rather than adjacent-frame differencing.",
+      "Prefix searches are bounded to bits 0..31; slot 1 contains the frame CRC/counter while slot 2 remains object metadata.",
       "A correlated field is not control-ready until physical scale and harmful-event behavior are validated.",
     ],
   }

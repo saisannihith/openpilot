@@ -6,6 +6,7 @@ from opendbc.can import CANParser
 from opendbc.can.dbc import DBC as DBCReader
 from opendbc.can.parser import get_raw_value
 from opendbc.car import Bus, structs
+from opendbc.car.crc import CRC16_XMODEM
 from opendbc.car.interfaces import RadarInterfaceBase
 from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags, HYUNDAI_MANDO_FRONT_RADAR_DBC, HYUNDAI_MRREVO14F_RADAR_DBC, \
                                        HYUNDAI_MRR30_RADAR_DBC, HYUNDAI_MRR35_RADAR_DBC
@@ -38,6 +39,7 @@ CARNIVAL_4TH_GEN_LATERAL_VELOCITY_SPEC = (106, 8, 0.2, -25.0)
 CARNIVAL_4TH_GEN_RELATIVE_ACCELERATION_SPEC = (116, 8, 0.1, 0.0)
 CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_Y = 50.0
 CARNIVAL_4TH_GEN_CONFIRMATION_MAX_ABS_V = 60.0
+CARNIVAL_4TH_GEN_FRAME_CHECKSUM_XOR = 0x9F5B
 
 
 def get_little_unsigned(dat: bytes, start: int, size: int) -> int:
@@ -47,6 +49,21 @@ def get_little_unsigned(dat: bytes, start: int, size: int) -> int:
 def get_little_signed(dat: bytes, start: int, size: int) -> int:
   val = get_little_unsigned(dat, start, size)
   return val - (1 << size) if val & (1 << (size - 1)) else val
+
+
+def carnival_radar_frame_checksum(address: int, dat: bytes) -> int:
+  """Hyundai CAN-FD CRC16 for a complete 32-byte R0100 object-bank frame."""
+  crc = 0
+  for value in dat[2:]:
+    crc = ((crc << 8) ^ CRC16_XMODEM[(crc >> 8) ^ value]) & 0xFFFF
+  for value in (address & 0xFF, (address >> 8) & 0xFF):
+    crc = ((crc << 8) ^ CRC16_XMODEM[(crc >> 8) ^ value]) & 0xFFFF
+  return crc ^ CARNIVAL_4TH_GEN_FRAME_CHECKSUM_XOR
+
+
+def carnival_radar_frame_valid(address: int, dat: bytes) -> bool:
+  return (len(dat) == CARNIVAL_4TH_GEN_OBJECT_LEN and
+          int.from_bytes(dat[:2], "little") == carnival_radar_frame_checksum(address, dat))
 
 
 def decode_carnival_confirmation_velocity(dat: bytes, bit_offset: int, _state: int, _state_alt: int) -> float:
@@ -201,6 +218,7 @@ class RadarInterface(RadarInterfaceBase):
     self.carnival_object_probe_last_log = 0.0
     self.carnival_object_probe_seen = 0
     self.carnival_object_probe_valid = 0
+    self.carnival_object_probe_crc_invalid = 0
     self.carnival_confirmation_tracks: dict[int, tuple[float, float, float, float, float, float, bool]] = {}
     self.carnival_confirmation_prev: dict[int, tuple[float, float, float, float, bool]] = {}
     self.carnival_confirmation_persist: dict[int, int] = {}
@@ -271,6 +289,9 @@ class RadarInterface(RadarInterfaceBase):
           continue
 
         self.carnival_object_probe_seen += 1
+        if not carnival_radar_frame_valid(address, dat):
+          self.carnival_object_probe_crc_invalid += 1
+          continue
         for bit_offset in (0, 128):
           obj = decode_carnival_radar_object(dat, bit_offset)
           if not carnival_radar_object_valid(obj):
@@ -335,6 +356,7 @@ class RadarInterface(RadarInterfaceBase):
       f"kinematicsDecoded=YES controlReady=MODEL_FUSED_TARGET_QUALIFIED conflicts={len(conflicting_ids)} ",
       f"seen={self.carnival_object_probe_seen} ",
       f"valid={self.carnival_object_probe_valid}",
+      f" crcInvalid={self.carnival_object_probe_crc_invalid}",
     )))
     self.carnival_object_probe_last_log = now
 

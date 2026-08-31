@@ -28,6 +28,7 @@ from opendbc.car.hyundai.radar_interface import (
   CARNIVAL_4TH_GEN_OBJECT_START_ADDR,
   carnival_radar_object_valid,
   decode_carnival_radar_object,
+  get_little_unsigned,
 )
 from opendbc.car.hyundai.values import CAR, DBC
 from openpilot.tools.lib.logreader import LogReader, ReadMode
@@ -96,8 +97,14 @@ class SccDecoder:
 
 @dataclass
 class ObjectState:
+  address: int
+  slot: int
   track_id: int
   time: int
+  prefix_byte2: int
+  prefix_byte3: int
+  valid_count: int
+  status_40_41: int
   d_rel: float
   y_rel: float
   v_rel: float
@@ -206,6 +213,53 @@ def evaluate_rule(samples: list[dict[str, Any]], routes: set[str], path_threshol
   }
 
 
+def evaluate_oem_status_rule(samples: list[dict[str, Any]], sample_filter,
+                             *, prefix_values: set[int] | None,
+                             status_values: set[int] | None,
+                             states: set[int] | None) -> dict[str, Any]:
+  selected = correct = target_samples = false_promotions = misses = multiple = considered = 0
+  for sample in samples:
+    if not sample_filter(sample):
+      continue
+    considered += 1
+    # In these factory-SCC routes, ACCMode 4 is the only group with reliable
+    # object labels. Matches in other modes are incidental geometry agreement.
+    target = sample["oemTrackId"] if sample["sccGroup"] == "0/0/4/1/0" else None
+    target_samples += target is not None
+    accepted = []
+    for row in sample["candidates"]:
+      if row["address"] != 0x180 or row["slot"] != 1:
+        continue
+      if row["validCount"] != 0xFF:
+        continue
+      if prefix_values is not None and row["prefixByte3"] not in prefix_values:
+        continue
+      if status_values is not None and row["status40_41"] not in status_values:
+        continue
+      if states is not None and row["state"] not in states:
+        continue
+      accepted.append(row)
+    multiple += len(accepted) > 1
+    choice = accepted[0]["trackId"] if accepted else None
+    if choice is not None:
+      selected += 1
+      correct += choice == target
+      false_promotions += target is None or choice != target
+    else:
+      misses += target is not None
+  return {
+    "samples": considered,
+    "targetSamples": target_samples,
+    "selectedSamples": selected,
+    "correctSelections": correct,
+    "precision": round(correct / max(selected, 1), 6),
+    "recall": round(correct / max(target_samples, 1), 6),
+    "falsePromotions": false_promotions,
+    "misses": misses,
+    "multipleCandidates": multiple,
+  }
+
+
 def scan(paths: list[Path]) -> dict[str, Any]:
   decoder = SccDecoder()
   objects: dict[int, ObjectState] = {}
@@ -219,6 +273,8 @@ def scan(paths: list[Path]) -> dict[str, Any]:
   v_errors: list[float] = []
   files_by_route: Counter[str] = Counter()
   car_params_modes: dict[str, set[bool]] = defaultdict(set)
+  oem_metadata: Counter[tuple[Any, ...]] = Counter()
+  other_metadata: Counter[tuple[Any, ...]] = Counter()
 
   for path in paths:
     route = route_name(path)
@@ -249,7 +305,7 @@ def scan(paths: list[Path]) -> dict[str, Any]:
       for address, dat, src in frames:
         if src != 1 or not (CARNIVAL_4TH_GEN_OBJECT_START_ADDR <= address <= CARNIVAL_4TH_GEN_OBJECT_END_ADDR) or len(dat) != 32:
           continue
-        for offset in (0, 128):
+        for slot, offset in ((1, 0), (2, 128)):
           obj = decode_carnival_radar_object(dat, offset)
           if not carnival_radar_object_valid(obj):
             continue
@@ -264,7 +320,12 @@ def scan(paths: list[Path]) -> dict[str, Any]:
               rate_residual = abs((obj.d_rel - previous_distance) / dt - obj.v_rel)
           previous_raw[obj.raw_track_id] = (now, obj.d_rel)
           objects[obj.raw_track_id] = ObjectState(
-            track_id=obj.raw_track_id, time=now, d_rel=obj.d_rel, y_rel=obj.y_rel, v_rel=obj.v_rel,
+            address=address, slot=slot, track_id=obj.raw_track_id, time=now,
+            prefix_byte2=get_little_unsigned(dat, offset + 16, 8),
+            prefix_byte3=get_little_unsigned(dat, offset + 24, 8),
+            valid_count=get_little_unsigned(dat, offset + 32, 8),
+            status_40_41=get_little_unsigned(dat, offset + 40, 2),
+            d_rel=obj.d_rel, y_rel=obj.y_rel, v_rel=obj.v_rel,
             state=obj.state, state_alt=obj.state_alt, quality=obj.quality_byte, metadata=obj.metadata_50_63,
             persistence=persistence, distance_rate_residual=rate_residual,
           )
@@ -286,15 +347,25 @@ def scan(paths: list[Path]) -> dict[str, Any]:
           group_matches[key] += 1
           d_errors.append(d_error)
           v_errors.append(v_error)
+          oem_metadata[(route, segment_number(path), key, oem.address, oem.slot, oem.prefix_byte3,
+                        oem.valid_count, oem.status_40_41, oem.state)] += 1
+        for obj in fresh:
+          if oem is None or obj.track_id != oem.track_id:
+            other_metadata[(route, segment_number(path), key, obj.address, obj.slot, obj.prefix_byte3,
+                            obj.valid_count, obj.status_40_41, obj.state)] += 1
         candidates = [{
-          "trackId": obj.track_id, "dRel": obj.d_rel, "yRel": obj.y_rel, "vRel": obj.v_rel,
+          "address": obj.address, "slot": obj.slot, "trackId": obj.track_id,
+          "prefixByte2": obj.prefix_byte2, "prefixByte3": obj.prefix_byte3,
+          "validCount": obj.valid_count, "status40_41": obj.status_40_41,
+          "dRel": obj.d_rel, "yRel": obj.y_rel, "vRel": obj.v_rel,
           "state": obj.state, "stateAlt": obj.state_alt, "quality": obj.quality,
           "metadata": obj.metadata, "persistence": obj.persistence,
           "distanceRateResidual": obj.distance_rate_residual,
           "pathError": model_path_error(obj, latest_model, now),
         } for obj in fresh]
         samples.append({
-          "route": route, "time": now, "sccSource": src, "sccDistance": scc_d,
+          "route": route, "segment": segment_number(path), "time": now,
+          "sccSource": src, "sccDistance": scc_d,
           "sccVelocity": scc_v, "sccGroup": key,
           "oemTrackId": oem.track_id if oem is not None else None,
           "candidates": candidates,
@@ -321,6 +392,30 @@ def scan(paths: list[Path]) -> dict[str, Any]:
     if count >= MIN_TARGET_SAMPLES and group_matches[key] / count >= 0.80
   }
   stock_scc = bool(car_params_modes) and all(modes == {False} for modes in car_params_modes.values())
+  metadata_rules = {
+    "maturePrimary": (None, None, None),
+    "maturePrimaryStatus1": (None, {1}, None),
+    "maturePrimaryState34": (None, None, {3, 4}),
+    "maturePrimaryPrefix40": ({40}, None, {3, 4}),
+    "maturePrimaryPrefix40Status1": ({40}, {1}, {3, 4}),
+    "maturePrimaryPrefix40Or50": ({40, 50}, None, {3, 4}),
+  }
+  metadata_evaluation = {}
+  for name, (prefix_values, status_values, states) in metadata_rules.items():
+    metadata_evaluation[name] = {
+      "all": evaluate_oem_status_rule(
+        samples, lambda _sample: True,
+        prefix_values=prefix_values, status_values=status_values, states=states,
+      ),
+      "trainingSegments": evaluate_oem_status_rule(
+        samples, lambda sample: sample["route"] == routes[-1] and sample["segment"] <= 5,
+        prefix_values=prefix_values, status_values=status_values, states=states,
+      ),
+      "holdoutSegments": evaluate_oem_status_rule(
+        samples, lambda sample: sample["route"] != routes[-1] or sample["segment"] >= 6,
+        prefix_values=prefix_values, status_values=status_values, states=states,
+      ),
+    }
   holdout_ready = bool(
     stock_scc and holdout_result["targetSamples"] >= MIN_TARGET_SAMPLES and
     holdout_result["precision"] >= 0.995 and holdout_result["recall"] >= 0.95 and
@@ -339,9 +434,30 @@ def scan(paths: list[Path]) -> dict[str, Any]:
       "samples": count, "matchedObjectSamples": group_matches[key],
       "matchRate": round(group_matches[key] / max(count, 1), 6),
     } for key, count in group_counts.most_common()},
+    "oemSelectedMetadata": [
+      {
+        "route": route, "segment": segment, "sccGroup": key,
+        "address": address, "slot": slot, "prefixByte3": prefix_byte3,
+        "validCount": valid_count, "status40_41": status_40_41,
+        "state": state, "samples": count,
+      }
+      for (route, segment, key, address, slot, prefix_byte3, valid_count, status_40_41, state), count
+      in oem_metadata.most_common()
+    ],
+    "otherMetadataTop": [
+      {
+        "route": route, "segment": segment, "sccGroup": key,
+        "address": address, "slot": slot, "prefixByte3": prefix_byte3,
+        "validCount": valid_count, "status40_41": status_40_41,
+        "state": state, "samples": count,
+      }
+      for (route, segment, key, address, slot, prefix_byte3, valid_count, status_40_41, state), count
+      in other_metadata.most_common(200)
+    ],
     "groupsWithReliableObjectLabels": sorted(active_groups),
     "oemDistanceMatchError": stats(d_errors),
     "oemVelocityMatchError": stats(v_errors),
+    "metadataRuleEvaluation": metadata_evaluation,
     "trainingRoutes": sorted(train_routes), "holdoutRoutes": sorted(holdout_routes),
     "candidateRule": {
       "pathErrorMax": path_threshold, "absYRelMax": y_threshold,

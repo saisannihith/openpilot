@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from openpilot.tools.lib.logreader import LogReader, ReadMode
+from opendbc.car.hyundai.radar_interface import carnival_radar_frame_valid
 
 
 RADAR_TO_CAMERA = 1.52
@@ -27,11 +28,15 @@ NIS_GATE = 11.345
 PRIMARY_ADDR = 0x180
 PRIMARY_SLOT = 1
 PRIMARY_QUALITY = 0xFF
-UNKNOWN_BITS = (*range(32, 42), *range(50, 64), 77, 89, 90, *range(102, 106), 114, 115)
+UNKNOWN_BITS = (*range(0, 32), 40, 41, *range(50, 64), 77, 89, 90, *range(102, 106), 114, 115)
 METADATA_WINDOWS = tuple(
   (start, width)
   for width in range(2, 7)
   for start in range(50, 65 - width)
+) + tuple(
+  (start, width)
+  for width in range(2, 9)
+  for start in range(16, 33 - width)
 )
 
 
@@ -41,7 +46,11 @@ class RadarObject:
   addr: int
   slot: int
   raw: int
+  prefix_word: int
+  prefix_byte2: int
+  prefix_byte3: int
   valid_count: int
+  status_40_41: int
   track_id: int
   metadata_50_63: int
   state_alt_candidate: int
@@ -71,7 +80,11 @@ def decode(t: float, addr: int, dat: bytes) -> list[RadarObject]:
       addr=addr,
       slot=slot,
       raw=raw,
+      prefix_word=extract(raw, 0, 32),
+      prefix_byte2=extract(raw, 16, 8),
+      prefix_byte3=extract(raw, 24, 8),
       valid_count=extract(raw, 32, 8),
+      status_40_41=extract(raw, 40, 2),
       track_id=extract(raw, 42, 8),
       metadata_50_63=extract(raw, 50, 14),
       state_alt_candidate=extract(raw, 51, 4),
@@ -128,7 +141,11 @@ def base_valid(obj: RadarObject, now: float) -> bool:
 def update_group(groups: dict[str, dict[str, Counter]], name: str, obj: RadarObject) -> None:
   group = groups[name]
   group["samples"]["count"] += 1
+  group["prefixWord"][obj.prefix_word] += 1
+  group["prefixByte2"][obj.prefix_byte2] += 1
+  group["prefixByte3"][obj.prefix_byte3] += 1
   group["validCount"][obj.valid_count] += 1
+  group["status40_41"][obj.status_40_41] += 1
   group["heartbeat"][obj.heartbeat] += 1
   group["stateCandidate"][obj.state_candidate] += 1
   group["stateAltCandidate"][obj.state_alt_candidate] += 1
@@ -189,10 +206,17 @@ def summarize_group(group: dict[str, Counter]) -> dict[str, Any]:
   state_34 = group["stateCandidate"][3] + group["stateCandidate"][4]
   return {
     "samples": samples,
+    "prefixWordTop": [
+      {"value": value, "count": count}
+      for value, count in group["prefixWord"].most_common(20)
+    ],
+    "prefixByte2": counter_dict(group["prefixByte2"]),
+    "prefixByte3": counter_dict(group["prefixByte3"]),
     "validCountZeroRate": round(group["validCount"][0] / max(samples, 1), 6),
     "heartbeatZeroRate": round(group["heartbeat"][0] / max(samples, 1), 6),
     "state34Rate": round(state_34 / max(samples, 1), 6),
     "validCount": counter_dict(group["validCount"]),
+    "status40_41": counter_dict(group["status40_41"]),
     "heartbeat": counter_dict(group["heartbeat"]),
     "stateCandidate": counter_dict(group["stateCandidate"]),
     "stateAltCandidate": counter_dict(group["stateAltCandidate"]),
@@ -261,6 +285,7 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
   model_matches = scc_matches = 0
   latest_scc_reference: tuple[float, float, float] | None = None
   association_policy = Counter()
+  frame_integrity = Counter()
 
   for index, path in enumerate(paths, start=1):
     print(f"  [{index}/{len(paths)}] {path.parent.name}", flush=True)
@@ -285,6 +310,11 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
             latest_scc_reference = (now, *scc_reference)
           if int(can.src) != 1 or not (0x180 <= addr <= 0x184) or len(dat) != 32:
             continue
+          frame_integrity["frames"] += 1
+          if not carnival_radar_frame_valid(addr, dat):
+            frame_integrity["crcInvalid"] += 1
+            continue
+          frame_integrity["crcValid"] += 1
           for obj in decode(now, addr, dat):
             latest[(addr, obj.slot)] = obj
             update_group(groups, "rawSlots", obj)
@@ -305,8 +335,9 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
           old = previous.get(track_id)
           if old is not None and 0.0 < obj.t - old.t <= 0.15:
             lifecycle["continuous"] += 1
-            lifecycle["validCountIncrement"] += ((obj.valid_count - old.valid_count) & 0xFF) == 1
+            lifecycle["validCountIncrement"] += obj.valid_count == min(old.valid_count + 1, PRIMARY_QUALITY)
             lifecycle["validCountSame"] += obj.valid_count == old.valid_count
+            lifecycle["status40_41Same"] += obj.status_40_41 == old.status_40_41
             lifecycle["heartbeatIncrement"] += ((obj.heartbeat - old.heartbeat) & 0xF) == 1
             lifecycle["heartbeatSame"] += obj.heartbeat == old.heartbeat
             lifecycle["stateCandidateSame"] += obj.state_candidate == old.state_candidate
@@ -396,6 +427,7 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
     "continuousSamples": continuous,
     "validCountIncrementRate": round(lifecycle["validCountIncrement"] / max(continuous, 1), 6),
     "validCountSameRate": round(lifecycle["validCountSame"] / max(continuous, 1), 6),
+    "status40_41SameRate": round(lifecycle["status40_41Same"] / max(continuous, 1), 6),
     "heartbeatIncrementRate": round(lifecycle["heartbeatIncrement"] / max(continuous, 1), 6),
     "heartbeatSameRate": round(lifecycle["heartbeatSame"] / max(continuous, 1), 6),
     "stateCandidateSameRate": round(lifecycle["stateCandidateSame"] / max(continuous, 1), 6),
@@ -417,6 +449,7 @@ def analyze_route(paths: list[Path]) -> dict[str, Any]:
     "stockSccEvents": scc_events,
     "stockSccMatches": scc_matches,
     "stockSccMatchRate": round(scc_matches / max(scc_events, 1), 6),
+    "frameIntegrity": dict(frame_integrity),
     "associationPolicy": {
       "truthSamples": association_policy["truthSamples"],
       "currentPrimaryPreferenceExact": association_policy["currentExact"],
@@ -521,10 +554,14 @@ def main() -> int:
     routes[route] = analyze_route(paths)
   report = {
     "layout": {
+      "frameHeader": [
+        "CRC16@0 over the complete 32-byte frame plus CAN address, Hyundai CAN-FD XOR 0x9F5B",
+        "rollingCounter@16 unsigned 8-bit; 99.994% consecutive increments in fresh routes",
+      ],
       "provenKinematics": ["trackId", "dRel", "yRel", "vRel"],
       "decodedDynamics": ["yvRel@106 unsigned 8-bit * 0.2 - 25.0", "aRel@116 signed 8-bit * 0.1"],
-      "publicCandidates": ["validCount@32", "heartbeat@124"],
-      "unresolvedMetadata": "bits 50..63 and sparse gaps 77, 89..90, 102..105, 114..115",
+      "decodedLifecycle": ["validCount@32 unsigned 8-bit saturating at 255", "heartbeat@124"],
+      "unresolvedMetadata": "slot-1 class byte 24..31, slot-2 prefix 128..159, object bits 40..41, bits 50..63, and sparse gaps 77, 89..90, 102..105, 114..115",
       "openpilotRequiredRadarPointFields": ["dRel", "yRel", "vRel"],
       "openpilotOptionalRadarPointFields": ["aRel", "yvRel"],
       "notInRadarPointSchema": ["classification", "OEM lane assignment"],

@@ -8,6 +8,8 @@ from opendbc.car.hyundai.radar_interface import (
   CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_MAX_AGE,
   CARNIVAL_4TH_GEN_PRIMARY_TRACK_ID_BASE,
   RadarInterface,
+  carnival_radar_frame_checksum,
+  carnival_radar_frame_valid,
   carnival_radar_object_valid,
   decode_carnival_confirmation_velocity,
   decode_carnival_radar_object,
@@ -44,12 +46,19 @@ def encode_object(track_id: int, heartbeat: int, distance: float, lateral: float
   return packed.to_bytes(32, "little")
 
 
+def with_frame_crc(dat: bytes, address: int = 0x180) -> bytes:
+  result = bytearray(dat)
+  result[:2] = carnival_radar_frame_checksum(address, result).to_bytes(2, "little")
+  return bytes(result)
+
+
 def make_probe() -> RadarInterface:
   probe = RadarInterface.__new__(RadarInterface)
   probe.carnival_object_probe_prev = {}
   probe.carnival_object_probe_last_log = time.monotonic()
   probe.carnival_object_probe_seen = 0
   probe.carnival_object_probe_valid = 0
+  probe.carnival_object_probe_crc_invalid = 0
   probe.carnival_confirmation_tracks = {}
   probe.carnival_confirmation_prev = {}
   probe.carnival_confirmation_persist = {}
@@ -91,6 +100,27 @@ def test_carnival_r0100_full_object_decode_both_slots() -> None:
   assert carnival_radar_object_valid(obj2)
 
 
+def test_carnival_r0100_frame_checksum_rejects_corruption() -> None:
+  frame = with_frame_crc(encode_object(17, 9, 42.5, -1.25, -3.4))
+  assert carnival_radar_frame_valid(0x180, frame)
+  corrupted = bytearray(frame)
+  corrupted[12] ^= 0x01
+  assert not carnival_radar_frame_valid(0x180, corrupted)
+  assert not carnival_radar_frame_valid(0x181, frame)
+
+
+def test_carnival_r0100_probe_drops_bad_checksum_before_decode() -> None:
+  probe = make_probe()
+  frame = bytearray(with_frame_crc(encode_object(17, 9, 42.5, -1.25, -3.4)))
+  frame[12] ^= 0x01
+  for _ in range(3):
+    probe._update_carnival_object_probe([(0, [(0x180, bytes(frame), 1)])])
+  assert probe.carnival_confirmation_tracks == {}
+  assert probe.carnival_object_probe_seen == 3
+  assert probe.carnival_object_probe_valid == 0
+  assert probe.carnival_object_probe_crc_invalid == 3
+
+
 def test_carnival_radar_rejects_zero_track_id() -> None:
   obj = decode_carnival_radar_object(encode_object(0, 3, 20.0, 0.0, 0.0), 0)
   assert not carnival_radar_object_valid(obj)
@@ -108,7 +138,7 @@ def test_carnival_radar_accepts_complete_rolling_counter_cycle() -> None:
   probe = make_probe()
   for heartbeat in range(16):
     distance = 20.0 + 0.05 * heartbeat
-    frame = [(0, [(0x180, encode_object(12, heartbeat, distance, 0.0, -0.5), 1)])]
+    frame = [(0, [(0x180, with_frame_crc(encode_object(12, heartbeat, distance, 0.0, -0.5)), 1)])]
     probe._update_carnival_object_probe(frame)
 
   rr = structs.RadarData()
@@ -120,7 +150,7 @@ def test_carnival_radar_accepts_complete_rolling_counter_cycle() -> None:
 
 def test_carnival_radar_requires_persistence_and_publishes_stable_id() -> None:
   probe = make_probe()
-  frame = encode_object(37, 6, 31.0, -0.45, -2.0)
+  frame = with_frame_crc(encode_object(37, 6, 31.0, -0.45, -2.0))
   can_strings = [(0, [(0x180, frame, 1)])]
 
   probe._update_carnival_object_probe(can_strings)
@@ -138,8 +168,8 @@ def test_carnival_radar_requires_persistence_and_publishes_stable_id() -> None:
 
 def test_carnival_radar_recycled_id_must_requalify() -> None:
   probe = make_probe()
-  first = [(0, [(0x180, encode_object(37, 6, 31.0, -0.45, -2.0), 1)])]
-  replacement = [(0, [(0x180, encode_object(37, 7, 55.0, 3.0, 4.0), 1)])]
+  first = [(0, [(0x180, with_frame_crc(encode_object(37, 6, 31.0, -0.45, -2.0)), 1)])]
+  replacement = [(0, [(0x180, with_frame_crc(encode_object(37, 7, 55.0, 3.0, 4.0)), 1)])]
 
   for _ in range(3):
     probe._update_carnival_object_probe(first)
@@ -156,8 +186,8 @@ def test_carnival_radar_recycled_id_must_requalify() -> None:
 
 def test_carnival_primary_slot_requires_factory_quality() -> None:
   probe = make_probe()
-  unqualified = [(0, [(0x180, encode_object(37, 6, 31.0, -0.45, -2.0, quality_byte=254), 1)])]
-  qualified = [(0, [(0x180, encode_object(37, 7, 31.0, -0.45, -2.0, quality_byte=255), 1)])]
+  unqualified = [(0, [(0x180, with_frame_crc(encode_object(37, 6, 31.0, -0.45, -2.0, quality_byte=254)), 1)])]
+  qualified = [(0, [(0x180, with_frame_crc(encode_object(37, 7, 31.0, -0.45, -2.0, quality_byte=255)), 1)])]
 
   for _ in range(3):
     probe._update_carnival_object_probe(unqualified)
@@ -181,7 +211,7 @@ def test_carnival_secondary_slot_cannot_be_factory_primary() -> None:
   probe = make_probe()
   primary = int.from_bytes(encode_object(21, 5, 22.0, 0.0, -1.0, quality_byte=20), "little")
   secondary = int.from_bytes(encode_object(22, 5, 24.0, 0.2, -1.0, 128, quality_byte=255), "little")
-  frame = [(0, [(0x180, (primary | secondary).to_bytes(32, "little"), 1)])]
+  frame = [(0, [(0x180, with_frame_crc((primary | secondary).to_bytes(32, "little")), 1)])]
 
   for _ in range(3):
     probe._update_carnival_object_probe(frame)
@@ -195,14 +225,14 @@ def test_carnival_secondary_slot_cannot_be_factory_primary() -> None:
 
 def test_carnival_radar_conflicting_id_is_withdrawn() -> None:
   probe = make_probe()
-  first = [(0, [(0x180, encode_object(37, 6, 31.0, -0.45, -2.0), 1)])]
+  first = [(0, [(0x180, with_frame_crc(encode_object(37, 6, 31.0, -0.45, -2.0)), 1)])]
   for _ in range(3):
     probe._update_carnival_object_probe(first)
   assert 37 in probe.carnival_confirmation_tracks
 
   near = int.from_bytes(encode_object(37, 7, 30.8, -0.4, -2.0), "little")
   far = int.from_bytes(encode_object(37, 8, 70.0, 4.0, 5.0, 128), "little")
-  probe._update_carnival_object_probe([(0, [(0x180, (near | far).to_bytes(32, "little"), 1)])])
+  probe._update_carnival_object_probe([(0, [(0x180, with_frame_crc((near | far).to_bytes(32, "little")), 1)])])
   assert 37 not in probe.carnival_confirmation_tracks
 
 
@@ -217,7 +247,8 @@ def test_carnival_radar_publishes_complete_ten_object_bank() -> None:
     second_values = (35.0 + address_index, 0.6 - address_index * 0.1, 1.0 + address_index * 0.2)
     first = int.from_bytes(encode_object(first_id, 5, *first_values), "little")
     second = int.from_bytes(encode_object(second_id, 7, *second_values, 128), "little")
-    frames.append((0x180 + address_index, (first | second).to_bytes(32, "little"), 1))
+    address = 0x180 + address_index
+    frames.append((address, with_frame_crc((first | second).to_bytes(32, "little"), address), 1))
     expected[first_id] = first_values
     expected[second_id] = second_values
 
