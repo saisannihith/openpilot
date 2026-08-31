@@ -25,6 +25,8 @@ RADAR_TO_CAMERA = 1.52
 MAX_RADAR_AGE = 0.12
 MIN_MODEL_LEAD_PROB = 0.35
 NIS_GATE = 11.345
+MIN_STATE_GATE_ROUTES = 5
+MIN_STATE_GATE_SELECTED_SAMPLES = 50_000
 PRIMARY_ADDR = 0x180
 PRIMARY_SLOT = 1
 PRIMARY_QUALITY = 0xFF
@@ -489,6 +491,7 @@ def aggregate(routes: dict[str, dict[str, Any]]) -> dict[str, Any]:
       "stockSccSelectedState34Rate": scc_selected.get("state34Rate"),
     })
   model_routes = [row for row in state_gate_evidence if row["modelSelectedSamples"] >= 100]
+  model_selected_samples = sum(row["modelSelectedSamples"] for row in state_gate_evidence)
   substantial_routes = [
     result for result in routes.values()
     if result["groups"].get("activeSlots", {}).get("samples", 0) >= 1000
@@ -506,10 +509,20 @@ def aggregate(routes: dict[str, dict[str, Any]]) -> dict[str, Any]:
     model_routes and
     all((row["modelSelectedState34Rate"] or 0.0) >= 0.995 for row in model_routes)
   )
-  state_candidate_ready = state_like_field_located and mrr30_state_gate_compatible
+  state_gate_evidence_complete = (
+    len(model_routes) >= MIN_STATE_GATE_ROUTES and
+    model_selected_samples >= MIN_STATE_GATE_SELECTED_SAMPLES
+  )
+  state_candidate_ready = state_like_field_located and mrr30_state_gate_compatible and state_gate_evidence_complete
   if state_candidate_ready:
     verdict = "state_like_field_found_and_mrr30_state_gate_supported"
     state_reason = "States 3/4 cover independently selected leads consistently across substantial routes."
+  elif state_like_field_located and mrr30_state_gate_compatible and not state_gate_evidence_complete:
+    verdict = "state_like_field_found_but_state_gate_evidence_incomplete"
+    state_reason = (
+      f"States 3/4 fit this sample, but deployment requires at least {MIN_STATE_GATE_ROUTES} substantial routes "
+      f"and {MIN_STATE_GATE_SELECTED_SAMPLES} independently selected leads."
+    )
   elif state_like_field_located:
     verdict = "state_like_field_found_but_do_not_apply_mrr30_state_gate"
     state_reason = "The field separates active slots, but states 3/4 do not cover independently selected leads consistently."
@@ -527,10 +540,13 @@ def aggregate(routes: dict[str, dict[str, Any]]) -> dict[str, Any]:
       result["groups"].get("activeSlots", {}).get("samples", 0)
       for result in routes.values()
     ),
-    "modelSelectedSamples": sum(row["modelSelectedSamples"] for row in state_gate_evidence),
+    "modelSelectedSamples": model_selected_samples,
     "stateLikeFieldLocated": state_like_field_located,
     "stateLikeField": "little-endian bits 55..57; bit 58 was constant in substantial routes",
     "mrr30StateGateCompatible": mrr30_state_gate_compatible,
+    "stateGateEvidenceComplete": state_gate_evidence_complete,
+    "stateGateMinimumRoutes": MIN_STATE_GATE_ROUTES,
+    "stateGateMinimumSelectedSamples": MIN_STATE_GATE_SELECTED_SAMPLES,
     "stateCandidateReady": state_candidate_ready,
     "openpilotMinimumRadarContractComplete": True,
     "classificationDecoded": False,
