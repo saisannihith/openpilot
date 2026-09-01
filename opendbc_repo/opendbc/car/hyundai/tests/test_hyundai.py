@@ -21,9 +21,7 @@ from opendbc.car.hyundai.carcontroller import CarController, Ioniq6LongitudinalT
                                              preserve_stock_canfd_lfa_status, \
                                              preserve_stock_canfd_lkas_status, \
                                              suppress_redundant_gv70_brake_cancel, \
-                                             clear_ioniq_6_torque_when_request_inactive, \
-                                             update_carnival_driver_conflict_unwind, \
-                                             CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES
+                                             clear_ioniq_6_torque_when_request_inactive
 from opendbc.car.hyundai.carstate import CarState, decode_canfd_camera_lead, decode_ioniq_6_blindspot_radar_state, \
                                              get_canfd_cruise_available
 from opendbc.car.hyundai.interface import CarInterface, KIA_EV9_ACCEL_MAX
@@ -571,43 +569,14 @@ class TestHyundaiFingerprint:
     assert palisade_2023.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CAN_CANFD_BLENDED
     assert palisade_2023.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CANCEL_BTN_ENABLE
 
-  def test_carnival_driver_conflict_unwinds_and_holds_torque(self):
-    torque, hold = update_carnival_driver_conflict_unwind(
-      CAR.KIA_CARNIVAL_4TH_GEN, 297, 300, -400, True, True, 0,
-    )
-    assert torque == 290
-    assert hold == CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES
-
-    for _ in range(29):
-      torque, hold = update_carnival_driver_conflict_unwind(
-        CAR.KIA_CARNIVAL_4TH_GEN, 300, torque, -400, True, True, hold,
-      )
-    assert torque == 0
-    assert hold == CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES
-
-    for _ in range(CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES - 1):
-      torque, hold = update_carnival_driver_conflict_unwind(
-        CAR.KIA_CARNIVAL_4TH_GEN, 2, torque, 0, False, True, hold,
-      )
-      assert torque == 0
-    assert hold == 1
-
-    torque, hold = update_carnival_driver_conflict_unwind(
-      CAR.KIA_CARNIVAL_4TH_GEN, 2, 0, 0, False, True, hold,
-    )
-    assert (torque, hold) == (2, 0)
-
-  @pytest.mark.parametrize("candidate", [CAR.KIA_CARNIVAL_2025, CAR.KIA_EV6])
-  def test_carnival_driver_conflict_unwind_is_4th_gen_only(self, candidate):
-    assert update_carnival_driver_conflict_unwind(candidate, 297, 300, -400, True, True, 12) == (297, 0)
-
-  def test_carnival_driver_conflict_ignores_non_conflicting_input(self):
-    assert update_carnival_driver_conflict_unwind(
-      CAR.KIA_CARNIVAL_4TH_GEN, 302, 300, 400, True, True, 0,
-    ) == (302, 0)
-    assert update_carnival_driver_conflict_unwind(
-      CAR.KIA_CARNIVAL_4TH_GEN, 297, 300, -249, True, True, 0,
-    ) == (297, 0)
+  def test_carnival_controller_matches_default_hyundai_safety_limits(self):
+    CP = CarInterface.get_non_essential_params(CAR.KIA_CARNIVAL_4TH_GEN)
+    for speed in (0.0, 10.0, 20.0, 40.0):
+      params = CarControllerParams(CP, speed)
+      assert params.STEER_MAX == 384
+      assert params.STEER_DELTA_UP == 3
+      assert params.STEER_DELTA_DOWN == 7
+      assert params.STEER_DRIVER_ALLOWANCE == 50
 
   def test_palisade_telluride_hda2_uses_mixed_can_layout(self):
     fingerprint = gen_empty_fingerprint()
