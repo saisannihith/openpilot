@@ -23,12 +23,17 @@ CAR_FINGERPRINT = "KIA_CARNIVAL_4TH_GEN"
 MODEL_NAME = f"{CAR_FINGERPRINT}.csv"
 MAX_DRIVER_TORQUE = 100.0
 MAX_TEMPORAL_SKEW = 0.025
+ACCELERATION_DUE_TO_GRAVITY = 9.80665
 
 BASE_COLUMNS = [
   "timestamp", "v_ego", "a_ego", "steering_angle_deg", "steering_rate_deg",
   "steering_torque", "steering_pressed", "steer_fault_temporary", "standstill",
   "lat_active", "actual_lateral_accel", "desired_lateral_accel", "torque_output",
-  "saturated", "roll", "lane_change_state",
+  "applied_torque", "car_output_age", "lateral_delay", "saturated", "roll", "lane_change_state",
+  "pose_lateral_accel", "pose_age", "pose_valid",
+  "live_torque_use_params", "live_torque_valid", "live_torque_cal_perc",
+  "live_lat_accel_factor_raw", "live_lat_accel_factor_filtered",
+  "live_friction_raw", "live_friction_filtered",
 ]
 
 
@@ -46,6 +51,18 @@ def lane_change_code(value) -> int:
   except (TypeError, ValueError):
     name = str(value).rsplit(".", 1)[-1].lower()
     return 0 if name in ("off", "none", "") else 1
+
+
+def rotation_from_euler(rpy: np.ndarray) -> np.ndarray:
+  roll, pitch, yaw = rpy
+  sr, cr = math.sin(roll), math.cos(roll)
+  sp, cp = math.sin(pitch), math.cos(pitch)
+  sy, cy = math.sin(yaw), math.cos(yaw)
+  return np.array([
+    [cy * cp, (cy * sp * sr) - (sy * cr), (cy * sp * cr) + (sy * sr)],
+    [sy * cp, (sy * sp * sr) + (cy * cr), (sy * sp * cr) - (cy * sr)],
+    [-sp, cp * sr, cp * cr],
+  ])
 
 
 def find_rlogs(root: Path) -> list[Path]:
@@ -67,6 +84,8 @@ def segment_number(path: Path) -> int:
 
 def extract_segment(path: Path) -> tuple[pd.DataFrame, dict]:
   state = {}
+  calib_from_device = np.eye(3)
+  calib_valid = False
   rows = []
   metadata = {
     "route": route_name(path),
@@ -105,10 +124,45 @@ def extract_segment(path: Path) -> tuple[pd.DataFrame, dict]:
         state[which] = msg.controlsState
       elif which == "carControl":
         state[which] = msg.carControl
+      elif which == "carOutput":
+        state[which] = (msg.logMonoTime / 1e9, msg.carOutput)
       elif which == "selfdriveState":
         state[which] = msg.selfdriveState
       elif which == "liveParameters":
         state[which] = msg.liveParameters
+      elif which == "liveDelay":
+        state[which] = msg.liveDelay
+      elif which == "liveTorqueParameters":
+        state[which] = msg.liveTorqueParameters
+      elif which == "liveCalibration":
+        rpy_calib = np.asarray(safe_attr(msg.liveCalibration, "rpyCalib", ()), dtype=float)
+        if rpy_calib.shape == (3,):
+          calib_from_device = rotation_from_euler(rpy_calib).T
+          status = str(safe_attr(msg.liveCalibration, "calStatus", "")).rsplit(".", 1)[-1].lower()
+          calib_valid = status == "calibrated"
+      elif which == "livePose" and "carState" in state:
+        pose = msg.livePose
+        orientation = safe_attr(pose, "orientationNED")
+        angular_velocity = safe_attr(pose, "angularVelocityDevice")
+        pose_valid = bool(
+          calib_valid and safe_attr(orientation, "valid", False) and
+          safe_attr(angular_velocity, "valid", False) and safe_attr(pose, "inputsOK", False)
+        )
+        orientation_xyz = np.array([
+          safe_attr(orientation, "x", math.nan), safe_attr(orientation, "y", math.nan), safe_attr(orientation, "z", math.nan),
+        ], dtype=float)
+        angular_velocity_xyz = np.array([
+          safe_attr(angular_velocity, "x", math.nan), safe_attr(angular_velocity, "y", math.nan),
+          safe_attr(angular_velocity, "z", math.nan),
+        ], dtype=float)
+        calibrated_angular_velocity = calib_from_device @ angular_velocity_xyz
+        ned_from_calibrated = rotation_from_euler(orientation_xyz) @ calib_from_device.T
+        calibrated_roll = math.atan2(ned_from_calibrated[2, 1], ned_from_calibrated[2, 2])
+        lateral_accel = (
+          float(state["carState"].vEgo) * calibrated_angular_velocity[2] -
+          math.sin(calibrated_roll) * ACCELERATION_DUE_TO_GRAVITY
+        )
+        state["poseLateralAccel"] = (msg.logMonoTime / 1e9, lateral_accel, pose_valid)
       elif which == "modelV2":
         state[which] = msg.modelV2
 
@@ -140,6 +194,11 @@ def extract_segment(path: Path) -> tuple[pd.DataFrame, dict]:
         )
 
       live_params = state.get("liveParameters")
+      car_output_time, car_output = state.get("carOutput", (math.nan, None))
+      applied_torque = float(safe_attr(safe_attr(car_output, "actuatorsOutput"), "torque", math.nan))
+      lateral_delay = float(safe_attr(state.get("liveDelay"), "lateralDelay", math.nan))
+      pose_time, pose_lateral_accel, pose_valid = state.get("poseLateralAccel", (math.nan, math.nan, False))
+      live_torque = state.get("liveTorqueParameters")
       rows.append([
         msg.logMonoTime / 1e9,
         float(cs.vEgo),
@@ -154,9 +213,22 @@ def extract_segment(path: Path) -> tuple[pd.DataFrame, dict]:
         float(torque_state.actualLateralAccel),
         float(torque_state.desiredLateralAccel),
         float(torque_state.output),
+        applied_torque,
+        (msg.logMonoTime / 1e9) - car_output_time,
+        lateral_delay,
         bool(torque_state.saturated),
         float(safe_attr(live_params, "roll", math.nan)),
         lane_change_state,
+        pose_lateral_accel,
+        (msg.logMonoTime / 1e9) - pose_time,
+        pose_valid,
+        bool(safe_attr(live_torque, "useParams", False)),
+        bool(safe_attr(live_torque, "liveValid", False)),
+        float(safe_attr(live_torque, "calPerc", math.nan)),
+        float(safe_attr(live_torque, "latAccelFactorRaw", math.nan)),
+        float(safe_attr(live_torque, "latAccelFactorFiltered", math.nan)),
+        float(safe_attr(live_torque, "frictionCoefficientRaw", math.nan)),
+        float(safe_attr(live_torque, "frictionCoefficientFiltered", math.nan)),
       ])
   except Exception as error:
     metadata["error"] = f"parse failed: {error}"
@@ -209,7 +281,7 @@ def add_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
   times = df["timestamp"].to_numpy(dtype=float)
   for offset in TEMPORAL_TIMES:
     suffix = temporal_suffix(offset)
-    for column in ("actual_lateral_accel", "desired_lateral_accel", "roll"):
+    for column in ("actual_lateral_accel", "desired_lateral_accel", "roll", "pose_lateral_accel"):
       df[f"{column}{suffix}"] = nearest_temporal(df[column].to_numpy(dtype=float), times, offset)
   df["clean_context"] = context_is_clean(df)
   return df
@@ -281,6 +353,11 @@ def main() -> int:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("input", type=Path)
   parser.add_argument("output", type=Path)
+  parser.add_argument(
+    "--parquet-only",
+    action="store_true",
+    help="Write the provenance parquet and manifest without NNFF CSV/heldout exports.",
+  )
   args = parser.parse_args()
 
   rlogs = find_rlogs(args.input)
@@ -316,23 +393,25 @@ def main() -> int:
     raise SystemExit("All extracted samples were rejected by safety/quality filters")
 
   args.output.mkdir(parents=True, exist_ok=True)
-  (args.output / "training_inputs").mkdir(exist_ok=True)
-  (args.output / "heldout").mkdir(exist_ok=True)
   clean.to_parquet(args.output / "clean_with_provenance.parquet", index=False)
-  clean[required].to_csv(args.output / "training_inputs" / MODEL_NAME, index=False)
+  if not args.parquet_only:
+    (args.output / "training_inputs").mkdir(exist_ok=True)
+    (args.output / "heldout").mkdir(exist_ok=True)
+    clean[required].to_csv(args.output / "training_inputs" / MODEL_NAME, index=False)
 
-  routes = sorted(clean.route.unique())
-  if len(routes) >= 3:
-    for route in routes:
-      identifier = safe_route_id(str(route))
-      train = clean[clean.route != route]
-      heldout = clean[clean.route == route]
-      train[required].to_csv(
-        args.output / "training_inputs" / f"{CAR_FINGERPRINT}_without_{identifier}.csv", index=False,
-      )
-      heldout.to_parquet(args.output / "heldout" / f"{identifier}.parquet", index=False)
+    routes = sorted(clean.route.unique())
+    if len(routes) >= 3:
+      for route in routes:
+        identifier = safe_route_id(str(route))
+        train = clean[clean.route != route]
+        heldout = clean[clean.route == route]
+        train[required].to_csv(
+          args.output / "training_inputs" / f"{CAR_FINGERPRINT}_without_{identifier}.csv", index=False,
+        )
+        heldout.to_parquet(args.output / "heldout" / f"{identifier}.parquet", index=False)
 
   summary = summarize(clean, segment_metadata)
+  summary["parquetOnly"] = args.parquet_only
   summary["sourceErrors"] = [item for item in segment_metadata if item.get("error")]
   (args.output / "dataset_manifest.json").write_text(json.dumps(summary, indent=2) + "\n")
   print(json.dumps(summary, indent=2))

@@ -48,3 +48,20 @@ Static validation is not driving-model independent. NNFF consumes future
 family must pass `audit_runtime_compatibility.py` on matching logs before a
 shadow test. Do not infer RDF or other model compatibility from a candidate
 trained and replayed only with CD210.
+
+## Speed-dependent torque gate
+
+The physical-response parquet can also evaluate a speed-dependent torque
+profile without giving it steering authority:
+
+```bash
+python analysis/analyze_carnival_speed_dependent_torque.py \
+  ~/torque-speed-physical-20260901/clean_with_provenance.parquet \
+  --output analysis/carnival_speed_dependent_torque_report.json
+```
+
+The analyzer mirrors torqued's total-least-squares fit, balances complete
+routes and steering buckets, and leaves one route out at a time. Exit status 0
+means every actuation gate passed; status 2 means the candidate was rejected.
+The committed Carnival report rejects the current six-bin candidate, so no
+speed-dependent runtime path is enabled.
