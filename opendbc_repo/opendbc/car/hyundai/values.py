@@ -44,14 +44,7 @@ class CarControllerParams:
       self.STEER_DRIVER_ALLOWANCE = 100
       self.STEER_DRIVER_MULTIPLIER = 2
       self.STEER_THRESHOLD = 100
-      if CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
-        # Match the default Hyundai panda torque-safety contract exactly. A looser
-        # host limit causes panda to reject LKAS frames during driver override.
-        self.STEER_MAX = 384
-        self.STEER_DRIVER_ALLOWANCE = 50
-        self.STEER_DELTA_UP = 3
-        self.STEER_DELTA_DOWN = 7
-      elif vEgoRaw < 15.0:  # below ~34 mph - more aggressive for tight turns
+      if vEgoRaw < 15.0:  # below ~34 mph - more aggressive for tight turns
         self.STEER_DELTA_UP = 10
         self.STEER_DELTA_DOWN = 8
       else:

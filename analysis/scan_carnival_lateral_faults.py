@@ -12,7 +12,7 @@ from typing import Any
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
 
-CARNIVAL_STEER_MAX = 384
+CARNIVAL_STEER_MAX = 409
 HIGH_SPEED_FAULT_MPS = 17.0
 NEAR_FAULT_WINDOW_S = 2.0
 STRONG_DRIVER_OVERRIDE_TORQUE = 300.0

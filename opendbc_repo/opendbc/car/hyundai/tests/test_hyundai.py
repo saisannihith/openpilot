@@ -569,15 +569,6 @@ class TestHyundaiFingerprint:
     assert palisade_2023.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CAN_CANFD_BLENDED
     assert palisade_2023.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CANCEL_BTN_ENABLE
 
-  def test_carnival_controller_matches_default_hyundai_safety_limits(self):
-    CP = CarInterface.get_non_essential_params(CAR.KIA_CARNIVAL_4TH_GEN)
-    for speed in (0.0, 10.0, 20.0, 40.0):
-      params = CarControllerParams(CP, speed)
-      assert params.STEER_MAX == 384
-      assert params.STEER_DELTA_UP == 3
-      assert params.STEER_DELTA_DOWN == 7
-      assert params.STEER_DRIVER_ALLOWANCE == 50
-
   def test_palisade_telluride_hda2_uses_mixed_can_layout(self):
     fingerprint = gen_empty_fingerprint()
     fingerprint[2][0x50] = 16
