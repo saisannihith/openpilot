@@ -50,6 +50,10 @@ class CarControllerParams:
       else:
         self.STEER_DELTA_UP = 2
         self.STEER_DELTA_DOWN = 3
+      if CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
+        # Hyundai CAN-FD safety requires a 10-unit retreat while opposing driver
+        # torque is actively shrinking the permitted steering envelope.
+        self.STEER_DRIVER_DELTA_DOWN = 10
 
     if CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING:
       self.STEER_THRESHOLD = 175
