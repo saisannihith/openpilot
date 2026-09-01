@@ -47,6 +47,7 @@ def make_vcruise(*, red_light=False, raw_model_stopped=False, forcing_stop=False
     lead_one=SimpleNamespace(status=False, dRel=float("inf"), vLead=0.0),
     starpilot_cem=SimpleNamespace(stop_light_detected=red_light),
     starpilot_following=SimpleNamespace(following_lead=False),
+    starpilot_weather=SimpleNamespace(weather_id=0, reduce_lateral_acceleration=0.0),
     tracking_lead=False,
     driving_in_curve=False,
     model_length=60.0,
@@ -104,6 +105,7 @@ def make_toggles():
     speed_limit_controller=False,
     show_speed_limits=False,
     force_stop_distance_offset=0,
+    car_model="",
   )
 
 
@@ -788,6 +790,42 @@ def test_force_stop_still_activates_for_straight_red_light_approach():
 
   assert 0.0 < result < 20.0
   assert vcruise.force_stop_timer >= 0.5
+  assert vcruise.forcing_stop
+
+
+def test_high_speed_red_light_gate_does_not_change_other_vehicles():
+  _, vcruise = make_vcruise(red_light=True, raw_model_stopped=False, forcing_stop=False, road_curvature=0.001)
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+
+  for frame in range(12):
+    update_vcruise(vcruise, sm, toggles, now=frame * 0.05, v_ego=20.0)
+
+  assert vcruise.forcing_stop
+
+
+def test_carnival_high_speed_lone_red_light_requires_persistent_evidence():
+  _, vcruise = make_vcruise(red_light=True, raw_model_stopped=False, forcing_stop=False, road_curvature=0.001)
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.car_model = "KIA_CARNIVAL_4TH_GEN"
+
+  for frame in range(12):
+    result = update_vcruise(vcruise, sm, toggles, now=frame * 0.05, v_ego=20.0)
+
+  assert result == pytest.approx(20.0)
+  assert not vcruise.forcing_stop
+
+
+def test_carnival_high_speed_model_stop_bypasses_lone_red_light_gate():
+  _, vcruise = make_vcruise(red_light=True, raw_model_stopped=True, forcing_stop=False, road_curvature=0.001)
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.car_model = "KIA_CARNIVAL_4TH_GEN"
+
+  for frame in range(12):
+    update_vcruise(vcruise, sm, toggles, now=frame * 0.05, v_ego=20.0)
+
   assert vcruise.forcing_stop
 
 

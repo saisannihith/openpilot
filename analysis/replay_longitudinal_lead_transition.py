@@ -31,13 +31,14 @@ def main() -> None:
   parser.add_argument("--end", type=float, default=1e9)
   parser.add_argument("--min-allowed-v", type=float)
   parser.add_argument("--min-increase", type=float)
+  parser.add_argument("--lead-index", type=int, choices=(0, 1), default=0)
   parser.add_argument("--summary-only", action="store_true")
   args = parser.parse_args()
 
   latest: dict[str, Any] = {}
   start_ns: int | None = None
   mpc = LongitudinalMpc()
-  rows: list[tuple[float, bool, bool, float, float, float, float]] = []
+  rows: list[tuple[float, bool, bool, float, bool, float, float, float, float, float]] = []
 
   for msg in LogReader(str(args.rlog), default_mode=ReadMode.RLOG, sort_by_time=True):
     which = msg.which()
@@ -82,25 +83,36 @@ def main() -> None:
         tracking,
         bool(lead_zero.status),
         float(lead_zero.vLead) if lead_zero.status else 0.0,
+        bool(lead_one.status),
+        float(lead_one.vLead) if lead_one.status else 0.0,
         float(trajectory_zero[0, 1]),
         float(trajectory_one[0, 1]),
         float(getattr(msg.longitudinalPlan, "leadTrajectoryV0", [0.0])[0]),
+        float(getattr(msg.longitudinalPlan, "leadTrajectoryV1", [0.0])[0]),
       ))
 
   if not args.summary_only:
-    print("t tracking status rawV replayV0 replayV1 loggedV0")
+    print("t tracking status0 rawV0 status1 rawV1 replayV0 replayV1 loggedV0 loggedV1")
     for row in rows:
-      if args.min_increase is not None and row[4] - row[6] < args.min_increase:
+      replay_v = row[6 + args.lead_index]
+      logged_v = row[8 + args.lead_index]
+      if args.min_increase is not None and replay_v - logged_v < args.min_increase:
         continue
-      print(f"{row[0]:7.3f} {int(row[1])} {int(row[2])} {row[3]:6.2f} {row[4]:8.2f} {row[5]:8.2f} {row[6]:8.2f}")
+      print(
+        f"{row[0]:7.3f} {int(row[1])} {int(row[2])} {row[3]:6.2f} {int(row[4])} {row[5]:6.2f} "
+        f"{row[6]:8.2f} {row[7]:8.2f} {row[8]:8.2f} {row[9]:8.2f}"
+      )
 
-  replay_min = min((min(row[4], row[5]) for row in rows), default=float("inf"))
-  logged_min = min((row[6] for row in rows), default=float("inf"))
-  max_increase = max((row[4] - row[6] for row in rows), default=0.0)
-  max_decrease = max((row[6] - row[4] for row in rows), default=0.0)
-  changed = sum(abs(row[4] - row[6]) > 0.5 for row in rows)
+  replay_index = 6 + args.lead_index
+  logged_index = 8 + args.lead_index
+  replay_min = min((row[replay_index] for row in rows), default=float("inf"))
+  logged_min = min((row[logged_index] for row in rows), default=float("inf"))
+  max_increase = max((row[replay_index] - row[logged_index] for row in rows), default=0.0)
+  max_decrease = max((row[logged_index] - row[replay_index] for row in rows), default=0.0)
+  changed = sum(abs(row[replay_index] - row[logged_index]) > 0.5 for row in rows)
   print(
-    f"summary segment={args.rlog.parent.name} samples={len(rows)} replayMinV={replay_min:.3f} loggedMinV={logged_min:.3f} "
+    f"summary segment={args.rlog.parent.name} leadIndex={args.lead_index} samples={len(rows)} "
+    f"replayMinV={replay_min:.3f} loggedMinV={logged_min:.3f} "
     f"maxIncrease={max_increase:.3f} maxDecrease={max_decrease:.3f} changedOver0.5={changed}"
   )
   if args.min_allowed_v is not None and replay_min < args.min_allowed_v:

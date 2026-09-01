@@ -565,13 +565,16 @@ class StarPilotVCruise:
       self.lone_high_speed_red_light_suppressed = False
 
     high_speed_force_stop_evidence = (
-      not self.lone_high_speed_red_light_suppressed and (
-        v_ego < FORCE_STOP_HIGH_SPEED_EVIDENCE_MS
-        or raw_model_stopped
-        or dash_active
-        or lead_present
-        or close_red_light_stop_evidence
-        or plausible_high_speed_red_light_approach
+      not carnival_lone_red_light_latch_allowed or
+      (
+        not self.lone_high_speed_red_light_suppressed and (
+          v_ego < FORCE_STOP_HIGH_SPEED_EVIDENCE_MS
+          or raw_model_stopped
+          or dash_active
+          or lead_present
+          or close_red_light_stop_evidence
+          or plausible_high_speed_red_light_approach
+        )
       )
     )
     if carnival_lone_red_light_latch_allowed and stop_light_detected:
