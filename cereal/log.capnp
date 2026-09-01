@@ -2465,6 +2465,7 @@ struct LiveDelayData {
   longitudinalValidBlocks @10 :Int32;
   longitudinalCalPerc @11 :Int8;
   longitudinalStatus @12 :Status;
+  longitudinalEstimatorVersion @13 :UInt8;
 
   enum Status {
     unestimated @0;

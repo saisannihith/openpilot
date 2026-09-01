@@ -51,9 +51,13 @@ LONG_MAX_LAG = 1.20
 LONG_MAX_LAG_STD = 0.12
 LONG_MIN_COMMAND_RANGE = 0.50
 LONG_MIN_ACCEL_RANGE = 0.25
-LONG_MIN_CONFIDENCE = 0.50
+LONG_MIN_PEAK_MARGIN = 0.025
+LONG_HIGH_PASS_SEC = 2.0
+LONG_MAX_SAMPLE_GAP = 0.20
+LONG_ESTIMATE_STEP_SEC = 3.0
 LONG_DELAY_MIN = 0.05
 LONG_DELAY_MAX = 1.20
+LONG_ESTIMATOR_VERSION = 2
 
 
 def masked_symmetric_moving_average(x: np.ndarray, mask: np.ndarray, k: int, sigma: float) -> np.ndarray:
@@ -124,6 +128,49 @@ def masked_normalized_cross_correlation(expected_sig: np.ndarray, actual_sig: np
   np.clip(ncc, -1, 1, out=ncc)
 
   return ncc
+
+
+def longitudinal_delay_window_estimate(command: np.ndarray, actual: np.ndarray, dt: float,
+                                       max_lag: float = LONG_MAX_LAG, min_corr: float = LONG_MIN_NCC,
+                                       min_peak_margin: float = LONG_MIN_PEAK_MARGIN) -> tuple[float, float, float] | None:
+  """Return an identifiable command-to-acceleration delay for one continuous window."""
+  if (len(command) != len(actual) or len(command) < 3 or
+      not np.isfinite(command).all() or not np.isfinite(actual).all()):
+    return None
+  if np.ptp(command) < LONG_MIN_COMMAND_RANGE or np.ptp(actual) < LONG_MIN_ACCEL_RANGE:
+    return None
+
+  # Grade, drag, and closed-loop load trends can create a broad zero-lag maximum. Removing a
+  # two-second trend leaves the actuator transitions needed to identify physical response delay.
+  smooth_n = max(3, int(round(LONG_HIGH_PASS_SEC / dt)))
+  kernel = np.ones(smooth_n, dtype=np.float64) / smooth_n
+  command_hp = command - np.convolve(command, kernel, mode="same")
+  actual_hp = actual - np.convolve(actual, kernel, mode="same")
+
+  max_lag_steps = int(round(max_lag / dt))
+  scores = []
+  for lag in range(max_lag_steps + 1):
+    expected = command_hp if lag == 0 else command_hp[:-lag]
+    measured = actual_hp if lag == 0 else actual_hp[lag:]
+    expected_centered = expected - np.mean(expected)
+    measured_centered = measured - np.mean(measured)
+    denom = np.linalg.norm(expected_centered) * np.linalg.norm(measured_centered)
+    scores.append(float(np.dot(expected_centered, measured_centered) / denom) if denom > 1e-9 else float("nan"))
+  scores = np.asarray(scores, dtype=np.float64)
+  if not np.isfinite(scores).any():
+    return None
+
+  best_idx = int(np.nanargmax(scores))
+  if best_idx in (0, max_lag_steps):
+    return None
+  best_corr = float(scores[best_idx])
+  competitors = scores.copy()
+  competitors[max(0, best_idx - 1):best_idx + 2] = np.nan
+  second_corr = float(np.nanmax(competitors)) if np.isfinite(competitors).any() else -1.0
+  peak_margin = best_corr - second_corr
+  if best_corr < min_corr or peak_margin < min_peak_margin:
+    return None
+  return best_idx * dt, best_corr, peak_margin
 
 
 class Points:
@@ -390,8 +437,7 @@ class LongitudinalLagEstimator:
                block_size: int = LONG_BLOCK_SIZE, window_sec: float = LONG_MOVING_WINDOW_SEC,
                okay_window_sec: float = LONG_MIN_OKAY_WINDOW_SEC,
                min_recovery_buffer_sec: float = LONG_MIN_RECOVERY_BUFFER_SEC,
-               min_vego: float = LONG_MIN_VEGO, min_ncc: float = LONG_MIN_NCC,
-               min_confidence: float = LONG_MIN_CONFIDENCE):
+               min_vego: float = LONG_MIN_VEGO, min_ncc: float = LONG_MIN_NCC):
     self.dt = dt
     self.window_sec = window_sec
     self.okay_window_sec = okay_window_sec
@@ -402,7 +448,6 @@ class LongitudinalLagEstimator:
     self.min_valid_block_count = min_valid_block_count
     self.min_vego = min_vego
     self.min_ncc = min_ncc
-    self.min_confidence = min_confidence
     self.enabled = bool(CP.openpilotLongitudinalControl and str(CP.carFingerprint) == "KIA_CARNIVAL_4TH_GEN")
 
     self.t = 0.0
@@ -449,28 +494,32 @@ class LongitudinalLagEstimator:
 
   def update_estimate(self):
     times, desired, actual, okay = self.points.get()
-    enough_points = self.points.num_okay >= int(self.okay_window_sec / self.dt)
-    enough_excitation = (np.ptp(desired[okay]) >= LONG_MIN_COMMAND_RANGE and
-                         np.ptp(actual[okay]) >= LONG_MIN_ACCEL_RANGE) if np.any(okay) else False
-    if not enough_points or not enough_excitation:
+    if self.last_estimate_t != 0 and self.t - self.last_estimate_t < LONG_ESTIMATE_STEP_SEC:
+      return
+    valid_idx = np.flatnonzero(okay)
+    if len(valid_idx) < int(self.okay_window_sec / self.dt):
       return
 
     if self.last_estimate_t != 0 and times[0] <= self.last_estimate_t:
       if not np.any(okay & (times > self.last_estimate_t)):
         return
 
-    desired = masked_symmetric_moving_average(desired, okay, SMOOTH_K, SMOOTH_SIGMA)
-    actual = masked_symmetric_moving_average(actual, okay, SMOOTH_K, SMOOTH_SIGMA)
-    delay, corr, confidence = LateralLagEstimator.actuator_delay(desired, actual, okay, self.dt, LONG_MAX_LAG)
-    if not np.isfinite((delay, corr, confidence)).all():
+    split_points = np.flatnonzero(
+      (np.diff(valid_idx) != 1) | (np.diff(times[valid_idx]) > LONG_MAX_SAMPLE_GAP)
+    ) + 1
+    valid_runs = np.split(valid_idx, split_points)
+    min_window_points = int(self.okay_window_sec / self.dt)
+    run = next((candidate for candidate in reversed(valid_runs) if len(candidate) >= min_window_points), None)
+    if run is None:
       return
-    # Closed-loop command and measured acceleration can correlate at zero delay even when the
-    # physical plant is delayed. A boundary optimum is not identifiable evidence and must never
-    # graduate into the persistent estimate.
-    if delay <= LONG_DELAY_MIN + self.dt or delay >= LONG_MAX_LAG - self.dt:
+
+    window_idx = run[-min_window_points:]
+    estimate = longitudinal_delay_window_estimate(
+      desired[window_idx], actual[window_idx], self.dt, min_corr=self.min_ncc,
+    )
+    if estimate is None:
       return
-    if corr < self.min_ncc or confidence < self.min_confidence:
-      return
+    delay, _, _ = estimate
 
     self.block_avg.update(float(np.clip(delay, LONG_DELAY_MIN, LONG_DELAY_MAX)))
     self.last_estimate_t = self.t
@@ -492,6 +541,7 @@ class LongitudinalLagEstimator:
       live_delay.longitudinalDelayEstimate = self.initial_lag
       live_delay.longitudinalDelayEstimateStd = 0.0
     live_delay.longitudinalValidBlocks = self.block_avg.valid_blocks
+    live_delay.longitudinalEstimatorVersion = LONG_ESTIMATOR_VERSION
     live_delay.longitudinalCalPerc = min(
       100 * (self.block_avg.valid_blocks * self.block_size + self.block_avg.idx) //
       (self.min_valid_block_count * self.block_size), 100,
@@ -531,6 +581,7 @@ def retrieve_initial_longitudinal_lag(params: Params, CP: car.CarParams):
       if last_CP.carFingerprint != CP.carFingerprint:
         raise Exception("Car model mismatch")
       ld = last_lag_msg.liveDelay
+      assert int(ld.longitudinalEstimatorVersion) == LONG_ESTIMATOR_VERSION, "Longitudinal estimator version mismatch"
       lag = float(ld.longitudinalDelayEstimate)
       valid_blocks = int(ld.longitudinalValidBlocks)
       assert LONG_DELAY_MIN + 1e-3 < lag < LONG_DELAY_MAX - 1e-3, "Boundary longitudinal lag"

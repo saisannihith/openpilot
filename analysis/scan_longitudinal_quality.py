@@ -356,7 +356,8 @@ def summarize_accel_jumps(samples: list[Sample]) -> list[dict[str, Any]]:
   jumps: list[dict[str, Any]] = []
   previous: Sample | None = None
   for sample in samples:
-    if previous is not None and sample.route == previous.route and sample.segment == previous.segment and sample.long_active and previous.long_active:
+    if (previous is not None and sample.route == previous.route and sample.segment == previous.segment and
+        sample.enabled and previous.enabled and sample.long_active and previous.long_active):
       dt = sample.t - previous.t
       if 0.015 <= dt <= 0.35:
         step = sample.plan_accel - previous.plan_accel
@@ -377,6 +378,7 @@ def summarize_accel_jumps(samples: list[Sample]) -> list[dict[str, Any]]:
             "forcingStop": sample.forcing_stop,
             "shouldStop": sample.should_stop,
             "source": sample.source,
+            "enabled": sample.enabled,
           })
     previous = sample
   jumps.sort(key=lambda event: abs(event["jerk"]), reverse=True)
@@ -426,12 +428,12 @@ def analyze(samples: list[Sample], software_metadata: list[dict[str, Any]] | Non
   stop_groups = group_by_gap(samples, lambda s: s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop, max_gap=1.5)
   no_context_brakes = [
     event_dict(s) for s in samples
-    if s.long_active and s.v_ego >= 12.0 and s.cmd_accel <= -1.8 and
+    if s.enabled and s.long_active and s.v_ego >= 12.0 and s.cmd_accel <= -1.8 and
     not s.lead_status and not s.red_light and not s.forcing_stop and not s.should_stop and not s.model_should_stop
   ][:80]
   stop_context_brakes = [
     event_dict(s) for s in samples
-    if s.long_active and s.v_ego >= 12.0 and s.cmd_accel <= -1.8 and
+    if s.enabled and s.long_active and s.v_ego >= 12.0 and s.cmd_accel <= -1.8 and
     not s.lead_status and (s.red_light or s.forcing_stop or s.should_stop or s.model_should_stop)
   ][:80]
   return {

@@ -18,8 +18,10 @@ from openpilot.tools.lib.logreader import LogReader, ReadMode
 TRACK_MIN = 0xC4100
 TRACK_MAX = 0xC41FF
 HISTORY_SECONDS = 1.0
-FUTURE_MIN_SECONDS = 0.25
-FUTURE_MAX_SECONDS = 0.60
+FUTURE_MIN_SECONDS = 0.15
+FUTURE_MAX_SECONDS = 0.70
+FUTURE_MIN_SPAN_SECONDS = 0.45
+FUTURE_MAX_RANGE_RMSE = 0.15
 
 
 @dataclass(frozen=True)
@@ -106,12 +108,29 @@ def regression_rate(history):
 
 
 def future_rate(observations, now, distance):
-  future = next(((t, d) for t, d in observations
-                 if FUTURE_MIN_SECONDS <= (t - now) / 1e9 <= FUTURE_MAX_SECONDS), None)
-  if future is None:
+  # A single 0.05 m-quantized range sample 0.25 s ahead has about 0.2 m/s velocity
+  # resolution, which is too noisy for the 0.1 m/s event-regression contract. Fit all
+  # future samples instead and reject track jumps or nonlinear range histories.
+  points = [(0.0, float(distance))]
+  for t, d in observations:
+    dt = (t - now) / 1e9
+    if FUTURE_MIN_SECONDS <= dt <= FUTURE_MAX_SECONDS:
+      points.append((dt, float(d)))
+    elif dt > FUTURE_MAX_SECONDS:
+      break
+  if len(points) < 6:
     return None
-  dt = (future[0] - now) / 1e9
-  return (future[1] - distance) / dt, dt
+  times = np.asarray([point[0] for point in points], dtype=np.float64)
+  distances = np.asarray([point[1] for point in points], dtype=np.float64)
+  if np.ptp(times) < FUTURE_MIN_SPAN_SECONDS or not np.isfinite(distances).all():
+    return None
+  slope, intercept = np.polyfit(times, distances, 1)
+  residual_rmse = float(np.sqrt(np.mean((distances - (slope * times + intercept)) ** 2)))
+  if not np.isfinite((slope, residual_rmse)).all() or residual_rmse > FUTURE_MAX_RANGE_RMSE:
+    return None
+  # With constant acceleration the regression slope corresponds to velocity near
+  # the mean sample time. Forecast model velocity to that same temporal location.
+  return float(slope), float(np.mean(times))
 
 
 def extract(raw, start, size, signed=False):
@@ -225,7 +244,7 @@ def evaluate_learned_observer(samples, observations):
         sample["modelProb"] < 0.75 or not 5.0 < sample["dRel"] < 120.0 or
         abs(sample["rawVRel"] - sample["observedVRel"]) > 0.75):
       continue
-    model_forecast = sample["modelVRel"] + 0.5 * sample["modelARel"] * future_dt
+    model_forecast = sample["modelVRel"] + sample["modelARel"] * future_dt
     target_correction = float(np.clip(future - model_forecast, -1.0, 1.0))
     fold = zlib.crc32(sample["routeSegment"].encode()) % 5
     rows.append((sample, features, target_correction, future, future_dt, fold))
@@ -259,8 +278,8 @@ def evaluate_learned_observer(samples, observations):
     # A learned observer still has a hard authority bound. The model owns lead semantics and
     # acceleration; this estimates only a small velocity residual.
     correction = float(np.clip(predictions[index], -0.35, 0.35))
-    fused_forecast = sample["modelVRel"] + correction + 0.5 * sample["modelARel"] * future_dt
-    model_forecast = sample["modelVRel"] + 0.5 * sample["modelARel"] * future_dt
+    fused_forecast = sample["modelVRel"] + correction + sample["modelARel"] * future_dt
+    model_forecast = sample["modelVRel"] + sample["modelARel"] * future_dt
     model_error = abs(model_forecast - future)
     fused_error = abs(fused_forecast - future)
     improvement = model_error - fused_error
@@ -432,12 +451,9 @@ def main():
       if policy.relative_accel_forecast:
         if "rawARel" not in sample:
           continue
-        # future_rate is the average relative velocity across the interval.
-        # Under constant relative acceleration, its matching prediction is
-        # v_now + 0.5 * a_rel * dt.
-        fused += 0.5 * sample["rawARel"] * future_dt
-      model_forecast = sample["modelVRel"] + 0.5 * sample["modelARel"] * future_dt
-      fused_forecast = fused + 0.5 * sample["modelARel"] * future_dt
+        fused += sample["rawARel"] * future_dt
+      model_forecast = sample["modelVRel"] + sample["modelARel"] * future_dt
+      fused_forecast = fused + sample["modelARel"] * future_dt
       model_error = abs(model_forecast - future)
       fused_error = abs(fused_forecast - future)
       improvement = model_error - fused_error
@@ -517,6 +533,13 @@ def main():
   report = {
     "files": len(paths),
     "matchedSamples": len(samples),
+    "futureLabelContract": {
+      "method": "multi-sample range regression",
+      "minSeconds": FUTURE_MIN_SECONDS,
+      "maxSeconds": FUTURE_MAX_SECONDS,
+      "minSpanSeconds": FUTURE_MIN_SPAN_SECONDS,
+      "maxRangeRmse": FUTURE_MAX_RANGE_RMSE,
+    },
     "policies": reports,
     "trackGroups": {
       "r0100": group_diagnostics(),

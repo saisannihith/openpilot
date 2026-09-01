@@ -8,6 +8,7 @@ import pytest
 from cereal import messaging, log, car
 from openpilot.selfdrive.locationd.lagd import LateralLagEstimator, LongitudinalLagEstimator, retrieve_initial_lag, \
                                                retrieve_initial_longitudinal_lag, masked_normalized_cross_correlation, \
+                                               longitudinal_delay_window_estimate, \
                                                BLOCK_NUM_NEEDED, BLOCK_SIZE, MIN_OKAY_WINDOW_SEC, MAX_LAG
 from openpilot.selfdrive.test.process_replay.migration import migrate, migrate_carParams
 from openpilot.selfdrive.locationd.test.test_locationd_scenarios import TEST_ROUTE
@@ -48,11 +49,16 @@ def process_messages(estimator, lag_frames, n_frames, vego=20.0, rejection_thres
 
 
 def process_longitudinal_messages(estimator, lag_frames, n_frames, vego=20.0, pedal_override=False):
+  levels = np.array([0.7, -0.45, 0.3, -0.7, 0.55, -0.25, 0.8, -0.5, 0.35,
+                     -0.65, 0.45, -0.3, 0.75, -0.4, 0.25, -0.75, 0.5, -0.3, 0.65])
+
+  def command_at(t):
+    return float(levels[int(max(t, 0.0) / 0.65) % len(levels)] + 0.08 * np.sin(2.7 * t))
+
   for i in range(n_frames):
     t = i * estimator.dt
-    command = float(0.7 * np.sin(0.8 * t) + 0.25 * np.sin(2.1 * t))
-    actual = float(0.7 * np.sin(0.8 * (t - lag_frames * estimator.dt)) +
-                   0.25 * np.sin(2.1 * (t - lag_frames * estimator.dt)))
+    command = command_at(t)
+    actual = command_at(t - lag_frames * estimator.dt)
     cc = car.CarControl(longActive=True)
     cc.actuators.accel = command
     cs = car.CarState(vEgo=vego, aEgo=actual, steeringAngleDeg=0.0,
@@ -76,8 +82,8 @@ class TestLagd:
 
     assert msg.liveDelay.lateralDelay == pytest.approx(0.30)
 
-  def test_read_saved_params(self):
-    params = Params()
+  def test_read_saved_params(self, tmp_path):
+    params = Params(str(tmp_path))
 
     lr = migrate(LogReader(TEST_ROUTE), [migrate_carParams])
     CP = next(m for m in lr if m.which() == "carParams").carParams
@@ -137,7 +143,7 @@ class TestLagd:
     lag_frames = 7
     estimator = LongitudinalLagEstimator(
       mocked_CP, DT, min_recovery_buffer_sec=0.0, min_valid_block_count=1,
-      block_size=4, okay_window_sec=8.0, min_ncc=0.6, min_confidence=0.4,
+      block_size=1, okay_window_sec=8.0, min_ncc=0.6,
     )
     process_longitudinal_messages(estimator, lag_frames, int(10.0 / DT) + 20)
     msg = messaging.new_message('liveDelay')
@@ -155,16 +161,35 @@ class TestLagd:
     assert rejected_msg.liveDelay.longitudinalStatus == 'unestimated'
     assert rejected_msg.liveDelay.longitudinalDelay == pytest.approx(0.5)
 
-  def test_read_saved_longitudinal_params(self):
-    params = Params()
+  def test_longitudinal_estimator_rejects_broad_periodic_peak(self):
+    t = np.arange(0.0, 12.0, DT)
+    lag = 7 * DT
+    command = 0.7 * np.sin(0.8 * t) + 0.25 * np.sin(2.1 * t)
+    actual = 0.7 * np.sin(0.8 * (t - lag)) + 0.25 * np.sin(2.1 * (t - lag))
+    assert longitudinal_delay_window_estimate(command, actual, DT) is None
+
+  def test_read_saved_longitudinal_params(self, tmp_path):
+    params = Params(str(tmp_path))
+    CP = car.CarParams(carFingerprint="KIA_CARNIVAL_4TH_GEN", longitudinalActuatorDelay=0.5)
+    msg = messaging.new_message('liveDelay')
+    msg.liveDelay.longitudinalDelayEstimate = 0.42
+    msg.liveDelay.longitudinalValidBlocks = 3
+    msg.liveDelay.longitudinalStatus = 'estimated'
+    msg.liveDelay.longitudinalEstimatorVersion = 2
+    params.put("LiveDelay", msg.to_bytes())
+    params.put("CarParamsPrevRoute", CP.to_bytes())
+    assert retrieve_initial_longitudinal_lag(params, CP) == pytest.approx((0.42, 3))
+
+  def test_reject_saved_longitudinal_params_from_old_estimator(self, tmp_path):
+    params = Params(str(tmp_path))
     CP = car.CarParams(carFingerprint="KIA_CARNIVAL_4TH_GEN", longitudinalActuatorDelay=0.5)
     msg = messaging.new_message('liveDelay')
     msg.liveDelay.longitudinalDelayEstimate = 0.42
     msg.liveDelay.longitudinalValidBlocks = 3
     msg.liveDelay.longitudinalStatus = 'estimated'
     params.put("LiveDelay", msg.to_bytes())
-    params.put("CarParamsPrevRoute", CP.as_builder().to_bytes())
-    assert retrieve_initial_longitudinal_lag(params, CP) == pytest.approx((0.42, 3))
+    params.put("CarParamsPrevRoute", CP.to_bytes())
+    assert retrieve_initial_longitudinal_lag(params, CP) is None
 
   def test_estimator_basics(self, subtests):
     for lag_frames in range(LAGD_MAX_LAG_FRAMES - 1):
