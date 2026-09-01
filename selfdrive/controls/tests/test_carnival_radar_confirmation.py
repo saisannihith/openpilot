@@ -5,6 +5,8 @@ from openpilot.selfdrive.controls.radard import (
   KalmanParams,
   Track,
   carnival_confirmation_innovation_score,
+  carnival_model_first_velocity,
+  carnival_trailing_relative_velocity,
   get_lead,
   is_carnival_confirmation_track,
   is_carnival_r0100_track,
@@ -32,6 +34,17 @@ def make_model_data(path_y: float = 0.0):
       y=[path_y, path_y, path_y, path_y, path_y],
     ),
   )
+
+
+def make_velocity_track(relative_velocity: float = -1.0, raw_velocity: float | None = None) -> Track:
+  track = Track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1, 9.0, KalmanParams(0.05))
+  for frame in range(25):
+    time_s = frame * 0.05
+    distance = 40.0 + relative_velocity * time_s
+    measured_velocity = relative_velocity if raw_velocity is None else raw_velocity
+    track.update(distance, 0.0, measured_velocity, 10.0 + measured_velocity, True,
+                 measurement_time=time_s)
+  return track
 
 
 def test_carnival_confirmation_track_id_range():
@@ -616,3 +629,69 @@ def test_carnival_confirmation_innovation_score_uses_distance_lateral_and_veloci
 
   assert matching_score == 0.0
   assert mismatching_score > 11.345
+
+
+def test_carnival_trailing_velocity_recovers_causal_distance_rate():
+  track = make_velocity_track(relative_velocity=-1.0)
+
+  estimate = carnival_trailing_relative_velocity(track, model_a_rel=0.0)
+
+  assert estimate is not None
+  assert abs(estimate + 1.0) < 1e-6
+
+
+def test_carnival_velocity_correction_requires_stable_model_association():
+  track = make_velocity_track(relative_velocity=-1.0)
+
+  immature = carnival_model_first_velocity(track, -0.2, 0.0, 0.9, 11, track.identifier)
+  switched = carnival_model_first_velocity(track, -0.2, 0.0, 0.9, 12, track.identifier + 1)
+  corrected = carnival_model_first_velocity(track, -0.2, 0.0, 0.9, 12, track.identifier)
+
+  assert immature == -0.2
+  assert switched == -0.2
+  assert abs(corrected - -0.28) < 1e-6
+
+
+def test_carnival_velocity_correction_rejects_raw_range_disagreement():
+  track = make_velocity_track(relative_velocity=-1.0, raw_velocity=2.0)
+
+  corrected = carnival_model_first_velocity(track, -0.2, 0.0, 0.9, 12, track.identifier)
+
+  assert corrected == -0.2
+
+
+def test_carnival_velocity_correction_is_hard_bounded():
+  track = make_velocity_track(relative_velocity=-3.0)
+
+  corrected = carnival_model_first_velocity(track, 1.0, 0.0, 0.9, 12, track.identifier)
+
+  assert abs(corrected - 0.9) < 1e-6
+
+
+def test_carnival_distance_discontinuity_resets_velocity_history():
+  track = make_velocity_track(relative_velocity=-1.0)
+
+  track.update(90.0, 0.0, -1.0, 9.0, True, measurement_time=2.0)
+
+  assert len(track.carnival_distance_history) == 1
+  assert carnival_trailing_relative_velocity(track, model_a_rel=0.0) is None
+
+
+def test_carnival_velocity_uses_raw_model_probability_not_filtered_holdover():
+  track = make_velocity_track(relative_velocity=-1.0)
+  lead = SimpleNamespace(
+    prob=0.7, x=[track.dRel + 1.52], y=[0.0], v=[9.8], a=[0.0],
+    xStd=[2.0], yStd=[0.3], vStd=[1.0],
+  )
+
+  lead_state = get_lead(
+    v_ego=10.0, ready=True, tracks={track.identifier: track}, lead_msg=lead,
+    model_v_ego=10.0, model_data=make_model_data(), standstill=False,
+    starpilot_plan=SimpleNamespace(increasedStoppedDistance=0.0),
+    starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
+    low_speed_override=True, lead_prob=0.9, preferred_track_id=track.identifier,
+    selected_frames=12,
+  )
+
+  assert lead_state["radar"]
+  assert abs(lead_state["vRel"] - -0.2) < 1e-6
