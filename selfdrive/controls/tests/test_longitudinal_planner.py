@@ -309,6 +309,49 @@ def test_mpc_panic_bypass_immediately_removes_duplicate_vision_filter():
   assert mpc.lead_v_filter.x == pytest.approx(10.0)
 
 
+def test_mpc_model_dropout_keeps_raw_lead_velocity_anchor():
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(32.8, 0.0)
+  lead = make_lead(status=True, d_rel=78.5, v_lead=33.0, radar=True, model_prob=0.99)
+  _, model_lead = make_model_lead(prob=0.99, v=[33.0] * len(ModelConstants.LEAD_T_IDXS))
+
+  model_path = mpc.process_lead(lead, model_lead=model_lead)
+  model_lead.prob = 0.49
+  raw_fallback = mpc.process_lead(lead, model_lead=model_lead)
+
+  assert model_path[0, 1] == pytest.approx(33.0)
+  assert raw_fallback[0, 1] == pytest.approx(33.0)
+
+
+def test_mpc_inactive_placeholder_stays_nonbinding_after_model_path():
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(32.8, 0.0)
+  lead = make_lead(status=True, d_rel=78.5, v_lead=33.0, radar=True, model_prob=0.99)
+  _, model_lead = make_model_lead(prob=0.99, v=[33.0] * len(ModelConstants.LEAD_T_IDXS))
+
+  mpc.process_lead(lead, model_lead=model_lead)
+  placeholder = mpc.process_lead(lead, tracking_lead=False)
+
+  assert placeholder[0, 0] == pytest.approx(50.0)
+  assert placeholder[0, 1] >= 33.0
+
+
+def test_mpc_model_dropout_uses_matching_lead_anchor():
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(32.8, 0.0)
+  lead_zero = make_lead(status=True, d_rel=78.5, v_lead=33.0, radar=True, model_prob=0.99)
+  lead_one = make_lead(status=True, d_rel=40.0, v_lead=15.0, radar=True, model_prob=0.99)
+  _, model_zero = make_model_lead(prob=0.99, v=[33.0] * len(ModelConstants.LEAD_T_IDXS))
+  _, model_one = make_model_lead(prob=0.99, v=[15.0] * len(ModelConstants.LEAD_T_IDXS))
+
+  mpc.process_lead(lead_zero, model_lead=model_zero, lead_index=0)
+  mpc.process_lead(lead_one, model_lead=model_one, lead_index=1)
+  model_zero.prob = 0.49
+  raw_fallback = mpc.process_lead(lead_zero, model_lead=model_zero, lead_index=0)
+
+  assert raw_fallback[0, 1] == pytest.approx(33.0)
+
+
 def test_hrv_far_follow_output_slew_damps_only_continuous_safe_follow():
   v_ego = 24.0
   CP = CarInterface.get_non_essential_params(CAR.HONDA_HRV_3G)

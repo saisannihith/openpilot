@@ -15,11 +15,10 @@ def set_openpilot_long_disabled(params: Params, disabled: bool) -> None:
 
 def set_experimental_mode(params: Params, enabled: bool) -> None:
   params.put_bool("ExperimentalMode", enabled)
-  if enabled:
-    params.put_bool("ConditionalExperimental", False)
-    params.put_bool("ConditionalChill", True)
-  else:
-    params.put_bool("ConditionalChill", False)
+  # The base toggle is an explicit mode selection. Conditional modes remain
+  # available through their own controls, but must not silently override it.
+  params.put_bool("ConditionalExperimental", False)
+  params.put_bool("ConditionalChill", False)
 
 
 def set_conditional_drive_mode(params: Params, mode: str) -> None:
@@ -54,7 +53,5 @@ def reconcile_longitudinal_mode_params(params: Params, params_cache: Params | No
     update("ExperimentalMode", True)
   elif conditional_experimental:
     update("ExperimentalMode", False)
-  elif params.get_bool("ExperimentalMode"):
-    update("ConditionalChill", True)
 
   return updates

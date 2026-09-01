@@ -440,6 +440,9 @@ class LongitudinalMpc:
     self.duplicate_lead_x_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
     self.duplicate_lead_a_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
     self.duplicate_lead_v_filters = [FirstOrderFilter(0.0, 0.0, self.dt, initialized=False) for _ in range(2)]
+    self.model_fallback_a = [0.0, 0.0]
+    self.model_fallback_v = [0.0, 0.0]
+    self.model_fallback_pending = [False, False]
     # Slew-limited filter factor to avoid abrupt 0.50↔1.00 jumps
     self.filter_time_factor = 1.0
     self.prev_filter_time_factor = 1.0
@@ -486,6 +489,7 @@ class LongitudinalMpc:
     for lead_filter in (*self.duplicate_lead_x_filters, *self.duplicate_lead_a_filters, *self.duplicate_lead_v_filters):
       lead_filter.x = 0.0
       lead_filter.initialized = False
+    self.model_fallback_pending = [False, False]
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights):
@@ -633,7 +637,20 @@ class LongitudinalMpc:
     if lead_active:
       model_lead_xv = build_model_lead_trajectory(model_lead, lead, v_ego)
       if model_lead_xv is not None:
+        # Retain a per-lead h=0 anchor for a possible transition back to the raw
+        # trajectory. The normal raw filter is shared by lead0 and lead1, so
+        # updating it here would let one model lead contaminate the other.
+        self.model_fallback_a[lead_index] = float(np.clip(lead.aLeadK, -10.0, 5.0))
+        self.model_fallback_v[lead_index] = float(np.clip(lead.vLead, 0.0, 1e8))
+        self.model_fallback_pending[lead_index] = True
         return model_lead_xv
+
+    if self.model_fallback_pending[lead_index]:
+      # Seed once on the model-to-raw boundary. Without this handoff, the
+      # shared filter can still contain startup state or the other lead.
+      self.lead_a_filter.x = self.model_fallback_a[lead_index]
+      self.lead_v_filter.x = self.model_fallback_v[lead_index]
+      self.model_fallback_pending[lead_index] = False
 
     if lead_active:
       x_lead = lead.dRel

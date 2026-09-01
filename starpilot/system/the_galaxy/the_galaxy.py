@@ -5612,8 +5612,11 @@ def setup(app):
         enabled = str_val.strip() in ("1", "true", "True")
         set_experimental_mode(params, enabled)
         update_starpilot_toggles()
-        updated = {key: enabled}
-        updated["ConditionalExperimental" if enabled else "ConditionalChill"] = False
+        updated = {
+          "ExperimentalMode": params.get_bool("ExperimentalMode"),
+          "ConditionalExperimental": params.get_bool("ConditionalExperimental"),
+          "ConditionalChill": params.get_bool("ConditionalChill"),
+        }
         return jsonify({
           "message": f"Parameter '{key}' updated successfully.",
           "updated": updated,

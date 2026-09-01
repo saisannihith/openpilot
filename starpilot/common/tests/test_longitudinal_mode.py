@@ -44,24 +44,29 @@ def test_conditional_modes_match_base_experimental_state():
   assert not params.get_bool("ExperimentalMode")
 
 
-def test_base_experimental_toggle_selects_conditional_chill():
-  params = FakeParams({"ConditionalChill": True})
+def test_base_experimental_toggle_disables_conditional_modes():
+  params = FakeParams({"ConditionalExperimental": True, "ConditionalChill": True})
   set_experimental_mode(params, False)
+  assert not params.get_bool("ExperimentalMode")
+  assert not params.get_bool("ConditionalExperimental")
   assert not params.get_bool("ConditionalChill")
 
   params.values["ConditionalExperimental"] = True
+  params.values["ConditionalChill"] = True
   set_experimental_mode(params, True)
-  assert not params.get_bool("ConditionalExperimental")
-  assert params.get_bool("ConditionalChill")
   assert params.get_bool("ExperimentalMode")
+  assert not params.get_bool("ConditionalExperimental")
+  assert not params.get_bool("ConditionalChill")
 
 
-def test_reconcile_upgrades_base_experimental_to_conditional_chill():
+def test_reconcile_preserves_base_experimental_mode():
   params = FakeParams({"ExperimentalMode": True})
 
   updates = reconcile_longitudinal_mode_params(params)
 
-  assert updates == {"ConditionalChill": True}
+  assert updates == {}
+  assert params.get_bool("ExperimentalMode")
+  assert not params.get_bool("ConditionalChill")
 
 
 def test_reconcile_prefers_explicit_disable_and_conditional_chill():
