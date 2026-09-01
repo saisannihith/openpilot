@@ -59,8 +59,12 @@ BO_ 203 ADAS_CMD_35_10ms: 24 CGW_CCU
 BO_ 234 MDPS: 24 XXX
  SG_ CHECKSUM : 0|16@1+ (1,0) [0|65535] "" XXX
  SG_ COUNTER : 16|8@1+ (1,0) [0|255] "" XXX
- SG_ LKA_ACTIVE : 48|1@0+ (1,0) [0|16777215] "" XXX
- SG_ LKA_FAULT : 54|1@0+ (1,0) [0|1] "" XXX
+ SG_ MDPS_WARNING_LAMP : 24|3@1+ (1,0) [0|7] "" XXX
+ SG_ MDPS_LKA_PLUGIN : 46|2@1+ (1,0) [0|3] "" XXX
+ SG_ MDPS_LKA_TOI_ACTIVE : 48|2@1+ (1,0) [0|3] "" XXX
+ SG_ MDPS_LKA_TOI_UNAVAILABLE : 50|2@1+ (1,0) [0|3] "" XXX
+ SG_ MDPS_LKA_TOI_FAULT : 52|2@1+ (1,0) [0|3] "" XXX
+ SG_ MDPS_LKA_FAIL : 54|2@1+ (1,0) [0|3] "" XXX
  SG_ STEERING_OUT_TORQUE : 64|12@1+ (0.1,-204.8) [0|65535] "" XXX
  SG_ STEERING_COL_TORQUE : 80|13@1+ (1,-4095) [0|4095] "" XXX
  SG_ STEERING_ANGLE : 96|16@1- (0.1,0) [0|255] "deg" XXX
@@ -872,7 +876,11 @@ VAL_ 203 ADAS_StrAnglReqVal 0 "0x0x000~0x3FFF:Real Values" 16383 "0x0x000~0x3FFF
 VAL_ 203 ADAS_ACIAnglTqRedcGainVal 0 "0x0x00~0xFA:Real Values" 250 "0x0x00~0xFA:Real Values" 251 "RESERVED" 252 "RESERVED" 253 "RESERVED" 254 "RESERVED" 255 "RESERVED";
 VAL_ 203 FCA_ESA_ActvSta 0 "Inactive" 1 "Active" 2 "RESERVED" 3 "RESERVED";
 VAL_ 203 FCA_ESA_TqBstGainVal 0 "0x0x00~0xFA:Real Values" 250 "0x0x00~0xFA:Real Values" 251 "RESERVED" 252 "RESERVED" 253 "RESERVED" 254 "RESERVED" 255 "RESERVED";
-VAL_ 234 LKA_FAULT 0 "ok" 1 "lka fault";
+VAL_ 234 MDPS_LKA_PLUGIN 0 "unplugged" 1 "plugged in" 2 "reserved" 3 "error";
+VAL_ 234 MDPS_LKA_TOI_ACTIVE 0 "deactivated" 1 "activated" 2 "reserved" 3 "error";
+VAL_ 234 MDPS_LKA_TOI_UNAVAILABLE 0 "available" 1 "unavailable" 2 "reserved" 3 "error";
+VAL_ 234 MDPS_LKA_TOI_FAULT 0 "no fault" 1 "fault" 2 "reserved" 3 "error";
+VAL_ 234 MDPS_LKA_FAIL 0 "not failed" 1 "failed" 2 "reserved" 3 "error";
 VAL_ 272 LKA_MODE 1 "warning only" 2 "assist" 6 "off";
 VAL_ 272 LKA_ICON 0 "hidden" 1 "grey" 2 "green" 3 "flashing green";
 VAL_ 272 LKAS_ANGLE_ACTIVE 0 "off" 1 "not active" 2 "active";

@@ -29,6 +29,10 @@ CANFD_CAMERA_LEAD_STALE_NS = 300_000_000
 CANFD_LEAD_MIN_DISTANCE = 0.1
 CANFD_FALLBACK_LEAD_DISTANCE = 20.0
 HYUNDAI_DASH_DISENGAGE_BLINK_TIME = 1.0
+CARNIVAL_DRIVER_CONFLICT_TORQUE = 300
+CARNIVAL_DRIVER_CONFLICT_MIN_COMMAND = 40
+CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES = 20
+CARNIVAL_DRIVER_CONFLICT_UNWIND_STEP = 10
 HYUNDAI_CANFD_SCC_ACCEL_STEP = 5.0 / 50.0
 HYUNDAI_CANFD_SCC_DECEL_STEP = 12.5 / 50.0
 IONIQ_6_RESPONSE_MULTIPLIER = 1.2
@@ -437,6 +441,25 @@ def clear_ioniq_6_torque_when_request_inactive(CP, apply_torque: int, apply_stee
   return apply_torque
 
 
+def update_carnival_driver_conflict_hold(car_fingerprint, apply_torque: int, apply_torque_last: int,
+                                         driver_torque: float, lat_active: bool, hold_frames: int) -> tuple[int, int]:
+  if car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN or not lat_active:
+    return apply_torque, 0
+
+  strong_driver_override = abs(driver_torque) >= CARNIVAL_DRIVER_CONFLICT_TORQUE
+  opposing_command = abs(apply_torque_last) >= CARNIVAL_DRIVER_CONFLICT_MIN_COMMAND and apply_torque_last * driver_torque < 0
+  if strong_driver_override and (hold_frames > 0 or opposing_command):
+    hold_frames = CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES
+  elif hold_frames > 0:
+    hold_frames -= 1
+
+  if hold_frames > 0:
+    apply_torque = int(np.clip(0, apply_torque_last - CARNIVAL_DRIVER_CONFLICT_UNWIND_STEP,
+                              apply_torque_last + CARNIVAL_DRIVER_CONFLICT_UNWIND_STEP))
+
+  return apply_torque, hold_frames
+
+
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
@@ -451,6 +474,7 @@ class CarController(CarControllerBase):
 
     self.accel_last = 0
     self.apply_torque_last = 0
+    self.carnival_driver_conflict_hold_frames = 0
     self.apply_angle_last = 0.0
     self.car_fingerprint = CP.carFingerprint
     self.last_button_frame = 0
@@ -618,6 +642,11 @@ class CarController(CarControllerBase):
 
       if not CC.latActive:
         apply_torque = 0
+
+      apply_torque, self.carnival_driver_conflict_hold_frames = update_carnival_driver_conflict_hold(
+        self.CP.carFingerprint, apply_torque, self.apply_torque_last, CS.out.steeringTorque,
+        CC.latActive, self.carnival_driver_conflict_hold_frames,
+      )
 
       apply_torque = clear_ioniq_6_torque_when_request_inactive(self.CP, apply_torque, apply_steer_req)
 

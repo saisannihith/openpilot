@@ -490,8 +490,12 @@ class CarState(CarStateBase):
     ret.steeringTorque = cp.vl["MDPS"]["STEERING_COL_TORQUE"]
     ret.steeringTorqueEps = cp.vl["MDPS"]["STEERING_OUT_TORQUE"]
     ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > self.params.STEER_THRESHOLD, 5)
-    self.mdps_lka_fault = int(cp.vl["MDPS"]["LKA_FAULT"])
-    self.mdps_lka_active = int(cp.vl["MDPS"]["LKA_ACTIVE"])
+    self.mdps_warning_lamp = int(cp.vl["MDPS"]["MDPS_WARNING_LAMP"])
+    self.mdps_lka_plugin = int(cp.vl["MDPS"]["MDPS_LKA_PLUGIN"])
+    self.mdps_lka_active = int(cp.vl["MDPS"]["MDPS_LKA_TOI_ACTIVE"])
+    self.mdps_lka_unavailable = int(cp.vl["MDPS"]["MDPS_LKA_TOI_UNAVAILABLE"])
+    self.mdps_lka_toi_fault = int(cp.vl["MDPS"]["MDPS_LKA_TOI_FAULT"])
+    self.mdps_lka_fault = int(cp.vl["MDPS"]["MDPS_LKA_FAIL"])
     self.mdps_lka_angle_fault = 0
     ret.steerFaultTemporary = self.mdps_lka_fault != 0
     if self.CP.carFingerprint in CANFD_ANGLE_LONGITUDINAL_CAR:
@@ -609,6 +613,12 @@ class CarState(CarStateBase):
 
     fp_ret = custom.StarPilotCarState.new_message()
     fp_ret.dashboardSpeedLimit = calculate_canfd_speed_limit(self.CP, self.FPCP, cp, cp_cam, speed_factor)
+    fp_ret.mdpsWarningLamp = self.mdps_warning_lamp
+    fp_ret.mdpsLkaPlugin = self.mdps_lka_plugin
+    fp_ret.mdpsLkaToiActive = self.mdps_lka_active
+    fp_ret.mdpsLkaToiUnavailable = self.mdps_lka_unavailable
+    fp_ret.mdpsLkaToiFault = self.mdps_lka_toi_fault
+    fp_ret.mdpsLkaFail = self.mdps_lka_fault
 
     if self.CP.flags & HyundaiFlags.EV:
       drive_mode = cp.vl["DRIVE_MODE_EV"]["DRIVE_MODE"]
