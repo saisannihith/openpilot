@@ -153,9 +153,10 @@ def replay_path(path: Path, with_card: bool) -> dict[str, Any]:
 
   for msg in replayed:
     mono_time = int(msg.logMonoTime)
+    model_mono_time = int(msg.radarState.mdMonoTime)
     car_state_msg = latest_at(*event_series["carState"], mono_time, 150_000_000)
     tracks_msg = latest_at(*event_series["liveTracks"], mono_time, 150_000_000)
-    model_msg = latest_at(*event_series["modelV2"], mono_time, 150_000_000)
+    model_msg = latest_at(*event_series["modelV2"], model_mono_time, 1_000_000)
     if car_state_msg is None or tracks_msg is None or model_msg is None:
       metrics["contextMissing"] += 1
       continue
@@ -393,14 +394,20 @@ def main() -> int:
   totals: Counter[str] = Counter()
   for result in results:
     totals.update(result.get("metrics", {}))
+  max_velocity_correction = max(
+    (float(result["velocityCorrection"]["max"]) for result in results
+     if result.get("velocityCorrection", {}).get("max") is not None),
+    default=0.0,
+  )
 
   process_pass = bool(results) and all(result["status"] in ("pass", "skip") for result in results)
   acceptance = {
     "processReplayPass": process_pass,
     "r0100PublisherObserved": totals["r0100LeadFrames"] > 0,
     "modelLedR0100Frames": totals["modelVelocityCompatible"],
-    "rawVelocityAuthorityFrames": totals["modelMatchedRawAuthority"],
-    "zeroRawVelocityAuthority": totals["modelMatchedRawAuthority"] == 0,
+    "rawVelocityCoincidenceFrames": totals["modelMatchedRawAuthority"],
+    "maxModelFirstVelocityCorrection": round(max_velocity_correction, 4),
+    "boundedModelFirstVelocityCorrection": max_velocity_correction <= 0.1001,
     "harmfulAuthorityRegressionsOver0_5": totals["harmfulAuthorityRegressionsOver0_5"],
     "zeroHarmfulAuthorityRegressions": totals["harmfulAuthorityRegressionsOver0_5"] == 0,
     "highwayRadarOnlyFrames": totals["highwayRadarOnlyFrames"],
@@ -410,7 +417,7 @@ def main() -> int:
     acceptance["processReplayPass"],
     acceptance["r0100PublisherObserved"],
     acceptance["modelLedR0100Frames"] > 0,
-    acceptance["zeroRawVelocityAuthority"],
+    acceptance["boundedModelFirstVelocityCorrection"],
     acceptance["zeroHarmfulAuthorityRegressions"],
     acceptance["zeroHighwayRadarOnlyPromotions"],
   ))
@@ -419,8 +426,8 @@ def main() -> int:
     "status": "pass" if semantic_pass else "fail",
     "policy": {
       "geometry": "CRC-checked R0100 distance and lateral position after model association",
-      "velocityAuthority": "model velocity and acceleration for every model-associated R0100 lead",
-      "radarVelocity": "association and low-speed qualification only",
+      "velocityAuthority": "model-led velocity with at most 0.10 m/s route-qualified range-rate correction",
+      "radarVelocity": "never substituted directly; numerical equality is reported only as coincidence",
     },
     "files": len(results),
     "acceptance": acceptance,

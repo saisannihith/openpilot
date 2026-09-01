@@ -29,6 +29,10 @@ CANFD_CAMERA_LEAD_STALE_NS = 300_000_000
 CANFD_LEAD_MIN_DISTANCE = 0.1
 CANFD_FALLBACK_LEAD_DISTANCE = 20.0
 HYUNDAI_DASH_DISENGAGE_BLINK_TIME = 1.0
+CARNIVAL_DRIVER_CONFLICT_TORQUE = 250
+CARNIVAL_DRIVER_CONFLICT_MIN_COMMAND = 40
+CARNIVAL_DRIVER_CONFLICT_UNWIND_STEP = 10
+CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES = 10
 HYUNDAI_CANFD_SCC_ACCEL_STEP = 5.0 / 50.0
 HYUNDAI_CANFD_SCC_DECEL_STEP = 12.5 / 50.0
 IONIQ_6_RESPONSE_MULTIPLIER = 1.2
@@ -437,6 +441,29 @@ def clear_ioniq_6_torque_when_request_inactive(CP, apply_torque: int, apply_stee
   return apply_torque
 
 
+def update_carnival_driver_conflict_unwind(car_fingerprint, apply_torque: int, apply_torque_last: int,
+                                            driver_torque: float, steering_pressed: bool,
+                                            lat_active: bool, hold_frames: int) -> tuple[int, int]:
+  if car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN:
+    return apply_torque, 0
+
+  strong_driver_override = lat_active and steering_pressed and abs(driver_torque) >= CARNIVAL_DRIVER_CONFLICT_TORQUE
+  conflict = strong_driver_override and (
+    hold_frames > 0 or
+    (abs(apply_torque_last) >= CARNIVAL_DRIVER_CONFLICT_MIN_COMMAND and apply_torque_last * driver_torque < 0)
+  )
+  if conflict:
+    hold_frames = CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES
+  elif hold_frames > 0:
+    hold_frames -= 1
+
+  if hold_frames > 0:
+    apply_torque = int(np.clip(0, apply_torque_last - CARNIVAL_DRIVER_CONFLICT_UNWIND_STEP,
+                              apply_torque_last + CARNIVAL_DRIVER_CONFLICT_UNWIND_STEP))
+
+  return apply_torque, hold_frames
+
+
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
@@ -451,6 +478,7 @@ class CarController(CarControllerBase):
 
     self.accel_last = 0
     self.apply_torque_last = 0
+    self.carnival_driver_conflict_hold_frames = 0
     self.apply_angle_last = 0.0
     self.car_fingerprint = CP.carFingerprint
     self.last_button_frame = 0
@@ -610,6 +638,10 @@ class CarController(CarControllerBase):
       # steering torque
       new_torque = int(round(actuators.torque * self.params.STEER_MAX))
       apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last, CS.out.steeringTorque, self.params)
+      apply_torque, self.carnival_driver_conflict_hold_frames = update_carnival_driver_conflict_unwind(
+        self.CP.carFingerprint, apply_torque, self.apply_torque_last, CS.out.steeringTorque,
+        CS.out.steeringPressed, CC.latActive, self.carnival_driver_conflict_hold_frames,
+      )
 
       # >90 degree steering fault prevention
       self.angle_limit_counter, apply_steer_req = common_fault_avoidance(abs(CS.out.steeringAngleDeg) >= MAX_ANGLE, CC.latActive,

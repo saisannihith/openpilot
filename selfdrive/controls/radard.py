@@ -388,7 +388,9 @@ def carnival_confirmation_matches_vision(track: Track, lead: capnp._DynamicStruc
   lat_sane = abs(track.yRel + lead.y[0]) < max(CARNIVAL_4TH_GEN_CONFIRMATION_Y_FLOOR,
                                                CARNIVAL_4TH_GEN_CONFIRMATION_Y_STD_SCALE * max(float(lead.yStd[0]), 0.2))
   association_v_ego = v_ego if model_v_ego is None else model_v_ego
-  vel_sane = abs(track.vRel - (lead.v[0] - association_v_ego)) < max(
+  velocity_residual = abs(track.vRel - (lead.v[0] - association_v_ego))
+  moving_target = track.vRel + v_ego > 3.0
+  vel_sane = moving_target or velocity_residual < max(
     CARNIVAL_4TH_GEN_CONFIRMATION_V_FLOOR,
     CARNIVAL_4TH_GEN_CONFIRMATION_V_STD_SCALE * max(float(lead.vStd[0]), 0.5),
   )
@@ -409,10 +411,11 @@ def carnival_confirmation_innovation_score(track: Track, lead: capnp._DynamicStr
     return math.inf
 
   try:
+    moving_target = float(track.vRel) + float(model_v_ego) > 3.0
     residual = np.asarray([
       float(track.dRel) - (float(lead.x[0]) - RADAR_TO_CAMERA),
       float(track.yRel) + float(lead.y[0]),
-      float(track.vRel) - (float(lead.v[0]) - float(model_v_ego)),
+      0.0 if moving_target else float(track.vRel) - (float(lead.v[0]) - float(model_v_ego)),
     ])
     model_std = np.asarray([
       np.clip(float(lead.xStd[0]), 0.75, 6.0),

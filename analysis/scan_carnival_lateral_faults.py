@@ -16,6 +16,10 @@ CARNIVAL_STEER_MAX = 409
 HIGH_SPEED_FAULT_MPS = 17.0
 NEAR_FAULT_WINDOW_S = 2.0
 STRONG_DRIVER_OVERRIDE_TORQUE = 300.0
+DRIVER_CONFLICT_TORQUE = 250.0
+DRIVER_CONFLICT_MIN_COMMAND = 40
+DRIVER_CONFLICT_HOLD_S = 0.10
+DRIVER_CONFLICT_UNWIND_UNITS_PER_S = 1000.0
 EPS_RISK_MIN_SPEED = 8.0
 EPS_RISK_MIN_ANGLE = 3.0
 EPS_RISK_TORQUE_FRACTION = 0.88
@@ -235,6 +239,21 @@ def summarize_fault_episodes(samples: list[LateralSample]) -> list[dict[str, Any
       s for s in pre
       if s.steering_pressed and abs(s.steering_torque) >= STRONG_DRIVER_OVERRIDE_TORQUE
     ]
+    opposing_driver_conflict = [
+      s for s in pre
+      if s.steering_pressed and abs(s.steering_torque) >= DRIVER_CONFLICT_TORQUE and
+      abs(s.output_torque_units) >= DRIVER_CONFLICT_MIN_COMMAND and
+      s.steering_torque * s.output_torque_units < 0
+    ]
+    conflict_hold_covers_fault = bool(
+      opposing_driver_conflict and
+      first.t - opposing_driver_conflict[-1].t <= DRIVER_CONFLICT_HOLD_S + 1e-3
+    )
+    conflict_unwind_reaches_zero = bool(
+      opposing_driver_conflict and
+      first.t - opposing_driver_conflict[0].t >=
+      abs(opposing_driver_conflict[0].output_torque_units) / DRIVER_CONFLICT_UNWIND_UNITS_PER_S
+    )
     reversals = 0
     previous_sign = 0
     for sample in pre:
@@ -263,6 +282,9 @@ def summarize_fault_episodes(samples: list[LateralSample]) -> list[dict[str, Any
       "preFaultLastStrongDriverOverrideAgoS": (
         round(first.t - strong_driver_override[-1].t, 3) if strong_driver_override else None
       ),
+      "preFaultOpposingDriverConflictFrames": len(opposing_driver_conflict),
+      "conflictHoldCoversFault": conflict_hold_covers_fault,
+      "conflictUnwindReachesZeroBeforeFault": conflict_unwind_reaches_zero,
       "preFaultTorqueReversals": reversals,
       "firstFault": event_dict(first),
       "lastPreFault": event_dict(pre[-1]) if pre else None,

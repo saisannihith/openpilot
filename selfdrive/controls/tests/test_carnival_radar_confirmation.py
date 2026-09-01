@@ -208,7 +208,7 @@ def test_carnival_confirmation_track_can_confirm_matching_model_lead():
   assert confirmed["vLead"] == 11.0
 
 
-def test_carnival_confirmation_velocity_mismatch_falls_back_to_vision():
+def test_carnival_confirmation_moving_velocity_mismatch_keeps_geometry_association():
   track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1, d_rel=20.0, y_rel=0.0, v_rel=-5.0, v_ego=10.0)
   model_data = SimpleNamespace(
     meta=SimpleNamespace(laneChangeState=0, laneChangeDirection=0),
@@ -239,8 +239,8 @@ def test_carnival_confirmation_velocity_mismatch_falls_back_to_vision():
   )
 
   assert lead_state["status"]
-  assert not lead_state["radar"]
-  assert lead_state["radarTrackId"] == -1
+  assert lead_state["radar"]
+  assert lead_state["radarTrackId"] == track.identifier
   assert lead_state["vRel"] == 1.0
 
 
@@ -350,7 +350,7 @@ def test_carnival_confirmation_velocity_disagreement_stays_model_led():
   assert lead_state["vLead"] == 11.0
 
 
-def test_carnival_confirmation_distance_rate_stays_shadow_only():
+def test_carnival_confirmation_distance_rate_keeps_geometry_but_model_velocity():
   track = make_track(CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN + 1,
                      d_rel=30.0, y_rel=0.0, v_rel=-14.0, v_ego=22.0)
   for frame in range(1, 8):
@@ -384,7 +384,8 @@ def test_carnival_confirmation_distance_rate_stays_shadow_only():
     low_speed_override=True,
   )
 
-  assert not lead_state["radar"]
+  assert lead_state["radar"]
+  assert lead_state["radarTrackId"] == track.identifier
   assert lead_state["vRel"] == -1.0
 
   track.update(track.dRel, 0.0, -14.0, 8.0, True)
@@ -400,6 +401,8 @@ def test_carnival_confirmation_distance_rate_stays_shadow_only():
     starpilot_toggles=SimpleNamespace(lead_detection_probability=0.35, human_lane_changes=False),
     low_speed_override=True,
   )
+  assert held_state["radar"]
+  assert held_state["radarTrackId"] == track.identifier
   assert held_state["vRel"] == -1.0
 
 
@@ -436,7 +439,8 @@ def test_carnival_confirmation_inconsistent_distance_rate_stays_model_led():
     low_speed_override=True,
   )
 
-  assert not lead_state["radar"]
+  assert lead_state["radar"]
+  assert lead_state["radarTrackId"] == track.identifier
   assert lead_state["vRel"] == -1.0
 
 
@@ -628,7 +632,11 @@ def test_carnival_confirmation_innovation_score_uses_distance_lateral_and_veloci
   mismatching_score = carnival_confirmation_innovation_score(track, lead, 10.0)
 
   assert matching_score == 0.0
-  assert mismatching_score > 11.345
+  assert mismatching_score == 0.0
+
+  track.vRel = -9.0
+  stationary_mismatch_score = carnival_confirmation_innovation_score(track, lead, 10.0)
+  assert stationary_mismatch_score > 11.345
 
 
 def test_carnival_trailing_velocity_recovers_causal_distance_rate():

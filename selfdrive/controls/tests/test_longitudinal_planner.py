@@ -17,7 +17,8 @@ from opendbc.car.toyota.values import CAR as TOYOTA_CAR
 import openpilot.selfdrive.controls.lib.longitudinal_planner as longitudinal_planner_module
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
-from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, get_coast_accel, get_vehicle_min_accel, should_publish_planner_fcw
+from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner, get_coast_accel, get_vehicle_min_accel, \
+                                                                  should_publish_planner_fcw, update_post_lane_change_accel_settle
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LongitudinalMpc,
   build_model_lead_trajectory,
@@ -70,6 +71,45 @@ class _SmoothParams:
 
   def get_float(self, key, **kwargs):
     return self.value
+
+
+def test_post_lane_change_settle_caps_accel_for_nearby_lead():
+  settle_until, cap = update_post_lane_change_accel_settle(
+    log.LaneChangeState.laneChangeFinishing, log.LaneChangeState.off,
+    True, 58.0, -1.0, 31.0, 100.0, 0.0,
+  )
+  assert settle_until == pytest.approx(102.5)
+  assert cap == 0.0
+
+  settle_until, cap = update_post_lane_change_accel_settle(
+    log.LaneChangeState.off, log.LaneChangeState.off,
+    True, 45.0, -2.0, 31.0, 102.4, settle_until,
+  )
+  assert cap == 0.0
+
+  _, cap = update_post_lane_change_accel_settle(
+    log.LaneChangeState.off, log.LaneChangeState.off,
+    True, 45.0, -2.0, 31.0, 102.5, settle_until,
+  )
+  assert cap is None
+
+
+def test_post_lane_change_settle_does_not_arm_without_relevant_lead():
+  settle_until, cap = update_post_lane_change_accel_settle(
+    log.LaneChangeState.laneChangeFinishing, log.LaneChangeState.off,
+    False, 0.0, 0.0, 31.0, 100.0, 0.0,
+  )
+  assert (settle_until, cap) == (0.0, None)
+
+  settle_until, cap = update_post_lane_change_accel_settle(
+    log.LaneChangeState.laneChangeFinishing, log.LaneChangeState.off,
+    True, 58.0, -1.0, 31.0, 100.0, 0.0,
+  )
+  settle_until, cap = update_post_lane_change_accel_settle(
+    log.LaneChangeState.off, log.LaneChangeState.off,
+    True, 58.0, 2.1, 31.0, 100.1, settle_until,
+  )
+  assert (settle_until, cap) == (0.0, None)
 
 
 def test_model_smoothing_is_developer_gated_and_quantized():

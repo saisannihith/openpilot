@@ -74,6 +74,11 @@ LC_MERGE_TTC_ACCEL = 6.0
 LC_MERGE_ACCEL_MIN_DIST = 30.0
 LC_MERGE_HEADROOM_MIN = 2.0
 LC_MERGE_ACCEL_BIAS = 0.55
+POST_LANE_CHANGE_SETTLE_TIME = 2.5
+POST_LANE_CHANGE_SETTLE_MIN_DISTANCE = 35.0
+POST_LANE_CHANGE_SETTLE_MAX_DISTANCE = 85.0
+POST_LANE_CHANGE_SETTLE_HEADWAY = 2.5
+POST_LANE_CHANGE_SETTLE_RELEASE_VREL = 2.0
 
 A_CRUISE_MAX_BP = [0.0, 5., 10., 15., 20., 25., 40.]
 A_CRUISE_MAX_VALS = [1.125, 1.125, 1.125, 1.125, 1.25, 1.25, 1.5]
@@ -545,6 +550,27 @@ def get_accel_from_plan(speeds, accels, action_t=DT_MDL, vEgoStopping=0.05):
   return a_target, should_stop
 
 
+def update_post_lane_change_accel_settle(previous_state, current_state, lead_status: bool,
+                                         lead_distance: float, lead_v_rel: float, v_ego: float,
+                                         now: float, settle_until: float) -> tuple[float, float | None]:
+  max_distance = float(np.clip(
+    POST_LANE_CHANGE_SETTLE_HEADWAY * max(v_ego, 0.0),
+    POST_LANE_CHANGE_SETTLE_MIN_DISTANCE,
+    POST_LANE_CHANGE_SETTLE_MAX_DISTANCE,
+  ))
+  lane_change_finished = previous_state in LC_MERGE_STATES and current_state == LaneChangeState.off
+  relevant_lead = lead_status and lead_distance <= max_distance and lead_v_rel <= POST_LANE_CHANGE_SETTLE_RELEASE_VREL
+
+  if current_state != LaneChangeState.off:
+    settle_until = 0.0
+  elif lane_change_finished and relevant_lead:
+    settle_until = now + POST_LANE_CHANGE_SETTLE_TIME
+  elif lead_status and (lead_distance > max_distance + 10.0 or lead_v_rel > POST_LANE_CHANGE_SETTLE_RELEASE_VREL):
+    settle_until = 0.0
+
+  return settle_until, 0.0 if now < settle_until else None
+
+
 class LongitudinalPlanner:
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
@@ -625,6 +651,8 @@ class LongitudinalPlanner:
     self.duplicate_vision_comfort_lead_source = None
     self.prev_experimental_mode = None
     self.experimental_release_accel_until = 0.0
+    self.previous_lane_change_state = LaneChangeState.off
+    self.post_lane_change_settle_until = 0.0
 
     if self.is_preap:
       try:
@@ -3061,6 +3089,32 @@ class LongitudinalPlanner:
     if accord_stop_go_target < output_a_target:
       self.a_desired = min(self.a_desired, accord_stop_go_target)
       output_a_target = accord_stop_go_target
+
+    current_lane_change_state = sm['modelV2'].meta.laneChangeState
+    post_lane_change_cap = None
+    carnival_settle_enabled = (
+      str(self.CP.carFingerprint) == "KIA_CARNIVAL_4TH_GEN" and
+      not getattr(starpilot_toggles, "lane_change_close_gap", False) and
+      not driver_accel_pressed and not bool(getattr(sm['carState'], 'brakePressed', False)) and
+      not bool(sm['carState'].standstill)
+    )
+    if carnival_settle_enabled:
+      self.post_lane_change_settle_until, post_lane_change_cap = update_post_lane_change_accel_settle(
+        self.previous_lane_change_state,
+        current_lane_change_state,
+        bool(self.lead_one.status),
+        float(self.lead_one.dRel) if self.lead_one.status else 0.0,
+        float(self.lead_one.vRel) if self.lead_one.status else 0.0,
+        scene_v_ego,
+        now_t,
+        self.post_lane_change_settle_until,
+      )
+    else:
+      self.post_lane_change_settle_until = 0.0
+    self.previous_lane_change_state = current_lane_change_state
+    if post_lane_change_cap is not None:
+      self.a_desired = min(self.a_desired, post_lane_change_cap)
+      output_a_target = min(output_a_target, post_lane_change_cap)
 
     self.output_a_target = output_a_target
     self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)
