@@ -5,6 +5,7 @@ import time
 
 import cereal.messaging as messaging
 import numpy as np
+from cereal import log
 
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
@@ -29,6 +30,8 @@ from openpilot.starpilot.controls.lib.starpilot_events import StarPilotEvents
 from openpilot.starpilot.controls.lib.starpilot_following import StarPilotFollowing
 from openpilot.starpilot.controls.lib.starpilot_vcruise import StarPilotVCruise
 from openpilot.starpilot.controls.lib.weather_checker import WeatherChecker
+
+LaneChangeState = log.LaneChangeState
 
 RADARLESS_TRACK_HOLD_TIME = 0.45
 FORCE_STOP_JERK_SCALE = 0.20  # accel-change cost multiplier for the whole stop approach,
@@ -215,7 +218,12 @@ class StarPilotPlanner:
 
     self.road_curvature, self.time_to_curve = calculate_road_curvature(sm["modelV2"], v_ego)
 
-    self.road_curvature_detected = (1 / abs(self.road_curvature))**0.5 < v_ego > CRUISING_SPEED and not (sm["carState"].leftBlinker or sm["carState"].rightBlinker)
+    lane_change_active = sm["modelV2"].meta.laneChangeState in (
+      LaneChangeState.preLaneChange,
+      LaneChangeState.laneChangeStarting,
+      LaneChangeState.laneChangeFinishing,
+    )
+    self.road_curvature_detected = (1 / abs(self.road_curvature))**0.5 < v_ego > CRUISING_SPEED and not lane_change_active
 
     if not sm["carState"].standstill:
       self.tracking_lead = self.update_lead_status(v_ego)

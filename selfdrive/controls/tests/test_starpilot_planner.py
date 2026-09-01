@@ -2,6 +2,7 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 
+from cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.controls.starpilot_planner import StarPilotPlanner, get_force_stop_jerk_scale
@@ -37,7 +38,7 @@ def make_toggles(**overrides):
 
 def test_force_stop_jerk_scale_is_platform_specific():
   assert get_force_stop_jerk_scale(SimpleNamespace(carFingerprint="HYUNDAI_ELANTRA_2021")) == 0.80
-  assert get_force_stop_jerk_scale(SimpleNamespace(carFingerprint="OTHER_CAR")) == 0.32
+  assert get_force_stop_jerk_scale(SimpleNamespace(carFingerprint="OTHER_CAR")) == 0.20
 
 
 def test_lead_follow_jerk_scale_is_platform_specific():
@@ -48,7 +49,8 @@ def test_lead_follow_jerk_scale_is_platform_specific():
   assert get_lead_follow_jerk_scale(SimpleNamespace(brand="other", carFingerprint="OTHER_CAR")) == 1.0
 
 
-def make_sm(planner, *, frame: int, v_ego: float, left_blinker: bool, right_blinker: bool = False, standstill: bool = False):
+def make_sm(planner, *, frame: int, v_ego: float, left_blinker: bool, right_blinker: bool = False,
+            standstill: bool = False, lane_change_state=log.LaneChangeState.off):
   return FakeSM(frame, {
     "radarState": SimpleNamespace(
       leadOne=SimpleNamespace(status=False, dRel=float("inf"), vLead=0.0, modelProb=0.0, radar=False),
@@ -62,7 +64,12 @@ def make_sm(planner, *, frame: int, v_ego: float, left_blinker: bool, right_blin
       rightBlinker=right_blinker,
     ),
     "controlsState": SimpleNamespace(curvature=0.0),
-    "modelV2": SimpleNamespace(position=SimpleNamespace(x=[0.0, 30.0]), laneLines=[None] * 4, roadEdges=[None] * 2),
+    "modelV2": SimpleNamespace(
+      position=SimpleNamespace(x=[0.0, 30.0]),
+      laneLines=[None] * 4,
+      roadEdges=[None] * 2,
+      meta=SimpleNamespace(laneChangeState=lane_change_state),
+    ),
     "starpilotCarState": SimpleNamespace(pauseLateral=False, alwaysOnLateralEnabled=False),
     planner.gps_location_service: SimpleNamespace(latitude=1.0, longitude=1.0, bearingDeg=90.0),
   })
@@ -79,6 +86,38 @@ def make_planner(monkeypatch):
   monkeypatch.setattr(planner.starpilot_cem, "stop_sign_and_light", lambda *args, **kwargs: None)
   monkeypatch.setattr(planner, "update_lead_status", lambda *args, **kwargs: False)
   return planner
+
+
+def test_turn_signal_does_not_hide_a_real_road_curve(monkeypatch):
+  planner = make_planner(monkeypatch)
+
+  try:
+    sm = make_sm(planner, frame=1, v_ego=20.0, left_blinker=True, lane_change_state=log.LaneChangeState.off)
+
+    planner.update(0.0, False, sm, make_toggles())
+
+    assert planner.road_curvature_detected
+  finally:
+    planner.shutdown()
+
+
+def test_active_lane_change_suppresses_curve_speed_detection(monkeypatch):
+  planner = make_planner(monkeypatch)
+
+  try:
+    sm = make_sm(
+      planner,
+      frame=1,
+      v_ego=20.0,
+      left_blinker=True,
+      lane_change_state=log.LaneChangeState.laneChangeStarting,
+    )
+
+    planner.update(0.0, False, sm, make_toggles())
+
+    assert not planner.road_curvature_detected
+  finally:
+    planner.shutdown()
 
 
 def test_lateral_resume_delay_zero_keeps_immediate_resume(monkeypatch):
