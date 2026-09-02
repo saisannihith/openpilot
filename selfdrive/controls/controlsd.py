@@ -392,7 +392,9 @@ class Controls:
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.lc_smooth_release = 0.0
-    self.lane_centering = LaneCenteringController()
+    self.lane_centering = LaneCenteringController(
+      curve_adaptive=self.CP.carFingerprint == HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN,
+    )
     self.lc_entry_sign = 0.0
     self.lc_arrest_jerk_factor = 1.0
     self.turn_hold_curvature = 0.0

@@ -199,8 +199,9 @@ def configured_center_gain() -> float:
   return float(getattr(lane_centering, "_CENTER_GAIN", getattr(lane_centering, "_MAX_GAIN", 0.0)))
 
 
-def analyze_route(route: str, paths: list[Path], e2e_authority: float | None = 0.15) -> dict[str, Any]:
-  controller = LaneCenteringController()
+def analyze_route(route: str, paths: list[Path], e2e_authority: float | None = 0.15,
+                  curve_adaptive: bool = False) -> dict[str, Any]:
+  controller = LaneCenteringController(curve_adaptive=curve_adaptive)
   latest: dict[str, Any] = {}
   metadata: dict[str, Any] = {}
   values = new_buckets()
@@ -281,8 +282,11 @@ def analyze_route(route: str, paths: list[Path], e2e_authority: float | None = 0
 
       geometry = lane_geometry(model, v_ego)
       strict_geometry, center_error, width, confidence, lookahead, lane_std, width_spread, coherence = geometry
+      response_deadband, _, _ = lane_centering.get_lane_centering_response(
+        model_curvature, v_ego, curve_adaptive,
+      )
       raw_valid, raw_correction = get_raw_lane_centering_correction(
-        model, v_ego, 0.0, float(e2e_authority),
+        model, v_ego, 0.0, float(e2e_authority), response_deadband,
       )
       base_eligible = lat_active and v_ego >= MIN_SPEED and lane_change == 0 and not signal
       if base_eligible:
@@ -487,6 +491,7 @@ def analyze_route(route: str, paths: list[Path], e2e_authority: float | None = 0
       "recordedRoadAwareParamIgnored": metadata.get("recordedLaneCenteringRoadAware", "unknown"),
       "centerGain": configured_center_gain(),
       "smoothTau": lane_centering._SMOOTH_TAU,
+      "curveAdaptive": curve_adaptive,
       "e2eAuthority": e2e_authority,
     },
     "curvatureSourceFrames": dict(source_counts),
@@ -585,6 +590,7 @@ def main() -> None:
   parser.add_argument("--center-gain", type=float, help="override correction gain for counterfactual replay")
   parser.add_argument("--smooth-tau", type=float, help="override filter time constant for counterfactual replay")
   parser.add_argument("--use-log-settings", action="store_true", help="replay each route with its recorded E2E authority")
+  parser.add_argument("--curve-adaptive", action="store_true", help="enable the Carnival curve-adaptive lane response")
   args = parser.parse_args()
 
   if args.center_gain is not None:
@@ -597,7 +603,7 @@ def main() -> None:
 
   routes = discover_logs(args.paths)
   e2e_authority = None if args.use_log_settings else args.e2e_authority
-  reports = [analyze_route(route, paths, e2e_authority) for route, paths in routes.items()]
+  reports = [analyze_route(route, paths, e2e_authority, args.curve_adaptive) for route, paths in routes.items()]
   if args.output:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(reports, indent=2, sort_keys=True) + "\n")

@@ -29,16 +29,16 @@ def _model(left=-1.8, right=1.8, model_y=0.0, lane_prob=0.9, lane_std=0.1, path_
 
 
 def _update(controller, model, *, offset=0.0, authority=1.0, enabled=True, active=True, valid=True, speed=_V_EGO,
-            pause_on_signal=False, turn_signal_active=False):
-  return controller.update(0.0, model, speed, enabled, offset, authority, active, valid,
+            pause_on_signal=False, turn_signal_active=False, model_curvature=0.0):
+  return controller.update(model_curvature, model, speed, enabled, offset, authority, active, valid,
                            pause_on_signal, turn_signal_active)
 
 
-def _converge(model, *, offset=0.0, authority=1.0):
-  controller = LaneCenteringController()
+def _converge(model, *, offset=0.0, authority=1.0, curve_adaptive=False, model_curvature=0.0):
+  controller = LaneCenteringController(curve_adaptive=curve_adaptive)
   output = 0.0
   for _ in range(300):
-    output = _update(controller, model, offset=offset, authority=authority)
+    output = _update(controller, model, offset=offset, authority=authority, model_curvature=model_curvature)
   return controller, output
 
 
@@ -110,6 +110,57 @@ def test_lane_center_error_steers_toward_center():
 
 def test_small_center_error_does_not_chatter():
   _, output = _converge(_model(left=-1.75, right=1.85), authority=0.0)
+  assert output == 0.0
+
+
+def test_carnival_curve_schedule_preserves_straight_response():
+  model = _model(left=-2.1, right=1.5)
+  _, baseline = _converge(model, authority=0.0)
+  _, adaptive = _converge(model, authority=0.0, curve_adaptive=True)
+  assert adaptive == pytest.approx(baseline)
+
+
+def test_carnival_curve_schedule_strengthens_outward_centering():
+  model = _model(left=-2.1, right=1.5)
+  _, baseline = _converge(model, authority=0.0, model_curvature=0.002)
+  _, adaptive = _converge(model, authority=0.0, curve_adaptive=True, model_curvature=0.002)
+  baseline_correction = baseline - 0.002
+  adaptive_correction = adaptive - 0.002
+  assert adaptive_correction < baseline_correction < 0.0
+
+
+def test_carnival_curve_schedule_preserves_outside_path_response():
+  model = _model(left=-1.5, right=2.1)
+  _, baseline = _converge(model, authority=0.0, model_curvature=0.002)
+  _, adaptive = _converge(model, authority=0.0, curve_adaptive=True, model_curvature=0.002)
+  assert adaptive == pytest.approx(baseline)
+
+
+def test_carnival_curve_schedule_is_direction_symmetric():
+  _, right = _converge(
+    _model(left=-2.1, right=1.5), authority=0.0, curve_adaptive=True, model_curvature=0.002,
+  )
+  _, left = _converge(
+    _model(left=-1.5, right=2.1), authority=0.0, curve_adaptive=True, model_curvature=-0.002,
+  )
+  assert right == pytest.approx(-left)
+
+
+def test_carnival_curve_schedule_preserves_e2e_break_in():
+  model = _model(left=-1.4, right=2.2, model_y=0.0, path_std=0.1)
+  _, lane_only = _converge(
+    model, authority=0.0, curve_adaptive=True, model_curvature=-0.002,
+  )
+  _, e2e = _converge(
+    model, authority=1.0, curve_adaptive=True, model_curvature=-0.002,
+  )
+  assert abs(e2e + 0.002) < abs(lane_only + 0.002)
+
+
+def test_invalid_model_curvature_fails_closed():
+  output = _update(
+    LaneCenteringController(curve_adaptive=True), _model(), model_curvature=float("nan"),
+  )
   assert output == 0.0
 
 

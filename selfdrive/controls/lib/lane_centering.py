@@ -20,6 +20,16 @@ _SIGNAL_RELEASE_TAU = 0.20
 _CONFIDENCE_RELEASE_TAU = 0.20
 _CENTER_ERROR_DEADBAND = 0.08
 
+# The Carnival's model path consistently cuts toward the inside of marked curves
+# while its measured curvature accurately follows the requested curvature. Keep
+# straight-road behavior untouched and schedule additional lane-reference authority
+# continuously from lateral demand rather than adding another positioning mode.
+_CURVE_SCHEDULE_START_LAT_ACCEL = 0.20
+_CURVE_SCHEDULE_FULL_LAT_ACCEL = 0.80
+_CURVE_CENTER_GAIN = 0.55
+_CURVE_CENTER_ERROR_DEADBAND = 0.05
+_CURVE_SMOOTH_TAU = 0.25
+
 _E2E_MAX_PATH_STD = 0.35
 # Preserve lane centering through ordinary curve-tracking error, then hand control
 # back to a confident E2E path for a deliberate obstacle-scale departure.
@@ -27,9 +37,29 @@ _E2E_BREAK_IN_START = 0.30
 _E2E_BREAK_IN_FULL = 0.60
 
 
+def get_lane_centering_response(model_curvature: float, v_ego: float,
+                                curve_adaptive: bool) -> tuple[float, float, float]:
+  curve_weight = 0.0
+  if curve_adaptive:
+    curve_lat_accel = abs(model_curvature) * v_ego ** 2
+    curve_weight = float(np.clip(
+      (curve_lat_accel - _CURVE_SCHEDULE_START_LAT_ACCEL) /
+      (_CURVE_SCHEDULE_FULL_LAT_ACCEL - _CURVE_SCHEDULE_START_LAT_ACCEL),
+      0.0,
+      1.0,
+    ))
+  center_error_deadband = _CENTER_ERROR_DEADBAND + curve_weight * (
+    _CURVE_CENTER_ERROR_DEADBAND - _CENTER_ERROR_DEADBAND
+  )
+  center_gain = _MAX_GAIN + curve_weight * (_CURVE_CENTER_GAIN - _MAX_GAIN)
+  smooth_tau = _SMOOTH_TAU + curve_weight * (_CURVE_SMOOTH_TAU - _SMOOTH_TAU)
+  return center_error_deadband, center_gain, smooth_tau
+
+
 class LaneCenteringController:
-  def __init__(self) -> None:
+  def __init__(self, curve_adaptive: bool = False) -> None:
     self._correction = 0.0
+    self._curve_adaptive = curve_adaptive
 
   def reset(self) -> None:
     self._correction = 0.0
@@ -46,9 +76,9 @@ class LaneCenteringController:
       self.reset()
       return model_curvature
 
-    if not np.isfinite([v_ego, offset, e2e_authority]).all():
+    if not np.isfinite([model_curvature, v_ego, offset, e2e_authority]).all():
       self.reset()
-      return model_curvature
+      return 0.0
 
     if not model_valid or not enabled or not lat_active or v_ego < _MIN_V_EGO:
       self.reset()
@@ -66,18 +96,41 @@ class LaneCenteringController:
       self.reset()
       return model_curvature
 
+    center_error_deadband, center_gain, smooth_tau = get_lane_centering_response(
+      model_curvature, v_ego, self._curve_adaptive,
+    )
+
     valid, raw_correction = self._raw_correction(
       model_v2,
       v_ego,
       float(np.clip(offset, -_MAX_OFFSET, _MAX_OFFSET)),
       float(np.clip(e2e_authority, 0.0, 1.0)),
+      center_error_deadband,
     )
     if not valid:
       self._correction = float(smooth_value(0.0, self._correction, _CONFIDENCE_RELEASE_TAU, dt=DT_CTRL))
       return model_curvature + self._correction
 
-    target = float(np.clip(raw_correction, -_MAX_RAW_CORRECTION, _MAX_RAW_CORRECTION)) * _MAX_GAIN
-    self._correction = float(smooth_value(target, self._correction, _SMOOTH_TAU, dt=DT_CTRL))
+    # Extra curve authority only corrects a model path cutting toward the apex.
+    # Outside-path departures retain StarPilot's original response so E2E motion
+    # around obstacles is not made more restrictive.
+    if model_curvature * raw_correction >= 0.0:
+      center_error_deadband, center_gain, smooth_tau = get_lane_centering_response(
+        model_curvature, v_ego, False,
+      )
+      valid, raw_correction = self._raw_correction(
+        model_v2,
+        v_ego,
+        float(np.clip(offset, -_MAX_OFFSET, _MAX_OFFSET)),
+        float(np.clip(e2e_authority, 0.0, 1.0)),
+        center_error_deadband,
+      )
+      if not valid:
+        self._correction = float(smooth_value(0.0, self._correction, _CONFIDENCE_RELEASE_TAU, dt=DT_CTRL))
+        return model_curvature + self._correction
+
+    target = float(np.clip(raw_correction, -_MAX_RAW_CORRECTION, _MAX_RAW_CORRECTION)) * center_gain
+    self._correction = float(smooth_value(target, self._correction, smooth_tau, dt=DT_CTRL))
     return model_curvature + self._correction
 
   @staticmethod
@@ -89,7 +142,8 @@ class LaneCenteringController:
     return bool(x[0] <= distance <= x[-1])
 
   @staticmethod
-  def _raw_correction(model_v2, v_ego: float, offset: float, e2e_authority: float) -> tuple[bool, float]:
+  def _raw_correction(model_v2, v_ego: float, offset: float, e2e_authority: float,
+                      center_error_deadband: float = _CENTER_ERROR_DEADBAND) -> tuple[bool, float]:
     try:
       lane_lines = model_v2.laneLines
       probs = np.asarray(model_v2.laneLineProbs, dtype=float)
@@ -129,10 +183,10 @@ class LaneCenteringController:
       model_y = float(np.interp(lookahead, pos_x, pos_y))
       error = target_y - model_y
       error_abs = abs(error)
-      if error_abs <= _CENTER_ERROR_DEADBAND:
+      if error_abs <= center_error_deadband:
         error = 0.0
       else:
-        error = np.copysign(error_abs - _CENTER_ERROR_DEADBAND, error)
+        error = np.copysign(error_abs - center_error_deadband, error)
 
       try:
         pos_y_std = np.asarray(model_v2.position.yStd, dtype=float)
@@ -154,9 +208,12 @@ class LaneCenteringController:
 
 
 def get_raw_lane_centering_correction(model_v2, v_ego: float, offset: float,
-                                      e2e_authority: float) -> tuple[bool, float]:
+                                      e2e_authority: float,
+                                      center_error_deadband: float = _CENTER_ERROR_DEADBAND) -> tuple[bool, float]:
   """Return the instantaneous lane-centering correction without controller filtering."""
-  return LaneCenteringController._raw_correction(model_v2, v_ego, offset, e2e_authority)
+  return LaneCenteringController._raw_correction(
+    model_v2, v_ego, offset, e2e_authority, center_error_deadband,
+  )
 
 
 def get_lane_centering_visual_direction(model_v2, v_ego: float, offset: float, e2e_authority: float,
