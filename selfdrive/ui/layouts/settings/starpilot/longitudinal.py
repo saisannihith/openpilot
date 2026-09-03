@@ -98,7 +98,7 @@ class AdaptiveSpeedView(CardHubManagerView):
     return [
       {
         "title": tr("Conditional Drive Mode"),
-        "desc": tr("Configure automated switching between Experimental and Chill Modes based on set conditions."),
+        "desc": tr("Automatically switch runtime driving mode. Separate from Enable Experimental Mode and Advanced Actuators."),
         "icon": "steering",
         "on_click": lambda: self._controller._navigate_to("ce"),
       },
@@ -129,7 +129,7 @@ class LongitudinalManagerView(CardHubManagerView):
       },
       {
         "title": tr("Advanced Actuators"),
-        "desc": tr("Adjust actuator delay, EV/Truck tuning, and launch/stop speeds/rates."),
+        "desc": tr("Optional low-level acceleration and braking overrides. Does not control Experimental Mode."),
         "icon": "vehicle",
         "on_click": lambda: self._controller._navigate_to("advanced"),
       },
@@ -183,7 +183,7 @@ class ConditionalDriveModeView(AdjustorTogglesPanelView):
   def _init_segmented_control(self):
     self._drive_mode_control = self._child(
       AetherSegmentedControl(
-        [tr("OFF"), tr("Experimental"), tr("Chill")],
+        [tr("OFF"), tr("Auto Experimental"), tr("Auto Chill")],
         self._get_drive_mode_index,
         self._on_drive_mode_change,
         style=PANEL_STYLE,
@@ -830,7 +830,7 @@ class StarPilotLongitudinalLayout(_SettingsPage):
     pt_tune = self._make_parent("LongitudinalTune", "Longitudinal Tuning",
       "Acceleration and braking control changes to fine-tune how openpilot drives.")
     pt_advanced = self._make_parent("AdvancedLongitudinalTune", "Advanced Longitudinal Tuning",
-      "Advanced acceleration and braking changes for refining launch, stopping, and actuator response.")
+      "Optional low-level acceleration and braking overrides. Independent of Experimental Mode.")
     pt_personality = self._make_parent("CustomPersonalities", "Driving Personalities")
     pt_daily = self._make_parent("QOLLongitudinal", "Quality of Life")
     pt_slc = self._make_parent("SpeedLimitController", "Speed Limit Controller",
@@ -867,7 +867,7 @@ class StarPilotLongitudinalLayout(_SettingsPage):
       self,
       [SettingSection(title="", rows=self._advanced_rows)],
       header_title=tr_noop("Advanced Actuators"),
-      header_subtitle=tr_noop("Adjust actuator delay, EV/Truck tuning, and launch/stop speeds/rates."),
+      header_subtitle=tr_noop("Optional low-level acceleration and braking overrides. Independent of Experimental Mode."),
       parent_toggle=pt_advanced,
       panel_style=PANEL_STYLE,
     )

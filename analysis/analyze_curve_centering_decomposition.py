@@ -219,6 +219,7 @@ def analyze_route(route: str, paths: list[Path]) -> dict[str, Any]:
       model_far_inside = direction_sign * (geometry["farPath"] - geometry["farCenter"])
       desired_tracking_error = direction_sign * (desired_curvature - actual_curvature) * v_ego * v_ego
       model_tracking_error = direction_sign * (model_curvature - actual_curvature) * v_ego * v_ego
+      applied_outward_correction = direction_sign * (model_curvature - desired_curvature) * v_ego * v_ego
       raw_valid, raw_correction = get_raw_lane_centering_correction(model, v_ego, 0.0, 1.0)
       outward_correction = -direction_sign * raw_correction * v_ego * v_ego if raw_valid else 0.0
 
@@ -226,6 +227,7 @@ def analyze_route(route: str, paths: list[Path]) -> dict[str, Any]:
         "egoInsideM": ego_inside,
         "modelMiddleInsideM": model_middle_inside,
         "modelFarInsideM": model_far_inside,
+        "appliedOutwardCorrectionLatAccel": applied_outward_correction,
         "desiredTrackingErrorLatAccel": desired_tracking_error,
         "modelTrackingErrorLatAccel": model_tracking_error,
         "outwardRawCorrectionLatAccel": outward_correction,
@@ -240,6 +242,10 @@ def analyze_route(route: str, paths: list[Path]) -> dict[str, Any]:
         counts["egoInsideOver20cm"] += 1
       if model_far_inside > 0.10:
         counts["modelFarInsideOver10cm"] += 1
+      if ego_inside > 0.10 and model_far_inside <= 0.05:
+        counts["egoInsideWhileFutureCentered"] += 1
+        if applied_outward_correction > 0.05:
+          counts["egoInsideWhileFutureCenteredCorrected"] += 1
 
       if ego_inside > 0.10:
         top_inside.append({
@@ -251,6 +257,7 @@ def analyze_route(route: str, paths: list[Path]) -> dict[str, Any]:
           "egoInsideM": round(ego_inside, 4),
           "modelMiddleInsideM": round(model_middle_inside, 4),
           "modelFarInsideM": round(model_far_inside, 4),
+          "appliedOutwardCorrectionLatAccel": round(applied_outward_correction, 4),
           "modelLatAccel": round(model_lat_accel, 4),
           "desiredTrackingErrorLatAccel": round(desired_tracking_error, 4),
           "modelTrackingErrorLatAccel": round(model_tracking_error, 4),
@@ -278,6 +285,11 @@ def analyze_route(route: str, paths: list[Path]) -> dict[str, Any]:
       "egoInsideOver10cmPct": pct(counts["egoInsideOver10cm"], curve_frames),
       "egoInsideOver20cmPct": pct(counts["egoInsideOver20cm"], curve_frames),
       "modelFarInsideOver10cmPct": pct(counts["modelFarInsideOver10cm"], curve_frames),
+      "egoInsideWhileFutureCenteredPct": pct(counts["egoInsideWhileFutureCentered"], curve_frames),
+      "futureCenteredCasesWithMeaningfulCorrectionPct": pct(
+        counts["egoInsideWhileFutureCenteredCorrected"],
+        counts["egoInsideWhileFutureCentered"],
+      ),
     },
     "alignment": {
       "allEgoRightM": stats(values["allEgoRightM"]),
@@ -286,6 +298,7 @@ def analyze_route(route: str, paths: list[Path]) -> dict[str, Any]:
     "tracking": {
       "desiredTrackingErrorLatAccel": stats(values["desiredTrackingErrorLatAccel"]),
       "modelTrackingErrorLatAccel": stats(values["modelTrackingErrorLatAccel"]),
+      "appliedOutwardCorrectionLatAccel": stats(values["appliedOutwardCorrectionLatAccel"]),
       "outwardRawCorrectionLatAccel": stats(values["outwardRawCorrectionLatAccel"]),
     },
     "directions": {

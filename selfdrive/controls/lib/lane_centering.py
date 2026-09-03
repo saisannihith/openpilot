@@ -26,9 +26,9 @@ _CENTER_ERROR_DEADBAND = 0.08
 # continuously from lateral demand rather than adding another positioning mode.
 _CURVE_SCHEDULE_START_LAT_ACCEL = 0.20
 _CURVE_SCHEDULE_FULL_LAT_ACCEL = 0.80
-_CURVE_CENTER_GAIN = 0.55
-_CURVE_CENTER_ERROR_DEADBAND = 0.05
-_CURVE_SMOOTH_TAU = 0.25
+_CURVE_CENTER_GAIN = 0.65
+_CURVE_CENTER_ERROR_DEADBAND = 0.04
+_CURVE_SMOOTH_TAU = 0.20
 
 _E2E_MAX_PATH_STD = 0.35
 # Preserve lane centering through ordinary curve-tracking error, then hand control
