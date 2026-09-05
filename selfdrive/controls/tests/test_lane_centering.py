@@ -157,6 +157,21 @@ def test_carnival_curve_schedule_preserves_e2e_break_in():
   assert abs(e2e + 0.002) < abs(lane_only + 0.002)
 
 
+def test_carnival_curve_correction_does_not_apply_stale_opposite_sign():
+  controller, _ = _converge(
+    _model(left=-2.1, right=1.5), authority=0.0, curve_adaptive=True, model_curvature=0.002,
+  )
+  assert controller._correction < 0.0
+
+  output = _update(
+    controller,
+    _model(left=-1.5, right=2.1),
+    authority=0.0,
+    model_curvature=-0.002,
+  )
+  assert output > -0.002
+
+
 def test_invalid_model_curvature_fails_closed():
   output = _update(
     LaneCenteringController(curve_adaptive=True), _model(), model_curvature=float("nan"),

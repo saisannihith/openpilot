@@ -130,6 +130,8 @@ class LaneCenteringController:
         return model_curvature + self._correction
 
     target = float(np.clip(raw_correction, -_MAX_RAW_CORRECTION, _MAX_RAW_CORRECTION)) * center_gain
+    if target * self._correction < 0.0:
+      self._correction = 0.0
     self._correction = float(smooth_value(target, self._correction, smooth_tau, dt=DT_CTRL))
     return model_curvature + self._correction
 
