@@ -85,7 +85,6 @@ static std::map<std::string, service> services = {
   { "livestreamDriverEncodeData", {"livestreamDriverEncodeData", false, 20.000000, -1, 2097152}},
   { "customReserved9", {"customReserved9", true, 0.000000, 1, 256000}},
   { "starpilotLateralState", {"starpilotLateralState", true, 100.000000, 10, 256000}},
-  { "carnivalState", {"carnivalState", true, 20.000000, 5, 256000}},
   { "customReservedRawData0", {"customReservedRawData0", true, 0.000000, -1, 256000}},
   { "customReservedRawData1", {"customReservedRawData1", true, 0.000000, -1, 256000}},
   { "customReservedRawData2", {"customReservedRawData2", true, 0.000000, -1, 256000}},

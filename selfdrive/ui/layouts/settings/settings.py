@@ -5,7 +5,6 @@ from enum import IntEnum
 from collections.abc import Callable
 from openpilot.selfdrive.ui.layouts.settings.developer import DeveloperLayout
 from openpilot.selfdrive.ui.layouts.settings.device import DeviceLayout
-from openpilot.selfdrive.ui.layouts.settings.carnival import CarnivalLayout
 from openpilot.selfdrive.ui.layouts.settings.starpilot.main_panel import StarPilotLayout
 from openpilot.selfdrive.ui.layouts.settings.software import SoftwareLayout
 from openpilot.selfdrive.ui.layouts.settings.toggles import TogglesLayout
@@ -41,13 +40,12 @@ DARK_CORE_COLOR = rl.Color(12, 10, 18, 190)
 
 class PanelType(IntEnum):
   STARPILOT = 0
-  CARNIVAL = 1
-  DEVICE = 2
-  NETWORK = 3
-  BLUETOOTH = 4
-  TOGGLES = 5
-  SOFTWARE = 6
-  DEVELOPER = 7
+  DEVICE = 1
+  NETWORK = 2
+  BLUETOOTH = 3
+  TOGGLES = 4
+  SOFTWARE = 5
+  DEVELOPER = 6
 
 
 @dataclass
@@ -80,7 +78,6 @@ class SettingsLayout(Widget):
 
     self._panels = {
       PanelType.STARPILOT: PanelInfo(tr_noop("StarPilot"), StarPilotLayout()),
-      PanelType.CARNIVAL: PanelInfo(tr_noop("Carnival"), CarnivalLayout()),
       PanelType.DEVICE: PanelInfo(tr_noop("Device"), DeviceLayout()),
       PanelType.NETWORK: PanelInfo(tr_noop("Network"), NetworkUI(wifi_manager)),
       PanelType.BLUETOOTH: PanelInfo(tr_noop("Bluetooth"), BluetoothManagerUI(bluetooth_manager)),

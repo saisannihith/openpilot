@@ -24,7 +24,7 @@ def main():
   sm = messaging.SubMaster(['carControl', 'carState', 'controlsState', 'liveParameters', 'radarState', 'modelV2', 'selfdriveState'],
                            poll='modelV2')
 
-  sm = sm.extend(['starpilotCarState', 'starpilotPlan', 'carnivalState'])
+  sm = sm.extend(['starpilotCarState', 'starpilotPlan'])
 
   starpilot_toggles = get_starpilot_toggles()
 

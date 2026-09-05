@@ -181,35 +181,6 @@ class ModelRenderer(Widget):
         self._draw_adjacent_leads()
 
     self._draw_radar_tracks()
-    self._draw_carnival_fusion_hud(rect)
-
-  def _draw_carnival_fusion_hud(self, rect: rl.Rectangle):
-    sm = ui_state.sm
-    if not self._params.get_bool("CarnivalFeaturesEnabled") or not self._params.get_bool("CarnivalFusionHUD") or not sm.valid.get("carnivalState", False):
-      return
-    state = sm["carnivalState"]
-    if not bool(getattr(state, "active", False)):
-      return
-
-    width, height = 430.0, 154.0
-    x = rect.x + rect.width - width - 34.0
-    y = rect.y + 34.0
-    panel = rl.Rectangle(x, y, width, height)
-    rl.draw_rectangle_rec(panel, rl.Color(8, 10, 14, 205))
-    confidence = int(round(float(getattr(state, "overallConfidence", 0.0)) * 100.0))
-    eps_risk = int(round(float(getattr(state, "epsRisk", 0.0)) * 100.0))
-    source = str(getattr(state, "leadSource", "none"))
-    stale = " STALE" if bool(getattr(state, "radarStale", False)) else ""
-    cut_ins = int(getattr(state, "cutInCandidateCount", 0))
-    stop = str(getattr(state, "stopState", "cruise"))
-    governor = str(getattr(state, "governorState", "inactive"))
-    reason = str(getattr(state, "reason", ""))
-    color = rl.Color(48, 230, 132, 255) if confidence >= 70 else rl.Color(255, 190, 64, 255) if confidence >= 45 else rl.Color(255, 82, 82, 255)
-    font = gui_app.font()
-    rl.draw_text_ex(font, f"CARNIVAL  {confidence}%  {governor.upper()}", rl.Vector2(x + 18, y + 13), 30, 0, color)
-    rl.draw_text_ex(font, f"Lead: {source}{stale}  Cut-ins: {cut_ins}  Stop: {stop}", rl.Vector2(x + 18, y + 55), 25, 0, rl.WHITE)
-    rl.draw_text_ex(font, f"EPS risk: {eps_risk}%    {reason}", rl.Vector2(x + 18, y + 94), 24, 0, rl.Color(225, 230, 238, 255))
-
   def _should_render_lead_indicator(self, radar_state) -> bool:
     return radar_state is not None and lead_indicator_enabled(self._params)
 

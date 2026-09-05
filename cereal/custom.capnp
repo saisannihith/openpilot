@@ -317,32 +317,7 @@ struct StarPilotLateralState @0xc2243c65e0340384 {
   unwindDetected @7 :Bool;
 }
 
-struct CarnivalState @0x9ccdc8676701b412 {
-  active @0 :Bool;
-  overallConfidence @1 :Float32;
-  lateralConfidence @2 :Float32;
-  longitudinalConfidence @3 :Float32;
-  pathConfidence @4 :Float32;
-  laneConfidence @5 :Float32;
-  roadEdgeConfidence @6 :Float32;
-  radarConfidence @7 :Float32;
-  steeringSaturation @8 :Float32;
-  epsRisk @9 :Float32;
-  interventionRisk @10 :Float32;
-  leadSource @11 :Text;
-  leadDistance @12 :Float32;
-  leadRelativeSpeed @13 :Float32;
-  radarTrackId @14 :Int32 = -1;
-  radarStale @15 :Bool;
-  stopState @16 :Text;
-  stopHoldActive @17 :Bool;
-  governorState @18 :Text;
-  recommendedSpeedScale @19 :Float32 = 1.0;
-  torqueScale @20 :Float32 = 1.0;
-  reason @21 :Text;
-  visionLeadPresent @22 :Bool;
-  radarLeadPresent @23 :Bool;
-  cutInCandidateCount @24 :UInt8;
+struct CustomReserved12 @0x9ccdc8676701b412 {
 }
 
 struct CustomReserved13 @0xcd96dafb67a082d0 {

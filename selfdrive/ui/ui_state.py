@@ -69,7 +69,6 @@ class UIState:
         "starpilotPlan",
         "starpilotRadarState",
         "starpilotSelfdriveState",
-        "carnivalState",
         "liveTracks",
         "liveDelay",
         "liveTorqueParameters",

@@ -65,7 +65,6 @@ DEFAULT_QUICK_CONTROL_IDS = [
   "stock:AlwaysOnLateral",
   "stock:LaneCentering",
   "stock:RadarTracksUI",
-  "stock:CarnivalFusionHUD",
   "stock:LeadInfo",
   "stock:ShowStoppingPoint",
   "stock:ShowStoppingPointMetrics",
@@ -214,14 +213,6 @@ class StarPilotQuickControlsLayout(_SettingsPage):
         set_state=lambda s: self._params.put_bool("RadarTracksUI", s),
         enabled=has_radar,
         disabled_label=tr_noop("No radar detected"),
-      ),
-      SettingRow(
-        "CarnivalFusionHUD", "toggle", tr_noop("Carnival Fusion HUD"),
-        subtitle=tr_noop("Explain lead fusion, stop hold, confidence, and EPS risk."),
-        get_state=lambda: self._params.get_bool("CarnivalFeaturesEnabled") and self._params.get_bool("CarnivalFusionHUD"),
-        set_state=lambda s: self._params.put_bool("CarnivalFusionHUD", s) if self._params.get_bool("CarnivalFeaturesEnabled") else None,
-        enabled=lambda: self._params.get_bool("CarnivalFeaturesEnabled"),
-        disabled_label=tr_noop("Carnival Enhancements is off"),
       ),
       SettingRow(
         "LeadInfo", "toggle", tr_noop("Lead Vehicle Metrics"),
