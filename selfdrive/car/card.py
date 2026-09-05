@@ -123,6 +123,17 @@ class Car:
 
       cached_params = None
       cached_params_raw = self.params.get("CarParamsCache")
+      if cached_params_raw is None:
+        persistent_params_raw = self.params.get("CarParamsPersistent")
+        if persistent_params_raw is not None:
+          try:
+            with car.CarParams.from_bytes(persistent_params_raw) as persistent_cp:
+              if persistent_cp.carFingerprint == "KIA_CARNIVAL_4TH_GEN" and persistent_cp.brand == "hyundai":
+                cached_params_raw = persistent_params_raw
+                self.params.put_nonblocking("CarParamsCache", persistent_params_raw)
+                cloudlog.warning("Restored Carnival CarParamsCache from persistent params")
+          except Exception:
+            cloudlog.exception("Failed to restore Carnival CarParamsCache from persistent params")
       if cached_params_raw is not None:
         with car.CarParams.from_bytes(cached_params_raw) as _cached_params:
           cached_params = _cached_params
