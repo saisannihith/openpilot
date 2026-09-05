@@ -39,6 +39,7 @@ from opendbc.car.gm.values import GMFlags
 from opendbc.car.toyota.carcontroller import LOCK_CMD, UNLOCK_CMD
 from opendbc.car.toyota.values import ToyotaStarPilotFlags
 from openpilot.common.constants import CV
+from openpilot.common.file_chunker import get_chunk_name, get_manifest_path
 from openpilot.common.params import ParamKeyFlag, ParamKeyType, Params
 from openpilot.common.realtime import DT_HW
 from openpilot.common.swaglog import cloudlog
@@ -59,11 +60,20 @@ from openpilot.starpilot.assets.model_manager import (
 )
 from openpilot.starpilot.assets.theme_manager import HOLIDAY_THEME_PATH, THEME_COMPONENT_PARAMS
 from openpilot.starpilot.common.accel_profile import (
+  CUSTOM_ACCEL_PROFILE_BREAKPOINT_PARAM_KEYS,
+  CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY,
+  CUSTOM_ACCEL_PROFILE_CURVE_PARAM_KEYS,
+  CUSTOM_ACCEL_PROFILE_DEFAULT_BREAKPOINTS_MPH,
+  CUSTOM_ACCEL_PROFILE_DEFAULT_POINT_COUNT,
   CUSTOM_ACCEL_PROFILE_INITIALIZED_KEY,
   CUSTOM_ACCEL_PROFILE_PARAM_KEYS,
+  CUSTOM_ACCEL_PROFILE_POINT_COUNT_KEY,
+  CUSTOM_ACCEL_PROFILE_POINT_VALUE_PARAM_KEYS,
   build_custom_accel_profile_defaults,
   custom_accel_profile_is_initialized,
+  get_custom_accel_profile_curve_defaults,
   normalize_acceleration_profile,
+  parse_custom_accel_profile_curve,
 )
 from openpilot.starpilot.common.maps_catalog import (
   MAPS_CATALOG,
@@ -73,7 +83,12 @@ from openpilot.starpilot.common.maps_catalog import (
   schedule_label,
   schedule_param_value,
 )
-from openpilot.starpilot.common.maps_download_progress import load_size_cache, nonnegative_int, selection_key
+from openpilot.starpilot.common.maps_download_progress import (
+  MAPS_STORAGE_CACHE_PARAM,
+  load_maps_storage_cache,
+  nonnegative_int,
+  selection_key,
+)
 from openpilot.starpilot.common.experimental_state import sync_persist_chill_state, sync_persist_experimental_state
 from openpilot.starpilot.common.longitudinal_mode import (
   set_alpha_longitudinal,
@@ -1518,7 +1533,7 @@ MODEL_USER_FAVORITES_PARAM = "UserFavorites"
 MAPS_DOWNLOAD_PARAM = "DownloadMaps"
 MAPS_CANCEL_DOWNLOAD_PARAM = "CancelDownloadMaps"
 MAPS_DOWNLOAD_PROGRESS_PARAM = "MapsDownloadProgress"
-MAPS_DOWNLOAD_SIZE_CACHE_PARAM = "MapsDownloadSizeCache"
+MAPS_DOWNLOAD_SIZE_CACHE_PARAM = MAPS_STORAGE_CACHE_PARAM
 
 
 def _get_galaxy_dir():
@@ -1861,6 +1876,9 @@ _TROUBLESHOOT_ADVANCED_LONGITUDINAL_KEYS = [
   "TrailerLoad",
   "CustomAccelProfile",
   *CUSTOM_ACCEL_PROFILE_PARAM_KEYS,
+  CUSTOM_ACCEL_PROFILE_POINT_COUNT_KEY,
+  *CUSTOM_ACCEL_PROFILE_BREAKPOINT_PARAM_KEYS,
+  *CUSTOM_ACCEL_PROFILE_POINT_VALUE_PARAM_KEYS,
   "LongitudinalActuatorDelay",
   "StartAccel",
   "VEgoStarting",
@@ -3617,12 +3635,15 @@ def _get_runtime_default_param_overrides():
     acceleration_profile_raw if not _is_blank_param_raw(acceleration_profile_raw) else static_defaults.get("AccelerationProfile", "0")
   )
   overrides.update(build_custom_accel_profile_defaults(acceleration_profile, ev_tuning, truck_tuning))
+  overrides.update(get_custom_accel_profile_curve_defaults(acceleration_profile, ev_tuning, truck_tuning))
 
   return overrides
 
 def _get_current_param_value(key, value_type, defaults_lookup=None):
   if key == CUSTOM_ACCEL_PROFILE_INITIALIZED_KEY:
     return _get_custom_accel_profile_initialized()
+  if key == CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY:
+    return _get_custom_accel_profile_breakpoints_initialized()
 
   if key == "LeadIndicator":
     return _get_lead_indicator_enabled(defaults_lookup)
@@ -3634,6 +3655,11 @@ def _get_current_param_value(key, value_type, defaults_lookup=None):
     if defaults_lookup is None:
       defaults_lookup = _get_default_param_values()
     return _coerce_param_value(defaults_lookup.get(key), value_type)
+
+  if key in CUSTOM_ACCEL_PROFILE_CURVE_PARAM_KEYS and not _get_custom_accel_profile_breakpoints_initialized():
+    if defaults_lookup is None:
+      defaults_lookup = _get_default_param_values()
+    return _coerce_param_value(_get_legacy_compatible_curve_value(key, defaults_lookup), value_type)
 
   raw_value = _safe_params_get_live_raw(key)
   if _is_blank_param_raw(raw_value):
@@ -3667,12 +3693,43 @@ def _get_custom_accel_profile_initialized():
     raw_values,
   )
 
+
+def _get_custom_accel_profile_breakpoints_initialized():
+  return _coerce_param_value(_safe_params_get_live_raw(CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY), bool)
+
+
+def _get_legacy_compatible_curve_value(key, defaults_lookup):
+  if key == CUSTOM_ACCEL_PROFILE_POINT_COUNT_KEY:
+    return CUSTOM_ACCEL_PROFILE_DEFAULT_POINT_COUNT
+
+  if key in CUSTOM_ACCEL_PROFILE_BREAKPOINT_PARAM_KEYS:
+    index = CUSTOM_ACCEL_PROFILE_BREAKPOINT_PARAM_KEYS.index(key)
+    return CUSTOM_ACCEL_PROFILE_DEFAULT_BREAKPOINTS_MPH[index]
+
+  if key in CUSTOM_ACCEL_PROFILE_POINT_VALUE_PARAM_KEYS:
+    index = CUSTOM_ACCEL_PROFILE_POINT_VALUE_PARAM_KEYS.index(key)
+    if index < len(CUSTOM_ACCEL_PROFILE_PARAM_KEYS):
+      legacy_key = CUSTOM_ACCEL_PROFILE_PARAM_KEYS[index]
+      return _get_current_param_value(legacy_key, float, defaults_lookup)
+
+  return defaults_lookup.get(key)
+
+
+def _seed_custom_accel_profile_curve(defaults_lookup):
+  seeded = {}
+  for key in CUSTOM_ACCEL_PROFILE_CURVE_PARAM_KEYS:
+    value = _get_legacy_compatible_curve_value(key, defaults_lookup)
+    params.put(key, _serialize_param_write_value(value))
+    seeded[key] = value
+  params.put_bool(CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY, True)
+  return seeded
+
 def _serialize_param_write_value(raw_value):
   if isinstance(raw_value, bool):
     return "1" if raw_value else "0"
   if isinstance(raw_value, bytes):
     return raw_value.decode("utf-8", errors="replace")
-  return str(raw_value or "")
+  return "" if raw_value is None else str(raw_value)
 
 def _offroad_excessive_actuation_type():
   alert = _safe_params_get_live_raw("Offroad_ExcessiveActuation")
@@ -4946,6 +5003,10 @@ def setup(app):
       response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
       response.headers["Pragma"] = "no-cache"
       response.headers["Expires"] = "0"
+    if request.path == "/api/bluetooth/status" or request.path.startswith("/api/bluetooth/"):
+      response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+      response.headers["Pragma"] = "no-cache"
+      response.headers["Expires"] = "0"
     return response
 
   @app.errorhandler(404)
@@ -4956,6 +5017,18 @@ def setup(app):
     response.headers["Expires"] = "0"
     return response
 
+  def _no_store_response(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+  def _serve_new_ui():
+    ui_index_path = Path(app.static_folder) / "mobile" / "index.html"
+    if not ui_index_path.is_file():
+      return "Galaxy UI not found", 404
+    return _no_store_response(make_response(send_file(str(ui_index_path))))
+
   @app.route("/", methods=["GET"])
   def index():
     response = make_response(render_template("index.html"))
@@ -4964,10 +5037,22 @@ def setup(app):
     response.headers["Expires"] = "0"
     return response
 
+  @app.route("/classic", methods=["GET"])
+  @app.route("/classic/", methods=["GET"])
+  def classic_index():
+    return _no_store_response(make_response(render_template("index.html")))
+
+  @app.route("/mobile", methods=["GET"])
+  @app.route("/mobile/", methods=["GET"])
+  @app.route("/ui", methods=["GET"])
+  @app.route("/ui/", methods=["GET"])
+  def mobile_index():
+    return _serve_new_ui()
+
   @app.route("/api/bluetooth/status", methods=["GET"])
   def bluetooth_status():
     try:
-      status = BluetoothClient(timeout=3.0).status()
+      status = BluetoothClient(timeout=10.0).status()
       return jsonify(BluetoothClient.serialize_status(status)), 200
     except Exception as error:
       return jsonify({
@@ -5590,6 +5675,44 @@ def setup(app):
           return jsonify({"error": f"{key} must be between {minimum} and {maximum}."}), 400
         str_val = str(numeric)
 
+      if key in CUSTOM_ACCEL_PROFILE_CURVE_PARAM_KEYS:
+        try:
+          numeric = float(data["value"])
+          if key == CUSTOM_ACCEL_PROFILE_POINT_COUNT_KEY:
+            if not math.isfinite(numeric) or not numeric.is_integer():
+              raise ValueError("Breakpoint count must be a whole number")
+            numeric = int(numeric)
+          elif not math.isfinite(numeric):
+            raise ValueError(f"{key} must be numeric")
+
+          defaults_lookup = _get_default_param_values()
+          initialized = _get_custom_accel_profile_breakpoints_initialized()
+          candidate = {}
+          for curve_key in CUSTOM_ACCEL_PROFILE_CURVE_PARAM_KEYS:
+            if initialized:
+              candidate[curve_key] = _safe_params_get(curve_key, encoding="utf-8")
+            else:
+              candidate[curve_key] = _get_legacy_compatible_curve_value(curve_key, defaults_lookup)
+          candidate[key] = numeric
+
+          parse_custom_accel_profile_curve(
+            candidate[CUSTOM_ACCEL_PROFILE_POINT_COUNT_KEY],
+            [candidate[curve_key] for curve_key in CUSTOM_ACCEL_PROFILE_BREAKPOINT_PARAM_KEYS],
+            [candidate[curve_key] for curve_key in CUSTOM_ACCEL_PROFILE_POINT_VALUE_PARAM_KEYS],
+          )
+        except (TypeError, ValueError) as exc:
+          return jsonify({"error": str(exc)}), 400
+
+        updated = _seed_custom_accel_profile_curve(defaults_lookup) if not initialized else {}
+        params.put(key, _serialize_param_write_value(numeric))
+        params.put_bool(CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY, True)
+        updated.update({key: numeric, CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY: True})
+        update_starpilot_toggles()
+        return jsonify({
+          "message": "Custom acceleration curve updated.",
+          "updated": updated,
+        }), 200
+
       if key == "AlphaLongitudinalEnabled":
         if not _get_alpha_longitudinal_available():
           return jsonify({"error": "Alpha Longitudinal is not available for the detected vehicle."}), 403
@@ -5763,13 +5886,16 @@ def setup(app):
         params.put_bool(key, enabled)
 
         updated = {key: enabled}
+        defaults_lookup = _get_default_param_values()
         if enabled and not _get_custom_accel_profile_initialized():
-          defaults_lookup = _get_default_param_values()
           for custom_key in CUSTOM_ACCEL_PROFILE_PARAM_KEYS:
             custom_value = defaults_lookup[custom_key]
             params.put(custom_key, _serialize_param_write_value(custom_value))
             updated[custom_key] = float(custom_value)
           params.put_bool(CUSTOM_ACCEL_PROFILE_INITIALIZED_KEY, True)
+        if enabled and not _get_custom_accel_profile_breakpoints_initialized():
+          updated.update(_seed_custom_accel_profile_curve(defaults_lookup))
+          updated[CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY] = True
 
         update_starpilot_toggles()
         return jsonify({
@@ -5979,6 +6105,11 @@ def setup(app):
       return _serialize_param_write_value(defaults_lookup.get(request_key)), 200
     if request_key == CUSTOM_ACCEL_PROFILE_INITIALIZED_KEY:
       return _serialize_param_write_value(_get_custom_accel_profile_initialized()), 200
+    if request_key in CUSTOM_ACCEL_PROFILE_CURVE_PARAM_KEYS and not _get_custom_accel_profile_breakpoints_initialized():
+      defaults_lookup = _get_default_param_values()
+      return _serialize_param_write_value(_get_legacy_compatible_curve_value(request_key, defaults_lookup)), 200
+    if request_key == CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY:
+      return _serialize_param_write_value(_get_custom_accel_profile_breakpoints_initialized()), 200
     if request_key == "LeadIndicator":
       return _serialize_param_write_value(_get_lead_indicator_enabled()), 200
     if request_key == "IsRHD" and not params.get_bool("IsRHDOverride"):
@@ -6370,13 +6501,10 @@ def setup(app):
 
     selected_entries = get_selected_map_entries(selected_raw)
     selected_locations = [entry["token"] for entry in selected_entries]
-    maps_present = MAPS_PATH.exists() and any(path.is_file() for path in MAPS_PATH.rglob("*"))
-    storage_bytes = 0
-    if MAPS_PATH.exists():
-      try:
-        storage_bytes = sum(path.stat().st_size for path in MAPS_PATH.rglob("*") if path.is_file())
-      except Exception:
-        storage_bytes = 0
+    size_cache = load_maps_storage_cache(params.get(MAPS_DOWNLOAD_SIZE_CACHE_PARAM, encoding="utf-8") or "")
+    storage_known = size_cache.storage_known
+    storage_bytes = size_cache.storage_bytes if storage_known else 0
+    maps_present = bool(size_cache.maps_present)
 
     selected_key = selection_key(selected_locations)
     raw_progress = params_memory.get(MAPS_DOWNLOAD_PROGRESS_PARAM, encoding="utf-8") or ""
@@ -6387,10 +6515,13 @@ def setup(app):
     if not isinstance(download_progress, dict):
       download_progress = {}
 
+    if params_memory.get_bool(MAPS_DOWNLOAD_PARAM) and "storageBytes" in download_progress:
+      storage_known = bool(download_progress.get("storageKnown", True))
+      storage_bytes = nonnegative_int(download_progress.get("storageBytes", 0)) if storage_known else 0
+      maps_present = storage_bytes > 0 if storage_known else False
+
     if not params_memory.get_bool(MAPS_DOWNLOAD_PARAM) and selected_key and download_progress.get("selectedKey") != selected_key:
-      size_cache = load_size_cache(params.get(MAPS_DOWNLOAD_SIZE_CACHE_PARAM, encoding="utf-8") or "")
-      cached_entry = size_cache.get(selected_key, {})
-      cached_bytes = nonnegative_int(cached_entry.get("downloadBytes", 0)) if isinstance(cached_entry, dict) else 0
+      cached_bytes = size_cache.selection_estimate_bytes(selected_key)
       if cached_bytes > 0:
         download_progress = {
           "active": False,
@@ -6399,7 +6530,7 @@ def setup(app):
           "downloadedBytes": 0,
           "downloadedFiles": 0,
           "estimatedDownloadBytes": cached_bytes,
-          "estimateSource": "previous_download",
+          "estimateSource": "previous_additional_storage",
           "etaSeconds": 0,
           "percent": 0,
           "phase": "idle",
@@ -6407,8 +6538,9 @@ def setup(app):
           "selectedKey": selected_key,
           "selectedLocations": selected_locations,
           "storageBytes": storage_bytes,
-          "totalFiles": nonnegative_int(cached_entry.get("totalFiles", 0)),
-          "updatedAt": cached_entry.get("updatedAt", ""),
+          "storageKnown": storage_known,
+          "totalFiles": size_cache.selection_total_files(selected_key),
+          "updatedAt": size_cache.selection_updated_at(selected_key),
           "bytesPerSecond": 0,
         }
       else:
@@ -6427,6 +6559,7 @@ def setup(app):
           "selectedKey": selected_key,
           "selectedLocations": selected_locations,
           "storageBytes": storage_bytes,
+          "storageKnown": storage_known,
           "totalFiles": 0,
           "updatedAt": "",
           "bytesPerSecond": 0,
@@ -6442,6 +6575,7 @@ def setup(app):
       "isOnroad": params.get_bool("IsOnroad"),
       "lastUpdate": params.get("LastMapsUpdate", encoding="utf-8") or "Never",
       "mapsPresent": maps_present,
+      "storageKnown": storage_known,
       "scheduleLabel": schedule_label(params.get("PreferredSchedule")),
       "scheduleOptions": MAP_SCHEDULE_OPTIONS,
       "scheduleValue": schedule_param_value(params.get("PreferredSchedule")),
@@ -6528,6 +6662,11 @@ def setup(app):
     if MAPS_PATH.exists():
       shutil.rmtree(MAPS_PATH, ignore_errors=True)
 
+    size_cache = load_maps_storage_cache(params.get(MAPS_DOWNLOAD_SIZE_CACHE_PARAM, encoding="utf-8") or "")
+    size_cache.clear()
+    params.put(MAPS_DOWNLOAD_SIZE_CACHE_PARAM, size_cache.to_json())
+    params_memory.remove(MAPS_DOWNLOAD_PROGRESS_PARAM)
+
     return jsonify({"message": "Maps removed.", "status": _get_maps_status_payload()}), 200
 
   @app.route("/api/params_memory", methods=["GET"])
@@ -6561,7 +6700,23 @@ def setup(app):
     if is_builtin_model_key(model_key):
       return True
 
-    return f"{model_key}_driving_tinygrad.pkl" in on_disk_files
+    filename = f"{model_key}_driving_tinygrad.pkl"
+    if filename in on_disk_files:
+      return True
+
+    manifest = get_manifest_path(filename)
+    if manifest not in on_disk_files:
+      return False
+
+    try:
+      num_chunks = int((MODELS_PATH / manifest).read_text().strip())
+    except (OSError, ValueError):
+      return False
+
+    return num_chunks > 0 and all(
+      get_chunk_name(filename, index, num_chunks) in on_disk_files
+      for index in range(num_chunks)
+    )
 
   def get_model_catalog():
     available = [model.strip() for model in (params.get("AvailableModels", encoding="utf-8") or "").split(",")]
@@ -7237,6 +7392,15 @@ def setup(app):
     # storage scan cannot be multiplied by repeated homepage polling.
     with _STATS_RESPONSE_LOCK:
       return _get_stats_locked()
+
+  @app.route("/api/device/status", methods=["GET"])
+  def device_status():
+    return jsonify({
+      "status": "Driving" if params.get_bool("IsOnroad") else "Parked",
+      "online": True,
+      "lanIp": utilities.get_current_lan_ip(),
+      "networkName": utilities.get_current_network_name(),
+    }), 200
 
   @app.route("/api/stats/ignore_drive", methods=["POST"])
   def ignore_drive_stats():
