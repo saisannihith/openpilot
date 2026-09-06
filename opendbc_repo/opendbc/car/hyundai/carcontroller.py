@@ -442,7 +442,8 @@ def clear_ioniq_6_torque_when_request_inactive(CP, apply_torque: int, apply_stee
 
 
 def update_carnival_driver_conflict_hold(car_fingerprint, apply_torque: int, apply_torque_last: int,
-                                         driver_torque: float, lat_active: bool, hold_frames: int) -> tuple[int, int]:
+                                         driver_torque: float, lat_active: bool, hold_frames: int,
+                                         steer_fault_temporary: bool = False) -> tuple[int, int]:
   if car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN or not lat_active:
     return apply_torque, 0
 
@@ -450,6 +451,15 @@ def update_carnival_driver_conflict_hold(car_fingerprint, apply_torque: int, app
   opposing_command = abs(apply_torque_last) >= CARNIVAL_DRIVER_CONFLICT_MIN_COMMAND and apply_torque_last * driver_torque < 0
   if strong_driver_override and (hold_frames > 0 or opposing_command):
     hold_frames = CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES
+  elif steer_fault_temporary and hold_frames > 0:
+    # Preserve the delayed-fault protection only while MDPS still reports the
+    # fault. A cleared driver conflict alone must not create a blind timer.
+    hold_frames = CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES
+  elif not strong_driver_override:
+    # Do not keep a neutral hold after the driver's strong opposing torque has
+    # ended. The normal driver-torque limiter remains active and resumes with
+    # its bounded slew, avoiding a delayed tug when the driver releases.
+    hold_frames = 0
   elif hold_frames > 0:
     hold_frames -= 1
 
@@ -646,7 +656,7 @@ class CarController(CarControllerBase):
 
       apply_torque, self.carnival_driver_conflict_hold_frames = update_carnival_driver_conflict_hold(
         self.CP.carFingerprint, apply_torque, self.apply_torque_last, CS.out.steeringTorque,
-        CC.latActive, self.carnival_driver_conflict_hold_frames,
+        CC.latActive, self.carnival_driver_conflict_hold_frames, CS.out.steerFaultTemporary,
       )
 
       apply_torque = clear_ioniq_6_torque_when_request_inactive(self.CP, apply_torque, apply_steer_req)

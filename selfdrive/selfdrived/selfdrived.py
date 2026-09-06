@@ -81,6 +81,21 @@ def commanded_torque_at_max_for_saturation(CP, output: float) -> bool:
   return torque_controller and not has_controller_grace and abs(output) > 0.99
 
 
+def should_report_steer_saturated(CP, lac, applied_torque: float | None) -> bool:
+  """Require applied torque for the Carnival's saturation warning.
+
+  Its torque controller can request its ceiling while the CAN output is still
+  slewing. The warning should describe a sustained physical limit, not that
+  short command/output transient. Missing output telemetry keeps the normal
+  warning behavior instead of hiding an unknown condition.
+  """
+  if not bool(getattr(lac, "saturated", False)):
+    return False
+  if CP.carFingerprint == HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN:
+    return applied_torque is None or abs(applied_torque) >= 0.98
+  return True
+
+
 def should_loud_blindspot_alert_without_lateral(CS, sm, starpilot_toggles, combined_left_bsm=None, combined_right_bsm=None) -> bool:
   if not getattr(starpilot_toggles, "loud_blindspot_alert_when_disengaged", False):
     return False
@@ -738,8 +753,15 @@ class SelfdriveD:
       undershooting = abs(desired_lateral_accel) / abs(1e-3 + actual_lateral_accel) > 1.2
       turning = abs(desired_lateral_accel) > 1.0
       commanded_torque_at_max = commanded_torque_at_max_for_saturation(self.CP, lac.output)
+      applied_torque = None
+      if self.sm.valid.get('carOutput', False):
+        try:
+          applied_torque = float(self.sm['carOutput'].actuatorsOutput.torque)
+        except (AttributeError, TypeError, ValueError):
+          applied_torque = None
       # TODO: lac.saturated includes speed and other checks, should be pulled out
-      if undershooting and turning and (lac.saturated or commanded_torque_at_max):
+      if undershooting and turning and (should_report_steer_saturated(self.CP, lac, applied_torque) or
+                                        commanded_torque_at_max):
         now = time.monotonic()
         cooldown_active = switchback_mode_enabled and switchback_mode_cooldown > 0.0
         if not cooldown_active or (now - self.last_steer_saturated_alert_time) >= switchback_mode_cooldown:

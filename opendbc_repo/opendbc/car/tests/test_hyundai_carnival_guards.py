@@ -29,8 +29,8 @@ def test_carnival_4th_gen_uses_high_speed_dynamic_torque_rates():
 
   assert params.STEER_MAX == 409
   assert params.STEER_THRESHOLD == 100
-  assert params.STEER_DELTA_UP == 2
-  assert params.STEER_DELTA_DOWN == 3
+  assert params.STEER_DELTA_UP == 6
+  assert params.STEER_DELTA_DOWN == 6
   assert params.STEER_DRIVER_DELTA_DOWN == 10
 
 
@@ -38,7 +38,7 @@ def test_carnival_driver_conflict_uses_safety_retreat_rate_only_while_limited():
   params = _torque_params(30.0)
 
   assert apply_driver_steer_torque_limits(-409, -258, 400, params) == -248
-  assert apply_driver_steer_torque_limits(0, -258, 0, params) == -255
+  assert apply_driver_steer_torque_limits(0, -258, 0, params) == -252
 
 
 def test_carnival_driver_conflict_hold_reaches_neutral_without_exceeding_safety_rate():
@@ -64,17 +64,24 @@ def test_carnival_driver_conflict_hold_covers_delayed_eps_fault_and_resumes_norm
   )
   assert (torque, hold_frames) == (110, CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES)
 
-  for remaining in range(CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES - 1, 0, -1):
-    torque, hold_frames = update_carnival_driver_conflict_hold(
-      CAR.KIA_CARNIVAL_4TH_GEN, 2, torque, 0, True, hold_frames,
-    )
-    assert hold_frames == remaining
-    assert torque == max(0, 110 - 10 * (CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES - remaining))
-
   torque, hold_frames = update_carnival_driver_conflict_hold(
-    CAR.KIA_CARNIVAL_4TH_GEN, 2, torque, 0, True, hold_frames,
+    CAR.KIA_CARNIVAL_4TH_GEN, 6, torque, 0, True, hold_frames,
   )
-  assert (torque, hold_frames) == (2, 0)
+  assert (torque, hold_frames) == (6, 0)
+
+
+def test_carnival_driver_conflict_hold_stays_active_while_strong_opposing_torque_remains():
+  torque, hold_frames = update_carnival_driver_conflict_hold(
+    CAR.KIA_CARNIVAL_4TH_GEN, 200, 110, -350, True, 0,
+  )
+  assert (torque, hold_frames) == (100, CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES)
+
+
+def test_carnival_driver_conflict_hold_preserves_delayed_fault_protection():
+  torque, hold_frames = update_carnival_driver_conflict_hold(
+    CAR.KIA_CARNIVAL_4TH_GEN, 2, 110, 0, True, 5, True,
+  )
+  assert (torque, hold_frames) == (100, CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES)
 
 
 def test_carnival_driver_conflict_hold_does_not_touch_normal_or_other_car_commands():

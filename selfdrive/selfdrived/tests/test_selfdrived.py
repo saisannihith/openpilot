@@ -12,6 +12,7 @@ from openpilot.selfdrive.selfdrived.selfdrived import (
   SelfdriveD,
   commanded_torque_at_max_for_saturation,
   evaluate_comm_issue,
+  should_report_steer_saturated,
 )
 
 
@@ -143,6 +144,25 @@ def test_hyundai_torque_platforms_use_normal_saturation_timer_at_max_output(fing
   CP.lateralTuning.init("torque")
 
   assert not commanded_torque_at_max_for_saturation(CP, 1.0)
+
+
+def test_carnival_saturation_warning_requires_applied_torque_at_ceiling():
+  CP = car.CarParams.new_message()
+  CP.carFingerprint = HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN
+  lac = SimpleNamespace(saturated=True)
+
+  assert not should_report_steer_saturated(CP, lac, 0.74)
+  assert should_report_steer_saturated(CP, lac, 0.98)
+  assert should_report_steer_saturated(CP, lac, None)
+  assert not should_report_steer_saturated(CP, SimpleNamespace(saturated=False), 1.0)
+
+
+def test_other_cars_keep_their_existing_saturation_qualification():
+  CP = car.CarParams.new_message()
+  CP.carFingerprint = HYUNDAI_CAR.HYUNDAI_SONATA
+  lac = SimpleNamespace(saturated=True)
+
+  assert should_report_steer_saturated(CP, lac, None)
 
 
 def test_ecu_disable_fallback_synchronizes_behavior_and_safety_params():

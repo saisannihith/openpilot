@@ -12,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from opendbc.car.hyundai.carcontroller import update_carnival_driver_conflict_hold
+from opendbc.car.hyundai.values import CAR
 from opendbc.car.lateral import apply_driver_steer_torque_limits
 from openpilot.tools.lib.logreader import LogReader, ReadMode
 
@@ -217,8 +219,8 @@ def read_segment(path: Path) -> tuple[list[CarSample], list[MdpsSample], list[Co
       STEER_DRIVER_ALLOWANCE=100,
       STEER_DRIVER_MULTIPLIER=2,
       STEER_DRIVER_FACTOR=1,
-      STEER_DELTA_UP=10 if low_speed else 2,
-      STEER_DELTA_DOWN=8 if low_speed else 3,
+      STEER_DELTA_UP=10 if low_speed else 6,
+      STEER_DELTA_DOWN=8 if low_speed else 6,
       STEER_DRIVER_DELTA_DOWN=10,
     )
     lat_active = bool(safe_attr(cc, "latActive", False))
@@ -229,27 +231,15 @@ def read_segment(path: Path) -> tuple[list[CarSample], list[MdpsSample], list[Co
     if not lat_active:
       current_limiter_output = 0
 
-    conflict_hold_output_last = conflict_hold_output
-    conflict_hold_output = apply_driver_steer_torque_limits(
-      int(round(requested_torque * STEER_MAX)), conflict_hold_output_last,
-      finite_float(safe_attr(cs, "steeringTorque", 0.0)), current_limits,
+    conflict_hold_output, conflict_hold_frames = update_carnival_driver_conflict_hold(
+      CAR.KIA_CARNIVAL_4TH_GEN,
+      current_limiter_output,
+      conflict_hold_output,
+      finite_float(safe_attr(cs, "steeringTorque", 0.0)),
+      lat_active,
+      conflict_hold_frames,
+      bool(safe_attr(cs, "steerFaultTemporary", False)),
     )
-    strong_driver_override = lat_active and abs(finite_float(safe_attr(cs, "steeringTorque", 0.0))) >= CANDIDATE_CONFLICT_TORQUE
-    opposing_driver_override = strong_driver_override and (
-      conflict_hold_frames > 0 or
-      (abs(conflict_hold_output_last) >= CANDIDATE_CONFLICT_MIN_COMMAND and
-       conflict_hold_output_last * finite_float(safe_attr(cs, "steeringTorque", 0.0)) < 0)
-    )
-    if opposing_driver_override:
-      conflict_hold_frames = CANDIDATE_CONFLICT_HOLD_FRAMES
-    elif conflict_hold_frames > 0:
-      conflict_hold_frames -= 1
-    if conflict_hold_frames > 0:
-      conflict_hold_output = int(max(conflict_hold_output_last - CANDIDATE_CONFLICT_UNWIND_STEP,
-                                     min(0, conflict_hold_output_last + CANDIDATE_CONFLICT_UNWIND_STEP)))
-    if not lat_active:
-      conflict_hold_output = 0
-      conflict_hold_frames = 0
     cars.append(CarSample(
       t=t,
       v_ego=finite_float(safe_attr(cs, "vEgo", 0.0)),

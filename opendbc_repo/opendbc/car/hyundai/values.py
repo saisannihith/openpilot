@@ -52,8 +52,14 @@ class CarControllerParams:
           self.STEER_DELTA_UP = 10
           self.STEER_DELTA_DOWN = 8
       else:
-        self.STEER_DELTA_UP = 2
-        self.STEER_DELTA_DOWN = 3
+        if CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
+          # The Carnival's 409-unit CAN-FD envelope has headroom for a quicker
+          # high-speed turn-in; keep both rates below Panda's 10-unit contract.
+          self.STEER_DELTA_UP = 6
+          self.STEER_DELTA_DOWN = 6
+        else:
+          self.STEER_DELTA_UP = 2
+          self.STEER_DELTA_DOWN = 3
       if CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
         # Hyundai CAN-FD safety requires a 10-unit retreat while opposing driver
         # torque is actively shrinking the permitted steering envelope.
