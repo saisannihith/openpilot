@@ -213,7 +213,6 @@ def read_segment(path: Path) -> tuple[list[CarSample], list[MdpsSample], list[Co
       output_units = int(round(finite_float(safe_attr(output, "torque", 0.0)) * STEER_MAX))
     v_ego_raw = finite_float(safe_attr(cs, "vEgoRaw", safe_attr(cs, "vEgo", 0.0)))
     requested_torque = finite_float(safe_attr(requested, "torque", 0.0))
-    low_speed = v_ego_raw < 15.0
     current_limits = SimpleNamespace(
       STEER_MAX=STEER_MAX,
       STEER_DRIVER_ALLOWANCE=100,
