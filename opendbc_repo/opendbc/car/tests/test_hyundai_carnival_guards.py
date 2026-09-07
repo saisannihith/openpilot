@@ -29,16 +29,16 @@ def test_carnival_4th_gen_uses_high_speed_dynamic_torque_rates():
 
   assert params.STEER_MAX == 409
   assert params.STEER_THRESHOLD == 100
-  assert params.STEER_DELTA_UP == 6
-  assert params.STEER_DELTA_DOWN == 6
+  assert params.STEER_DELTA_UP == 10
+  assert params.STEER_DELTA_DOWN == 10
   assert params.STEER_DRIVER_DELTA_DOWN == 10
 
 
-def test_carnival_driver_conflict_uses_safety_retreat_rate_only_while_limited():
+def test_carnival_uses_ten_unit_unwind_rate_at_high_speed():
   params = _torque_params(30.0)
 
   assert apply_driver_steer_torque_limits(-409, -258, 400, params) == -248
-  assert apply_driver_steer_torque_limits(0, -258, 0, params) == -252
+  assert apply_driver_steer_torque_limits(0, -258, 0, params) == -248
 
 
 def test_carnival_driver_conflict_hold_reaches_neutral_without_exceeding_safety_rate():

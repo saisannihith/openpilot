@@ -53,10 +53,11 @@ class CarControllerParams:
           self.STEER_DELTA_DOWN = 8
       else:
         if CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
-          # The Carnival's 409-unit CAN-FD envelope has headroom for a quicker
-          # high-speed turn-in; keep both rates below Panda's 10-unit contract.
-          self.STEER_DELTA_UP = 6
-          self.STEER_DELTA_DOWN = 6
+          # The Carnival's 409-unit CAN-FD envelope benefits from the fastest
+          # safe command ramp at highway speed. Panda independently enforces
+          # the same 10-unit-per-frame ceiling.
+          self.STEER_DELTA_UP = 10
+          self.STEER_DELTA_DOWN = 10
         else:
           self.STEER_DELTA_UP = 2
           self.STEER_DELTA_DOWN = 3
