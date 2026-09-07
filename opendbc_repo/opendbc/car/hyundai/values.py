@@ -48,6 +48,11 @@ class CarControllerParams:
         if CP.carFingerprint == CAR.KIA_CARNIVAL_HEV_4TH_GEN:
           self.STEER_DELTA_UP = 2
           self.STEER_DELTA_DOWN = 3
+        elif CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
+          # Keep the 2024 torque-steering Carnival at Panda's symmetric
+          # 10-unit rate ceiling through tight, low-speed curves as well.
+          self.STEER_DELTA_UP = 10
+          self.STEER_DELTA_DOWN = 10
         else:
           self.STEER_DELTA_UP = 10
           self.STEER_DELTA_DOWN = 8

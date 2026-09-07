@@ -14,13 +14,13 @@ def _torque_params(v_ego: float) -> CarControllerParams:
   return CarControllerParams(CP, v_ego)
 
 
-def test_carnival_4th_gen_uses_low_speed_dynamic_torque_rates():
+def test_carnival_4th_gen_uses_symmetric_10_unit_rates_at_low_speed():
   params = _torque_params(14.99)
 
   assert params.STEER_MAX == 409
   assert params.STEER_THRESHOLD == 100
   assert params.STEER_DELTA_UP == 10
-  assert params.STEER_DELTA_DOWN == 8
+  assert params.STEER_DELTA_DOWN == 10
   assert params.STEER_DRIVER_DELTA_DOWN == 10
 
 

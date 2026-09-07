@@ -220,7 +220,7 @@ def read_segment(path: Path) -> tuple[list[CarSample], list[MdpsSample], list[Co
       STEER_DRIVER_MULTIPLIER=2,
       STEER_DRIVER_FACTOR=1,
       STEER_DELTA_UP=10,
-      STEER_DELTA_DOWN=8 if low_speed else 10,
+      STEER_DELTA_DOWN=10,
       STEER_DRIVER_DELTA_DOWN=10,
     )
     lat_active = bool(safe_attr(cc, "latActive", False))
