@@ -342,6 +342,10 @@ ul { list-style: none; margin: 0; padding: 0; }
 .gx-appbar__back:active { transform: scale(0.92); }
 
 .gx-appbar__title {
+  background: linear-gradient(135deg, #8b6cc5 0%, #5ec8c8 55%, #d4789c 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
   font-size: var(--fs-lg);
   font-weight: var(--fw-bold);
   white-space: nowrap;
@@ -588,6 +592,66 @@ ul { list-style: none; margin: 0; padding: 0; }
   transition: transform var(--motion-fast), box-shadow var(--motion-fast);
 }
 
+.gx-unit-note {
+  align-items: center;
+  background: var(--primary-container);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-md);
+  color: var(--on-primary-container);
+  display: flex;
+  font-size: var(--fs-sm);
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.gx-unit-note i {
+  color: var(--primary);
+  font-size: 1.2rem;
+}
+
+.gx-row.gx-diagnostic-row--changed {
+  background: rgba(139, 108, 197, 0.18) !important;
+  box-shadow: inset 3px 0 var(--primary);
+}
+
+.gx-update-progress {
+  display: grid;
+  gap: 6px;
+  margin-top: var(--sp-2);
+}
+
+.gx-update-progress__track {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-full);
+  height: 12px;
+  overflow: hidden;
+}
+
+.gx-update-progress__fill {
+  background: linear-gradient(90deg, #5ec8c8 0%, #8b6cc5 100%);
+  border-radius: inherit;
+  height: 100%;
+  transition: width 0.4s ease;
+}
+
+.gx-update-progress__fill--error {
+  background: linear-gradient(90deg, #b43a3a 0%, #de5656 100%);
+}
+
+.gx-update-progress__meta {
+  align-items: center;
+  display: flex;
+  font-size: var(--fs-sm);
+  gap: var(--sp-2);
+  justify-content: space-between;
+}
+
+.gx-update-progress small {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 [data-theme="light"] .gx-card {
   border: 1px solid rgba(120, 73, 232, 0.22);
 }
@@ -744,6 +808,13 @@ ul { list-style: none; margin: 0; padding: 0; }
 
 .gx-slider-row .gx-row__value { text-align: left; min-width: 0; }
 .gx-slider-row .gx-slider-reset { align-self: flex-end; }
+
+.gx-slider-meta {
+  color: var(--text-muted);
+  display: flex;
+  font-size: var(--fs-xs);
+  justify-content: space-between;
+}
 
 input[type="range"].gx-slider {
   -webkit-appearance: none;

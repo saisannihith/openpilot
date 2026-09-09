@@ -6,6 +6,7 @@ import importlib
 import math
 import numbers
 import os
+import platform
 import sys
 import sysconfig
 import tarfile
@@ -39,7 +40,7 @@ from opendbc.car.gm.values import GMFlags
 from opendbc.car.toyota.carcontroller import LOCK_CMD, UNLOCK_CMD
 from opendbc.car.toyota.values import ToyotaStarPilotFlags
 from openpilot.common.constants import CV
-from openpilot.common.file_chunker import get_chunk_name, get_manifest_path
+from openpilot.common.file_chunker import file_chunked_exists, get_chunk_name, get_manifest_path
 from openpilot.common.params import ParamKeyFlag, ParamKeyType, Params
 from openpilot.common.realtime import DT_HW
 from openpilot.common.swaglog import cloudlog
@@ -52,13 +53,28 @@ from openpilot.tools.longitudinal_maneuvers.capabilities import get_longitudinal
 from panda import Panda
 
 from openpilot.starpilot.assets.model_manager import (
+  MODEL_LAB_DOWNLOAD_PARAM,
   canonical_model_key,
+  disable_big_model_profile,
   external_gpu_available,
+  get_model_profile,
   is_builtin_model_key,
+  model_accelerator_artifact_filename,
   model_key_aliases,
   model_uses_external_gpu,
+  set_model_profile,
+)
+from openpilot.starpilot.common.model_lab import (
+  MODEL_LAB_CONFIG_PARAM,
+  MODEL_LAB_RUNTIME_PARAM,
+  is_small_model_metadata,
+  model_lab_manifest_eligible,
+  model_lab_pair_display_name,
+  normalize_model_lab_config,
+  validate_model_lab_selection,
 )
 from openpilot.starpilot.assets.theme_manager import HOLIDAY_THEME_PATH, THEME_COMPONENT_PARAMS
+from openpilot.starpilot.common import param_profiles
 from openpilot.starpilot.common.accel_profile import (
   CUSTOM_ACCEL_PROFILE_BREAKPOINT_PARAM_KEYS,
   CUSTOM_ACCEL_PROFILE_BREAKPOINTS_INITIALIZED_KEY,
@@ -110,7 +126,7 @@ from openpilot.starpilot.common.favorite_slots import (
 )
 from openpilot.starpilot.common.lateral_delay import full_lateral_delay
 from openpilot.starpilot.common.starpilot_utilities import delete_file, get_lock_status, run_cmd
-from openpilot.starpilot.common.starpilot_variables import ACTIVE_THEME_PATH, BUTTON_FUNCTIONS, ERROR_LOGS_PATH, EXCLUDED_KEYS, LEGACY_STARPILOT_PARAM_RENAMES, MAPS_PATH, MODELS_PATH, RESOURCES_REPO, SCREEN_RECORDINGS_PATH, STOCK_THEME_PATH, THEME_SAVE_PATH,\
+from openpilot.starpilot.common.starpilot_variables import ACTIVE_THEME_PATH, BUTTON_FUNCTIONS, ERROR_LOGS_PATH, EXCLUDED_KEYS, LEGACY_STARPILOT_PARAM_RENAMES, MAPS_PATH, MODELS_PATH, RESOURCES_REPO, SCREEN_RECORDINGS_PATH, STOCK_THEME_PATH, THEME_SAVE_PATH, TOGGLE_BACKUPS,\
                                                            default_ev_tuning_enabled, migrate_cancel_button_controls, update_starpilot_toggles
 from openpilot.starpilot.common.testing_grounds import (
   DEFAULT_TESTING_GROUND_VARIANT as SHARED_DEFAULT_TESTING_GROUND_VARIANT,
@@ -181,7 +197,9 @@ def _galaxy_runtime_dependency_paths() -> tuple[str, ...]:
     "/usr/local/venv/lib/python3.12/site-packages",
   ]
 
-  for venv_name in (".venv", ".venv-linux-arm64"):
+  is_arm = platform.machine().lower() in ("aarch64", "arm64")
+  venv_names = (".venv-linux-arm64", ".venv") if is_arm else (".venv",)
+  for venv_name in venv_names:
     venv_path = repo_root / venv_name / "lib"
     if venv_path.is_dir():
       candidates.extend(str(path) for path in venv_path.glob("python*/site-packages"))
@@ -191,9 +209,13 @@ def _galaxy_runtime_dependency_paths() -> tuple[str, ...]:
 
 REPO_THIRD_PARTY_PATH = Path(__file__).resolve().parents[2] / "third_party"
 GALAXY_RUNTIME_DEPENDENCY_PATHS = _galaxy_runtime_dependency_paths()
-for deps_path in GALAXY_DEPS_PATHS + GALAXY_RUNTIME_DEPENDENCY_PATHS:
+for deps_path in GALAXY_DEPS_PATHS:
   if os.path.isdir(deps_path) and deps_path not in sys.path:
     sys.path.insert(0, deps_path)
+
+for deps_path in GALAXY_RUNTIME_DEPENDENCY_PATHS:
+  if os.path.isdir(deps_path) and deps_path not in sys.path:
+    sys.path.append(deps_path)
 
 if REPO_THIRD_PARTY_PATH.is_dir() and str(REPO_THIRD_PARTY_PATH) not in sys.path:
   sys.path.insert(0, str(REPO_THIRD_PARTY_PATH))
@@ -944,16 +966,23 @@ def _get_sentry_vapid():
   except ModuleNotFoundError as error:
     raise RuntimeError("pywebpush is not installed") from error
 
-  private_key_path, _ = _sentry_push_paths()
-  private_key_path.parent.mkdir(parents=True, exist_ok=True)
-  if private_key_path.is_file():
-    return Vapid.from_file(str(private_key_path))
+  with _SENTRY_PUSH_LOCK:
+    private_key_path, _ = _sentry_push_paths()
+    private_key_path.parent.mkdir(parents=True, exist_ok=True)
+    if private_key_path.is_file():
+      try:
+        if private_key_path.stat().st_size > 0:
+          return Vapid.from_file(str(private_key_path))
+      except Exception as error:
+        cloudlog.warning("Galaxy: Existing Sentry VAPID private key was invalid, regenerating: %s", error)
 
-  vapid = Vapid()
-  vapid.generate_keys()
-  vapid.save_key(str(private_key_path))
-  private_key_path.chmod(0o600)
-  return vapid
+    vapid = Vapid()
+    vapid.generate_keys()
+    temporary_path = private_key_path.with_suffix(".tmp")
+    vapid.save_key(str(temporary_path))
+    temporary_path.chmod(0o600)
+    temporary_path.replace(private_key_path)
+    return vapid
 
 
 def _sentry_vapid_public_key(vapid) -> str:
@@ -1171,20 +1200,7 @@ def _dispatch_sentry_event(event: dict, *, bypass_rate_limit: bool = False) -> N
 TOGGLE_BACKUP_FORMAT = "starpilot-toggle-backup"
 TOGGLE_BACKUP_VERSION = 1
 TOGGLE_BACKUP_MAX_ENCODED_BYTES = 2_000_000
-TOGGLE_BACKUP_NO_DEFAULT_KEYS = {
-  "AdbEnabled",
-  "AlphaLongitudinalEnabled",
-  "AlwaysOnDM",
-  "ExperimentalMode",
-  "ExperimentalModeConfirmed",
-  "IsLdwEnabled",
-  "IsMetric",
-  "IsRHD",
-  "IsRHDOverride",
-  "RecordAudio",
-  "RecordFront",
-  "SshEnabled",
-}
+TOGGLE_BACKUP_NO_DEFAULT_KEYS = param_profiles.PROFILE_NO_DEFAULT_KEYS
 
 
 def _get_toggle_backup_keys():
@@ -4967,7 +4983,30 @@ def _set_lateral_maneuver_mode(enabled):
 
   return _save_lateral_maneuver_status(status)
 
+
+_SLUG_PREFIX_RE = re.compile(r"^/([A-Za-z0-9]{16})(/.*)?$")
+
+
+class GalaxySlugMiddleware:
+  """WSGI middleware to normalize reverse-proxy requests prefixed with a 16-character tunnel slug."""
+
+  def __init__(self, wsgi_app):
+    self.wsgi_app = wsgi_app
+
+  def __call__(self, environ, start_response):
+    path_info = environ.get("PATH_INFO", "")
+    match = _SLUG_PREFIX_RE.match(path_info)
+    if match:
+      environ["HTTP_X_GALAXY_SLUG"] = match.group(1)
+      remainder = match.group(2)
+      environ["PATH_INFO"] = remainder if remainder else "/"
+    return self.wsgi_app(environ, start_response)
+
+
 def setup(app):
+  if not isinstance(app.wsgi_app, GalaxySlugMiddleware):
+    app.wsgi_app = GalaxySlugMiddleware(app.wsgi_app)
+
   model_status_debug = {
     "last_signature": None,
     "last_log_time": 0.0,
@@ -4983,6 +5022,7 @@ def setup(app):
       "/assets/components/settings.js",
       "/assets/components/home/home.js",
       "/assets/components/home/home.css",
+      "/assets/mobile/js/params.js",
       "/assets/components/tools/device_settings.js",
       "/assets/components/tools/device_settings.css",
       "/assets/components/tools/device_settings_layout.json",
@@ -4995,6 +5035,8 @@ def setup(app):
       "/assets/components/tools/pip_sidecam.js",
       "/assets/components/tools/pip_sidecam.css",
       "/assets/components/tools/toggles.js",
+      "/assets/components/tools/model_laboratory.js",
+      "/assets/components/tools/model_laboratory.css",
       "/assets/components/tools/bluetooth.js",
       "/assets/components/tools/bluetooth.css",
       "/assets/components/tools/wheel_controls.js",
@@ -5011,6 +5053,19 @@ def setup(app):
 
   @app.errorhandler(404)
   def not_found(_):
+    is_api = (
+      request.path == "/api"
+      or request.path.startswith("/api/")
+      or "/api/" in request.path
+      or request.is_json
+      or (request.accept_mimetypes.accept_json and not request.accept_mimetypes.accept_html)
+    )
+    if is_api or request.method not in ("GET", "HEAD"):
+      return jsonify({"error": "Not found"}), 404
+
+    if request.path.startswith(("/assets/", "/screen_recordings/", "/thumbnails/", "/video/")):
+      return "Not found", 404
+
     response = make_response(render_template("index.html"))
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
@@ -5031,6 +5086,8 @@ def setup(app):
 
   @app.route("/", methods=["GET"])
   def index():
+    if params.get_bool("GalaxyMobileDefault"):
+      return _serve_new_ui()
     response = make_response(render_template("index.html"))
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
@@ -5044,8 +5101,6 @@ def setup(app):
 
   @app.route("/mobile", methods=["GET"])
   @app.route("/mobile/", methods=["GET"])
-  @app.route("/ui", methods=["GET"])
-  @app.route("/ui/", methods=["GET"])
   def mobile_index():
     return _serve_new_ui()
 
@@ -5134,6 +5189,7 @@ def setup(app):
     status["slots"] = slots
     status["controller_slots"] = controller_slots
     status["controller_options"] = controller_options
+    status["disconnect_controllers_offroad"] = params.get_bool("BluetoothDisconnectControllersOffroad")
     is_metric = params.get_bool("IsMetric")
     speed_minimum, speed_maximum = controller_speed_bounds(is_metric)
     status["speed_unit"] = "km/h" if is_metric else "mph"
@@ -5143,13 +5199,16 @@ def setup(app):
 
   @app.route("/api/wheel-controls/<operation>", methods=["POST"])
   def wheel_controls_operation(operation):
-    if operation not in {"action", "learn", "cancel", "delete", "clear", "test", "test-stop", "joystick"}:
+    if operation not in {"action", "learn", "cancel", "delete", "clear", "test", "test-stop", "joystick", "offroad-disconnect"}:
       return jsonify({"error": "Unknown wheel control operation."}), 404
     if not params.get_bool("IsOffroad"):
       return jsonify({"error": "Wheel controls can only be configured offroad."}), 409
 
     data = request.get_json(silent=True) or {}
     try:
+      if operation == "offroad-disconnect":
+        params.put_bool("BluetoothDisconnectControllersOffroad", bool(data.get("enabled", False)))
+        return jsonify({"message": "Offroad controller disconnect updated."}), 200
       if operation == "action":
         slot_index = int(data.get("slot", -1))
         key = str(data.get("key") or "").strip()
@@ -5248,6 +5307,27 @@ def setup(app):
     if not SETTINGS_CATALOG_PATH.is_file():
       return "Settings catalog not found", 404
     return send_file(str(SETTINGS_CATALOG_PATH), mimetype="application/json")
+
+  @app.route("/assets/mobile/manifest.json", methods=["GET"])
+  def mobile_manifest():
+    manifest_path = Path(app.static_folder) / "mobile" / "manifest.json"
+    if not manifest_path.is_file():
+      return jsonify({"error": "Galaxy manifest not found"}), 404
+
+    try:
+      manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+      return jsonify({"error": "Galaxy manifest is invalid"}), 500
+
+    slug = _read_galaxy_text(_get_galaxy_dir() / "glxyslug")
+    if re.fullmatch(r"[A-Za-z0-9]{16}", slug):
+      manifest_data["start_url"] = f"https://galaxy.firestar.link/{slug}"
+    else:
+      manifest_data["start_url"] = "/mobile/"
+
+    response = jsonify(manifest_data)
+    response.mimetype = "application/manifest+json"
+    return _no_store_response(response)
 
   @app.route("/manifest.json", methods=["GET"])
   @app.route("/assets/manifest.json", methods=["GET"])
@@ -6006,6 +6086,12 @@ def setup(app):
         if model_uses_external_gpu(selected_model) and not external_gpu_available():
           return jsonify({"error": "This model requires a detected external GPU."}), 409
 
+        lab_config = normalize_model_lab_config(params.get(MODEL_LAB_CONFIG_PARAM, encoding="utf-8") or "")
+        if lab_config["enabled"]:
+          lab_config["enabled"] = False
+          params.put(MODEL_LAB_CONFIG_PARAM, lab_config)
+          params.remove(MODEL_LAB_RUNTIME_PARAM)
+
         params.put("Model", selected_model)
         params.put("DrivingModel", selected_model)
 
@@ -6050,6 +6136,9 @@ def setup(app):
           except Exception:
             pass
         enforce_nnff_driving_model_eligibility(params, params.get("CarModel"))
+
+        profile = "big" if model_uses_external_gpu(selected_model) else "small"
+        set_model_profile(params, profile, selected_model)
       elif key in ("ModelVersion", "DrivingModelVersion"):
         params.put("ModelVersion", str_val)
         params.put("DrivingModelVersion", str_val)
@@ -6248,12 +6337,181 @@ def setup(app):
     return jsonify({
       "models": models,
       "currentModel": _current_model_key(),
+      "activeSmallModel": _active_model_key("small"),
+      "activeBigModel": _active_model_key("big"),
       "summary": {
         "installed": sum(1 for model in models if model["installed"]),
         "missing": sum(1 for model in models if not model["installed"]),
         "total": len(models),
       },
     }), 200
+
+  def _model_lab_status_payload():
+    models = get_model_catalog()
+    model_by_key = {model["value"]: model for model in models}
+    config = normalize_model_lab_config(params.get(MODEL_LAB_CONFIG_PARAM, encoding="utf-8") or "")
+    config["lateralModel"] = canonical_model_key(config["lateralModel"])
+    config["longitudinalModel"] = canonical_model_key(config["longitudinalModel"])
+    chestnut_ready = external_gpu_available()
+    runtime = {}
+    try:
+      runtime_value = params.get(MODEL_LAB_RUNTIME_PARAM, encoding="utf-8") or ""
+      runtime = json.loads(runtime_value) if isinstance(runtime_value, str) and runtime_value else runtime_value
+      if not isinstance(runtime, dict):
+        runtime = {}
+    except (TypeError, ValueError):
+      runtime = {}
+
+    eligible_models = [model for model in models if model.get("modelLabEligible")]
+    ready_models = [model for model in eligible_models if model.get("modelLabArtifactInstalled")]
+    lab_model_to_download = params_memory.get(MODEL_LAB_DOWNLOAD_PARAM, encoding="utf-8") or ""
+    configuration_error = validate_model_lab_selection(
+      config,
+      model_by_key,
+      chestnut_ready=chestnut_ready,
+      require_installed=True,
+    )
+    return {
+      "chestnutReady": chestnut_ready,
+      "isOnroad": params.get_bool("IsOnroad"),
+      "configuration": config,
+      "configurationError": configuration_error or "",
+      "runtime": runtime,
+      "download": {
+        "model": lab_model_to_download,
+        "progress": params_memory.get(MODEL_DOWNLOAD_PROGRESS_PARAM, encoding="utf-8") or "",
+      },
+      "models": eligible_models,
+      "summary": {
+        "eligible": len(eligible_models),
+        "ready": len(ready_models),
+        "published": sum(1 for model in eligible_models if model.get("modelLabArtifactAvailable")),
+        "declaredSize": sum(1 for model in eligible_models if model.get("manifestDeclaredSize")),
+      },
+      "manifest": {
+        "version": params.get("ModelManifestVersion", encoding="utf-8") or "unknown",
+      },
+    }
+
+  def _activate_preferred_model_profile():
+    """Restore the model that the normal small/big profile system would run."""
+    profile = "big" if external_gpu_available() and _active_model_key("big") else "small"
+    model_key, model_name, model_version = get_model_profile(params, profile)
+    if not model_key:
+      model_key, model_name, model_version = _default_model_key(), _default_model_name(), _default_model_version()
+
+    params.put("Model", model_key)
+    params.put("DrivingModel", model_key)
+    params.put("DrivingModelName", model_name or model_key)
+    if model_version:
+      params.put("ModelVersion", model_version)
+      params.put("DrivingModelVersion", model_version)
+    return model_name or model_key
+
+  @app.route("/api/model-laboratory", methods=["GET", "PUT"])
+  def model_laboratory():
+    if request.method == "GET":
+      return jsonify(_model_lab_status_payload()), 200
+
+    if params.get_bool("IsOnroad"):
+      return jsonify({"error": "Model Laboratory can only be configured while parked."}), 403
+
+    data = request.get_json(silent=True) or {}
+    config = normalize_model_lab_config({
+      "enabled": data.get("enabled", False),
+      "lateralModel": canonical_model_key(str(data.get("lateralModel") or "")),
+      "longitudinalModel": canonical_model_key(str(data.get("longitudinalModel") or "")),
+    })
+    models = get_model_catalog()
+    model_by_key = {model["value"]: model for model in models}
+    error = validate_model_lab_selection(
+      config,
+      model_by_key,
+      chestnut_ready=external_gpu_available(),
+      require_installed=True,
+    )
+    if error:
+      return jsonify({"error": error}), 409
+
+    params.put(MODEL_LAB_CONFIG_PARAM, config)
+    params.remove(MODEL_LAB_RUNTIME_PARAM)
+    if config["enabled"]:
+      lateral = model_by_key[config["lateralModel"]]
+      params.put("Model", lateral["value"])
+      params.put("DrivingModel", lateral["value"])
+      longitudinal = model_by_key[config["longitudinalModel"]]
+      params.put("DrivingModelName", model_lab_pair_display_name(lateral["label"], longitudinal["label"]))
+      if lateral.get("version"):
+        params.put("ModelVersion", lateral["version"])
+        params.put("DrivingModelVersion", lateral["version"])
+      message = "Model Laboratory enabled. The pair will load on the next drive."
+    else:
+      restored_model = _activate_preferred_model_profile()
+      message = f"Model Laboratory disabled. {restored_model} will be used next."
+
+    return jsonify({"message": message, **_model_lab_status_payload()}), 200
+
+  @app.route("/api/model-laboratory/download", methods=["POST"])
+  def download_model_laboratory_artifact():
+    if params.get_bool("IsOnroad"):
+      return jsonify({"error": "Model Laboratory artifacts can only be downloaded while parked."}), 403
+    if (
+      params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM)
+      or (params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or "")
+      or (params_memory.get(MODEL_LAB_DOWNLOAD_PARAM, encoding="utf-8") or "")
+    ):
+      return jsonify({"error": "A model download is already in progress."}), 409
+
+    data = request.get_json(silent=True) or {}
+    model_key = canonical_model_key(str(data.get("model") or "").strip())
+    model = next((entry for entry in get_model_catalog() if entry["value"] == model_key), None)
+    if model is None:
+      return jsonify({"error": f"Unknown model '{model_key}'."}), 404
+    if not model.get("modelLabEligible"):
+      return jsonify({"error": "Only compatible small models have Model Laboratory eGPU variants."}), 409
+    if not model.get("modelLabArtifactAvailable"):
+      return jsonify({"error": "The manifest does not publish a precompiled AMD artifact for this model."}), 409
+    if model.get("modelLabArtifactInstalled"):
+      return jsonify({"message": f"The eGPU variant for \"{model['label']}\" is already downloaded."}), 200
+
+    params_memory.remove(MODEL_CANCEL_DOWNLOAD_PARAM)
+    params_memory.put(MODEL_LAB_DOWNLOAD_PARAM, model_key)
+    params_memory.put(MODEL_DOWNLOAD_PROGRESS_PARAM, "Starting eGPU variant download...")
+    return jsonify({"message": f"Started downloading the eGPU variant for \"{model['label']}\"."}), 200
+
+  @app.route("/api/model-laboratory/artifact", methods=["DELETE"])
+  def delete_model_laboratory_artifact():
+    if params.get_bool("IsOnroad"):
+      return jsonify({"error": "Model Laboratory eGPU variants can only be deleted while parked."}), 403
+    if (
+      params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM)
+      or (params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or "")
+      or (params_memory.get(MODEL_LAB_DOWNLOAD_PARAM, encoding="utf-8") or "")
+    ):
+      return jsonify({"error": "Cannot delete an eGPU variant while a model download is in progress."}), 409
+
+    data = request.get_json(silent=True) or {}
+    model_key = canonical_model_key(str(data.get("model") or "").strip())
+    model = next((entry for entry in get_model_catalog() if entry["value"] == model_key), None)
+    if model is None:
+      return jsonify({"error": f"Unknown model '{model_key}'."}), 404
+    if not model.get("modelLabArtifactInstalled"):
+      return jsonify({"message": f"No eGPU variant is downloaded for \"{model['label']}\"."}), 200
+
+    config = normalize_model_lab_config(params.get(MODEL_LAB_CONFIG_PARAM, encoding="utf-8") or "")
+    if config["enabled"] and model_key in (config["lateralModel"], config["longitudinalModel"]):
+      return jsonify({"error": "Disable Model Laboratory or choose a different pair before deleting this eGPU variant."}), 409
+
+    artifact_path = MODELS_PATH / model_accelerator_artifact_filename(model_key)
+    try:
+      artifact_path.unlink(missing_ok=True)
+      Path(get_manifest_path(artifact_path)).unlink(missing_ok=True)
+      for chunk_path in artifact_path.parent.glob(f"{artifact_path.name}.chunk*of*"):
+        chunk_path.unlink(missing_ok=True)
+    except Exception as exception:
+      return jsonify({"error": f"Failed deleting the eGPU variant: {exception}"}), 500
+
+    return jsonify({"message": f"Deleted the eGPU variant for \"{model['label']}\".", **_model_lab_status_payload()}), 200
 
   @app.route("/api/models/preferences", methods=["GET", "PUT"])
   def get_or_set_models_preferences():
@@ -6285,16 +6543,72 @@ def setup(app):
 
     return jsonify({"message": f"Updated model {' and '.join(changed)}."}), 200
 
+  @app.route("/api/models/active", methods=["PUT"])
+  def set_active_model_profile():
+    if params.get_bool("IsOnroad"):
+      return jsonify({"error": "Cannot change active models while driving."}), 403
+
+    data = request.get_json(silent=True) or {}
+    profile = str(data.get("profile") or "").strip().lower()
+    if profile not in ("small", "big"):
+      return jsonify({"error": "Model profile must be 'small' or 'big'."}), 400
+
+    model_key = canonical_model_key(str(data.get("model") or "").strip())
+    if not model_key:
+      if profile != "big":
+        return jsonify({"error": "Active Small cannot be disabled."}), 400
+
+      lab_config = normalize_model_lab_config(params.get(MODEL_LAB_CONFIG_PARAM, encoding="utf-8") or "")
+      if lab_config["enabled"]:
+        lab_config["enabled"] = False
+        params.put(MODEL_LAB_CONFIG_PARAM, lab_config)
+        params.remove(MODEL_LAB_RUNTIME_PARAM)
+
+      disable_big_model_profile(params)
+      restored_model = _activate_preferred_model_profile()
+      return jsonify({
+        "message": f"Active Big disabled. {restored_model} will be used even when Chestnut is connected.",
+        "profile": profile,
+        "model": "",
+      }), 200
+
+    catalog = {model["value"]: model for model in get_model_catalog()}
+    model = catalog.get(model_key)
+    if model is None:
+      return jsonify({"error": f"Unknown model '{model_key}'."}), 404
+    if not model["installed"]:
+      return jsonify({"error": f"Download '{model['label']}' before selecting it."}), 409
+    if bool(model["requiresGpu"]) != (profile == "big"):
+      expected = "an eGPU model" if profile == "big" else "an on-device model"
+      return jsonify({"error": f"Active {profile.title()} must be {expected}."}), 409
+
+    lab_config = normalize_model_lab_config(params.get(MODEL_LAB_CONFIG_PARAM, encoding="utf-8") or "")
+    if lab_config["enabled"]:
+      lab_config["enabled"] = False
+      params.put(MODEL_LAB_CONFIG_PARAM, lab_config)
+      params.remove(MODEL_LAB_RUNTIME_PARAM)
+
+    set_model_profile(params, profile, model_key, model["label"], model["version"])
+    active_model = _activate_preferred_model_profile()
+    return jsonify({
+      "message": f"Active {profile.title()} set to '{model['label']}'. {active_model} will be used next.",
+      "profile": profile,
+      "model": model_key,
+    }), 200
+
   @app.route("/api/models/status", methods=["GET"])
   def get_models_status():
     models = get_model_catalog()
     model_to_download = canonical_model_key(params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or "")
+    lab_model_to_download = canonical_model_key(params_memory.get(MODEL_LAB_DOWNLOAD_PARAM, encoding="utf-8") or "")
     download_all = params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM)
     progress = params_memory.get(MODEL_DOWNLOAD_PROGRESS_PARAM, encoding="utf-8") or ""
     cancelling = params_memory.get_bool(MODEL_CANCEL_DOWNLOAD_PARAM)
 
-    downloading = bool(model_to_download) or download_all
+    downloading = bool(model_to_download or lab_model_to_download) or download_all
     current_model = _current_model_key()
+    active_small_model = _active_model_key("small")
+    active_big_model = _active_model_key("big")
     sort_mode = read_legacy_param_file(MODEL_SORT_MODE_PARAM, DEFAULT_MODEL_SORT_MODE)
     terminal = progress in ("Downloaded!", "All models downloaded!") or bool(re.search(r"cancelled|exists|failed|offline|invalid|error", progress, re.IGNORECASE))
     summary = {
@@ -6309,11 +6623,14 @@ def setup(app):
       summary["installed"],
       summary["missing"],
       model_to_download,
+      lab_model_to_download,
       download_all,
       downloading,
       cancelling,
       progress,
       current_model,
+      active_small_model,
+      active_big_model,
       sort_mode,
       terminal,
       bool(params.get_bool("IsOnroad")),
@@ -6341,6 +6658,7 @@ def setup(app):
 
     return jsonify({
       "modelToDownload": model_to_download,
+      "modelLabModelToDownload": lab_model_to_download,
       "downloadAll": download_all,
       "downloading": downloading,
       "cancelling": cancelling,
@@ -6349,6 +6667,8 @@ def setup(app):
       "terminal": terminal,
       "models": models,
       "currentModel": current_model,
+      "activeSmallModel": active_small_model,
+      "activeBigModel": active_big_model,
       "summary": summary,
       "sortMode": sort_mode,
     }), 200
@@ -6358,7 +6678,11 @@ def setup(app):
     if params.get_bool("IsOnroad"):
       return jsonify({"error": "Cannot refresh model manifest while driving."}), 403
 
-    if params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM) or (params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or ""):
+    if (
+      params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM)
+      or (params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or "")
+      or (params_memory.get(MODEL_LAB_DOWNLOAD_PARAM, encoding="utf-8") or "")
+    ):
       return jsonify({"error": "Cannot refresh model manifest while a download is in progress."}), 409
 
     try:
@@ -6377,7 +6701,11 @@ def setup(app):
     if params.get_bool("IsOnroad"):
       return jsonify({"error": "Cannot download models while driving."}), 403
 
-    if params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM) or (params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or ""):
+    if (
+      params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM)
+      or (params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or "")
+      or (params_memory.get(MODEL_LAB_DOWNLOAD_PARAM, encoding="utf-8") or "")
+    ):
       return jsonify({"error": "A model download is already in progress."}), 409
 
     data = request.get_json() or {}
@@ -6409,7 +6737,11 @@ def setup(app):
     if params.get_bool("IsOnroad"):
       return jsonify({"error": "Cannot download models while driving."}), 403
 
-    if params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM) or (params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or ""):
+    if (
+      params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM)
+      or (params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or "")
+      or (params_memory.get(MODEL_LAB_DOWNLOAD_PARAM, encoding="utf-8") or "")
+    ):
       return jsonify({"error": "A model download is already in progress."}), 409
 
     data = request.get_json(silent=True) or {}
@@ -6432,8 +6764,9 @@ def setup(app):
   @app.route("/api/models/cancel", methods=["POST"])
   def cancel_model_download():
     model_to_download = params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or ""
+    lab_model_to_download = params_memory.get(MODEL_LAB_DOWNLOAD_PARAM, encoding="utf-8") or ""
     download_all = params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM)
-    if not model_to_download and not download_all:
+    if not model_to_download and not lab_model_to_download and not download_all:
       return jsonify({"message": "No active model download to cancel."}), 200
 
     params_memory.put_bool(MODEL_CANCEL_DOWNLOAD_PARAM, True)
@@ -6444,7 +6777,11 @@ def setup(app):
     if params.get_bool("IsOnroad"):
       return jsonify({"error": "Cannot delete model files while driving."}), 403
 
-    if params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM) or (params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or ""):
+    if (
+      params_memory.get_bool(MODEL_DOWNLOAD_ALL_PARAM)
+      or (params_memory.get(MODEL_DOWNLOAD_PARAM, encoding="utf-8") or "")
+      or (params_memory.get(MODEL_LAB_DOWNLOAD_PARAM, encoding="utf-8") or "")
+    ):
       return jsonify({"error": "Cannot delete model files while a download is in progress."}), 409
 
     data = request.get_json() or {}
@@ -6453,7 +6790,8 @@ def setup(app):
       return jsonify({"error": "Missing model key."}), 400
 
     current_model = _current_model_key()
-    if model_key == current_model:
+    active_models = {current_model, _active_model_key("small"), _active_model_key("big")}
+    if model_key in active_models:
       return jsonify({"error": "Cannot delete the currently active model."}), 409
 
     catalog = {model["value"]: model for model in get_model_catalog()}
@@ -6695,6 +7033,10 @@ def setup(app):
     current_model = _param_text(params.get("Model", encoding="utf-8") or params.get("DrivingModel", encoding="utf-8"))
     return canonical_model_key(current_model) or _default_model_key()
 
+  def _active_model_key(profile):
+    model_key, _, _ = get_model_profile(params, profile)
+    return canonical_model_key(model_key)
+
   def is_model_installed(model_key, model_version, on_disk_files):
     del model_version
     if is_builtin_model_key(model_key):
@@ -6734,6 +7076,12 @@ def setup(app):
     except Exception:
       on_disk_files = set()
 
+    try:
+      metadata_payload = json.loads((MODELS_PATH / ".model_artifacts.json").read_text())
+      artifact_metadata = metadata_payload if isinstance(metadata_payload, dict) else {}
+    except (OSError, TypeError, ValueError):
+      artifact_metadata = {}
+
     external_gpu_present = external_gpu_available()
     models_by_key = {}
     for i, key in enumerate(available):
@@ -6748,7 +7096,20 @@ def setup(app):
       released = released_dates[i] if i < len(released_dates) else ""
       requires_external_gpu = model_uses_external_gpu(canonical_key)
       gpu_available = not requires_external_gpu or external_gpu_present
-
+      metadata = artifact_metadata.get(canonical_key, {})
+      metadata = metadata if isinstance(metadata, dict) else {}
+      small_model = is_small_model_metadata({**metadata, "uses_external_gpu": requires_external_gpu})
+      lab_eligible = model_lab_manifest_eligible({**metadata, "uses_external_gpu": requires_external_gpu}, model_version)
+      accelerator_artifacts = metadata.get("accelerator_artifacts", {})
+      accelerator_artifacts = accelerator_artifacts if isinstance(accelerator_artifacts, dict) else {}
+      chestnut_artifact = accelerator_artifacts.get("chestnut", {})
+      chestnut_artifact = chestnut_artifact if isinstance(chestnut_artifact, dict) else {}
+      lab_artifact_available = (
+        bool(chestnut_artifact)
+        and str(chestnut_artifact.get("execution_device") or chestnut_artifact.get("device") or "").strip().upper() == "AMD"
+      )
+      lab_artifact_path = MODELS_PATH / model_accelerator_artifact_filename(canonical_key)
+      lab_artifact_installed = lab_artifact_available and file_chunked_exists(lab_artifact_path)
       existing = models_by_key.get(canonical_key)
       if existing is None:
         models_by_key[canonical_key] = {
@@ -6759,6 +7120,12 @@ def setup(app):
           "artifactFormat": artifact_format,
           "requiresGpu": requires_external_gpu,
           "gpuAvailable": gpu_available,
+          "small": small_model,
+          "modelSize": str(metadata.get("model_size") or ("small (inferred)" if small_model else "chestnut (inferred)")),
+          "manifestDeclaredSize": bool(metadata.get("model_size_declared", metadata.get("size_class"))),
+          "modelLabEligible": lab_eligible,
+          "modelLabArtifactAvailable": lab_artifact_available,
+          "modelLabArtifactInstalled": lab_artifact_installed,
           "released": released,
           "builtin": is_builtin_model_key(canonical_key),
           "communityFavorite": canonical_key in community_favorites,
@@ -6781,6 +7148,10 @@ def setup(app):
       existing["userFavorite"] = existing["userFavorite"] or canonical_key in user_favorites
       existing["requiresGpu"] = existing["requiresGpu"] or requires_external_gpu
       existing["gpuAvailable"] = not existing["requiresGpu"] or external_gpu_present
+      existing["small"] = existing["small"] and small_model
+      existing["modelLabEligible"] = existing["modelLabEligible"] and lab_eligible
+      existing["modelLabArtifactAvailable"] = existing["modelLabArtifactAvailable"] and lab_artifact_available
+      existing["modelLabArtifactInstalled"] = existing["modelLabArtifactInstalled"] and lab_artifact_installed
 
     default_key = _default_model_key()
     default_entry = models_by_key.setdefault(default_key, {
@@ -6791,6 +7162,12 @@ def setup(app):
       "artifactFormat": "tinygrad_single_v1",
       "requiresGpu": False,
       "gpuAvailable": True,
+      "small": True,
+      "modelSize": "small (inferred)",
+      "manifestDeclaredSize": False,
+      "modelLabEligible": model_lab_manifest_eligible(artifact_metadata.get(default_key, {}), _default_model_version()),
+      "modelLabArtifactAvailable": False,
+      "modelLabArtifactInstalled": False,
       "released": "",
       "builtin": True,
       "communityFavorite": default_key in community_favorites,
@@ -8035,14 +8412,19 @@ def setup(app):
   def sentry_service_worker():
     response = send_from_directory(app.static_folder, "service-worker.js", mimetype="application/javascript")
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Service-Worker-Allowed"] = "/"
     return response
 
   @app.route("/api/sentry/push/config", methods=["GET"])
   def sentry_push_config():
     try:
       public_key = _sentry_vapid_public_key(_get_sentry_vapid())
-    except Exception:
+    except (RuntimeError, ModuleNotFoundError) as error:
+      cloudlog.warning("Galaxy: Sentry Web Push dependencies unavailable: %s", error)
       return jsonify({"enabled": False, "error": "Web Push dependencies are unavailable."}), 503
+    except Exception as error:
+      cloudlog.exception("Galaxy: Failed to initialize Sentry Web Push: %s", error)
+      return jsonify({"enabled": False, "error": f"Push notification service error: {error}"}), 500
 
     return jsonify({
       "enabled": True,
@@ -8058,8 +8440,12 @@ def setup(app):
 
     try:
       _get_sentry_vapid()
-    except Exception:
+    except (RuntimeError, ModuleNotFoundError) as error:
+      cloudlog.warning("Galaxy: Sentry Web Push dependencies unavailable: %s", error)
       return jsonify({"error": "Web Push dependencies are unavailable."}), 503
+    except Exception as error:
+      cloudlog.exception("Galaxy: Failed to initialize Sentry Web Push for subscription: %s", error)
+      return jsonify({"error": f"Push notification service error: {error}"}), 500
 
     with _SENTRY_PUSH_LOCK:
       subscriptions = _load_sentry_push_subscriptions()
@@ -9362,6 +9748,57 @@ def setup(app):
       "message": message,
       "restoredCount": restored_count,
       "skippedCount": skipped_count,
+    })
+
+  @app.route("/api/toggles/profiles", methods=["GET"])
+  def get_toggle_profiles():
+    return jsonify({
+      "slots": param_profiles.list_profiles(profile_root=TOGGLE_BACKUPS),
+      "isOnroad": _safe_params_get_bool("IsOnroad"),
+    })
+
+  @app.route("/api/toggles/profiles/<slot>/save", methods=["POST"])
+  def save_toggle_profile(slot):
+    if _safe_params_get_bool("IsOnroad"):
+      return jsonify({"success": False, "message": "Settings profiles can only be saved while parked."}), 403
+    try:
+      status = param_profiles.save_profile(
+        _params_raw,
+        slot,
+        allowed_keys=_get_toggle_backup_keys(),
+        profile_root=TOGGLE_BACKUPS,
+      )
+    except param_profiles.ParamProfileError as error:
+      return jsonify({"success": False, "message": str(error)}), 400
+    return jsonify({
+      "success": True,
+      "message": f"Saved current settings to {status['label']}.",
+      "profile": status,
+    })
+
+  @app.route("/api/toggles/profiles/<slot>/load", methods=["POST"])
+  def load_toggle_profile(slot):
+    if _safe_params_get_bool("IsOnroad"):
+      return jsonify({"success": False, "message": "Settings profiles can only be loaded while parked."}), 403
+    try:
+      result = param_profiles.load_profile(
+        _params_raw,
+        slot,
+        allowed_keys=_get_toggle_backup_keys(),
+        profile_root=TOGGLE_BACKUPS,
+        legacy_renames=LEGACY_STARPILOT_PARAM_RENAMES,
+      )
+    except param_profiles.ParamProfileError as error:
+      return jsonify({"success": False, "message": str(error)}), 400
+
+    update_starpilot_toggles()
+    message = f"Loaded {result['label']} ({result['restoredCount']} settings)."
+    if result["skippedCount"]:
+      message += f" Skipped {result['skippedCount']} incompatible settings."
+    return jsonify({
+      "success": True,
+      "message": message,
+      **result,
     })
 
   @app.route("/api/toggles/reset_default", methods=["POST"])

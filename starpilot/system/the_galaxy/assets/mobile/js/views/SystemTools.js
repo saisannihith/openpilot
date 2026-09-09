@@ -22,16 +22,25 @@ export const SystemTools = {
       branches: [],
       currentBranch: "",
       branchLoading: true,
+      isOnroad: false,
       fastStatus: null,
       checkedForUpdates: false,
       busy: "",
+      profiles: [],
+      profileBusy: "",
     }
   },
-  created() { this.poll = usePolling(() => this.loadFastStatus(), { interval: 3000 }); this.poll.start() },
-  mounted() { this.loadBranches() },
+  created() {
+    this.poll = usePolling(() => this.loadFastStatus(), {
+      interval: 1000,
+      enabled: () => !this.fastStatus || !!this.fastStatus.running,
+    })
+    this.poll.start()
+  },
+  mounted() { this.loadBranches(); this.loadProfiles() },
   beforeUnmount() { this.poll?.destroy() },
   computed: {
-    updateAvailable() { return !!this.fastStatus?.updateAvailable && !this.fastStatus?.running },
+    updateAvailable() { return this.checkedForUpdates && !!this.fastStatus?.updateAvailable && !this.fastStatus?.running },
     factoryResetStatus() {
       const s = this.fastStatus
       if (!s || String(s?.lastMode || "").trim() !== "factory-reset") return null
@@ -50,6 +59,7 @@ export const SystemTools = {
   },
   methods: {
     shortCommit,
+    toPercent,
     async loadBranches() {
       try {
         const data = await api.getUpdateBranches()
@@ -62,8 +72,15 @@ export const SystemTools = {
         this.branchLoading = false
       }
     },
-    async loadFastStatus() {
-      try { this.fastStatus = await api.getUpdateFastStatus() } catch (e) { this.fastStatus = null }
+    async loadFastStatus({ throwOnError = false } = {}) {
+      try {
+        const status = await api.getUpdateFastStatus()
+        if (!status) throw new Error("Update status unavailable")
+        this.fastStatus = status
+      } catch (e) {
+        this.fastStatus = null
+        if (throwOnError) throw e
+      }
     },
     async backupToggles() {
       try {
@@ -77,6 +94,50 @@ export const SystemTools = {
         showSnackbar("Toggle backup downloaded.")
       } catch (e) {
         showSnackbar(e?.message || "Backup failed.", "error")
+      }
+    },
+    async loadProfiles() {
+      try {
+        const data = await api.getToggleProfiles()
+        this.profiles = Array.isArray(data?.slots) ? data.slots : []
+        this.isOnroad = !!data?.isOnroad
+      } catch (e) {
+        this.profiles = []
+      }
+    },
+    async saveProfile(profile) {
+      if (this.profileBusy || this.isOnroad) return
+      if (profile.saved && !(await GalaxyConfirm({
+        title: `Overwrite ${profile.label}?`,
+        message: "This replaces the settings currently stored in this slot.",
+        confirmLabel: "Overwrite",
+      }))) return
+      this.profileBusy = `save-${profile.slot}`
+      try {
+        const result = await api.saveToggleProfile(profile.slot)
+        showSnackbar(result?.message || `Saved ${profile.label}.`)
+        await this.loadProfiles()
+      } catch (e) {
+        showSnackbar(e?.message || "Failed to save settings profile.", "error")
+      } finally {
+        this.profileBusy = ""
+      }
+    },
+    async loadProfile(profile) {
+      if (this.profileBusy || this.isOnroad || !profile.saved || profile.invalid) return
+      if (!(await GalaxyConfirm({
+        title: `Load ${profile.label}?`,
+        message: "This applies every saved setting in the slot to the device.",
+        confirmLabel: "Load Settings",
+      }))) return
+      this.profileBusy = `load-${profile.slot}`
+      try {
+        const result = await api.loadToggleProfile(profile.slot)
+        showSnackbar(result?.message || `Loaded ${profile.label}.`)
+      } catch (e) {
+        showSnackbar(e?.message || "Failed to load settings profile.", "error")
+      } finally {
+        this.profileBusy = ""
       }
     },
     onRestoreFile(e) {
@@ -113,6 +174,7 @@ export const SystemTools = {
       try {
         await api.setUpdateBranch(branch)
         showSnackbar(`Switching to ${branch}...`)
+        await this.loadFastStatus()
       } catch (e) {
         showSnackbar(e?.message || "Switch failed.", "error")
       }
@@ -121,7 +183,7 @@ export const SystemTools = {
       if (this.busy) return
       this.busy = "check"
       try {
-        await this.loadFastStatus()
+        await this.loadFastStatus({ throwOnError: true })
         this.checkedForUpdates = true
         const st = this.fastStatus
         if (st?.running) showSnackbar("An update is already running.")
@@ -180,6 +242,7 @@ export const SystemTools = {
       try {
         await api.factoryReset()
         showSnackbar("SAVE ME initiated — factory resetting...")
+        await this.loadFastStatus()
       } catch (e) {
         showSnackbar(e?.message || "Factory reset failed.", "error")
       }
@@ -209,18 +272,31 @@ export const SystemTools = {
                 <i class="bi bi-arrow-repeat"></i>
                 <span class="gx-section__title">Update Status</span>
                 <span v-if="fastStatus.running" class="gx-chip" style="background:var(--primary);color:var(--on-primary);">{{ fastStatus.progressPercent }}%</span>
-                <span v-else-if="fastStatus.updateAvailable" class="gx-chip" style="background:var(--warning);color:var(--black);">Update available</span>
-                <span v-else class="gx-chip">Up to date</span>
+                <span v-else-if="updateAvailable" class="gx-chip" style="background:var(--warning);color:var(--black);">Update available</span>
+                <span v-else-if="checkedForUpdates" class="gx-chip">Up to date</span>
+                <span v-else class="gx-chip">Not checked</span>
               </div>
               <div style="padding: var(--sp-3); display:grid; gap:6px;">
                 <div class="gx-row" style="border-top:none; min-height:0; padding:4px 0;"><span class="gx-row__label">Branch</span><span class="gx-row__value">{{ fastStatus.branch || currentBranch || '—' }}</span></div>
                 <div v-if="fastStatus.running" class="gx-row" style="border-top:none; min-height:0; padding:4px 0;"><span class="gx-row__label">Stage</span><span class="gx-row__value">{{ fastStatus.stage }} · {{ fastStatus.progressLabel }}</span></div>
                 <div class="gx-row" style="border-top:none; min-height:0; padding:4px 0;"><span class="gx-row__label">Local</span><span class="gx-row__value" style="font-family:monospace;">{{ shortCommit(fastStatus.localCommit) }}</span></div>
                 <div class="gx-row" style="border-top:none; min-height:0; padding:4px 0;"><span class="gx-row__label">Remote</span><span class="gx-row__value" style="font-family:monospace;">{{ shortCommit(fastStatus.remoteCommit) }}</span></div>
+                <div v-if="fastStatus.running" class="gx-update-progress" role="progressbar" aria-label="Update progress"
+                  :aria-valuenow="Math.round(fastStatus.progressPercent || 0)" aria-valuemin="0" aria-valuemax="100">
+                  <div class="gx-update-progress__track">
+                    <div class="gx-update-progress__fill" :class="{ 'gx-update-progress__fill--error': fastStatus.stage === 'error' }"
+                      :style="{ width: toPercent(fastStatus.progressPercent) + '%' }"></div>
+                  </div>
+                  <div class="gx-update-progress__meta">
+                    <span>Step {{ fastStatus.progressStep || 0 }}/{{ fastStatus.progressTotalSteps || 5 }}: {{ fastStatus.progressLabel || fastStatus.stage || 'Updating' }}</span>
+                    <strong>{{ Math.round(toPercent(fastStatus.progressPercent)) }}%</strong>
+                  </div>
+                  <small v-if="fastStatus.progressDetail">{{ fastStatus.progressDetail }}</small>
+                </div>
                 <div v-if="fastStatus.message" class="gx-note">{{ fastStatus.message }}</div>
                 <div v-if="fastStatus.warning && (fastStatus.running || fastStatus.updateAvailable)" class="gx-note gx-note--danger">{{ fastStatus.warning }}</div>
                 <div v-if="fastStatus.agnosUpdate?.available && fastStatus.agnosUpdate?.warnings?.length" style="margin-top:4px;">
-                  <div v-for="w in fastStatus.agnosUpdate.warnings" :key="w" class="gx-note gx-note--danger">⚠ {{ w }}</div>
+                  <div v-for="w in fastStatus.agnosUpdate.warnings" :key="w" class="gx-note gx-note--danger"><i class="bi bi-exclamation-triangle-fill"></i> {{ w }}</div>
                 </div>
               </div>
             </div>
@@ -240,7 +316,7 @@ export const SystemTools = {
                 <i v-if="busy === 'check'" class="bi bi-arrow-repeat gx-spin"></i>
                 <i v-else class="bi bi-search"></i> {{ busy === 'check' ? 'Checking...' : 'Check for Updates' }}
               </button>
-              <button type="button" class="gx-btn" :disabled="!updateAvailable || !!busy || isOnroad" @click="applyFastUpdate">
+              <button v-if="updateAvailable" type="button" class="gx-btn" :disabled="!!busy || isOnroad" @click="applyFastUpdate">
                 <i class="bi bi-arrow-up-circle"></i> {{ busy === 'fast' ? 'Updating...' : 'Update Now' }}
               </button>
               <button type="button" class="gx-btn gx-btn--tonal" :disabled="!!busy || isOnroad" @click="runUpdate('recover')">Recover</button>
@@ -256,6 +332,27 @@ export const SystemTools = {
       </GalaxySection>
 
       <GalaxySection title="Backup & Restore" icon="bi-arrow-repeat" :collapsible="false">
+        <div style="padding: var(--sp-3);">
+          <h4 style="margin:0 0 4px;">Settings Profiles</h4>
+          <p class="gx-note" style="margin:0 0 10px;">Keep two local configurations for different vehicles, drivers, or troubleshooting. Profiles never include pairing or sensitive device data.</p>
+          <GxNotice v-if="isOnroad" text="Park the vehicle to save or load a profile." style="margin-bottom:12px;" />
+          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; margin-bottom:16px;">
+            <div v-for="profile in profiles" :key="profile.slot" class="gx-card" style="padding:12px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px;">
+                <strong>{{ profile.label }}</strong>
+                <span class="gx-chip">{{ profile.invalid ? 'Damaged' : profile.saved ? profile.settingsCount + ' settings' : 'Empty' }}</span>
+              </div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button type="button" class="gx-btn gx-btn--tonal" :disabled="!!profileBusy || isOnroad" @click="saveProfile(profile)">
+                  <i class="bi bi-save"></i> {{ profileBusy === 'save-' + profile.slot ? 'Saving...' : profile.saved ? 'Overwrite' : 'Save Current' }}
+                </button>
+                <button type="button" class="gx-btn" :disabled="!!profileBusy || isOnroad || !profile.saved || profile.invalid" @click="loadProfile(profile)">
+                  <i class="bi bi-arrow-down-circle"></i> {{ profileBusy === 'load-' + profile.slot ? 'Loading...' : 'Load' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
         <div style="padding: var(--sp-3); display:flex; gap:8px; flex-wrap:wrap;">
           <button type="button" class="gx-btn" @click="backupToggles"><i class="bi bi-download"></i> Backup Toggles</button>
           <button type="button" class="gx-btn gx-btn--tonal" @click="$refs.restoreInput.click()"><i class="bi bi-upload"></i> Restore Toggles</button>

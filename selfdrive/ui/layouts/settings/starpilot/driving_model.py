@@ -24,6 +24,7 @@ from openpilot.starpilot.assets.model_manager import (
   is_builtin_model_key,
   model_uses_external_gpu,
   model_key_aliases,
+  set_model_profile,
 )
 from openpilot.starpilot.common.nnff_eligibility import enforce_nnff_driving_model_eligibility
 from openpilot.starpilot.common.starpilot_variables import MODELS_PATH, update_starpilot_toggles
@@ -1230,6 +1231,13 @@ class StarPilotDrivingModelLayout(_SettingsPage):
     self._params.put("ModelVersion", resolved_version)
     self._params.put("DrivingModelVersion", resolved_version)
     enforce_nnff_driving_model_eligibility(self._params, self._params.get("CarModel"))
+    set_model_profile(
+      self._params,
+      "big" if entry.requires_external_gpu else "small",
+      selected_model,
+      entry.name,
+      resolved_version,
+    )
     update_starpilot_toggles()
     self._update_model_metadata()
     if ui_state.started:

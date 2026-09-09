@@ -14,13 +14,13 @@ def _torque_params(v_ego: float) -> CarControllerParams:
   return CarControllerParams(CP, v_ego)
 
 
-def test_carnival_4th_gen_uses_symmetric_10_unit_rates_at_low_speed():
+def test_carnival_4th_gen_uses_observed_low_speed_rate():
   params = _torque_params(14.99)
 
   assert params.STEER_MAX == 409
   assert params.STEER_THRESHOLD == 100
   assert params.STEER_DELTA_UP == 10
-  assert params.STEER_DELTA_DOWN == 10
+  assert params.STEER_DELTA_DOWN == 8
   assert params.STEER_DRIVER_DELTA_DOWN == 10
 
 
@@ -34,11 +34,15 @@ def test_carnival_4th_gen_uses_high_speed_dynamic_torque_rates():
   assert params.STEER_DRIVER_DELTA_DOWN == 10
 
 
-def test_carnival_uses_ten_unit_unwind_rate_at_high_speed():
-  params = _torque_params(30.0)
+def test_carnival_uses_driver_retreat_rate_only_when_driver_limit_is_active():
+  high_speed_params = _torque_params(30.0)
 
-  assert apply_driver_steer_torque_limits(-409, -258, 400, params) == -248
-  assert apply_driver_steer_torque_limits(0, -258, 0, params) == -248
+  assert apply_driver_steer_torque_limits(-409, -258, 400, high_speed_params) == -248
+  assert apply_driver_steer_torque_limits(0, -258, 0, high_speed_params) == -248
+
+  low_speed_params = _torque_params(10.0)
+  assert apply_driver_steer_torque_limits(-409, -258, 400, low_speed_params) == -248
+  assert apply_driver_steer_torque_limits(0, -258, 0, low_speed_params) == -250
 
 
 def test_carnival_driver_conflict_hold_reaches_neutral_without_exceeding_safety_rate():

@@ -2,6 +2,8 @@ import re
 from dataclasses import dataclass, field
 from enum import IntFlag
 
+# Provenance: portions of HKG angle limits, flags, and platform data are adapted from
+# sunnypilot/opendbc's hkg-angle-steering-2025 branch at cc4b08625. See CREDITS.md.
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, CarSpecs, DbcDict, PlatformConfig, Platforms, uds
 from opendbc.car.lateral import AngleSteeringLimits, ISO_LATERAL_ACCEL
 from opendbc.car.common.conversions import Conversions as CV
@@ -48,19 +50,13 @@ class CarControllerParams:
         if CP.carFingerprint == CAR.KIA_CARNIVAL_HEV_4TH_GEN:
           self.STEER_DELTA_UP = 2
           self.STEER_DELTA_DOWN = 3
-        elif CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
-          # Keep the 2024 torque-steering Carnival at Panda's symmetric
-          # 10-unit rate ceiling through tight, low-speed curves as well.
-          self.STEER_DELTA_UP = 10
-          self.STEER_DELTA_DOWN = 10
         else:
           self.STEER_DELTA_UP = 10
           self.STEER_DELTA_DOWN = 8
       else:
         if CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN:
-          # The Carnival's 409-unit CAN-FD envelope benefits from the fastest
-          # safe command ramp at highway speed. Panda independently enforces
-          # the same 10-unit-per-frame ceiling.
+          # Held-out steep-curve replay showed the 6/6 ramp leaving a large
+          # turn-in lag, while 10/10 stayed inside Panda's CAN-FD rate ceiling.
           self.STEER_DELTA_UP = 10
           self.STEER_DELTA_DOWN = 10
         else:
@@ -1014,6 +1010,10 @@ KIA_EV6_GT_LINE_LONG_TUNING_VDS_PREFIXES = frozenset({
 })
 KIA_EV6_GT_LINE_LONG_TUNING_TESTING_GROUND_ID = "5"
 
+KIA_RAY_EV_VIN_VDS_PREFIXES = frozenset({
+  "CG81A",
+})
+
 
 ALT_BUS_LDA_BUTTON_CARS = frozenset()
 ALT_BUS_LDA_BUTTON_SWL_STAT_CARS = frozenset()
@@ -1026,6 +1026,10 @@ def hyundai_cancel_button_enables_cruise(car_fingerprint) -> bool:
 def kia_ev6_gt_line_longitudinal_tuning(car_fingerprint, vin: str, testing_ground_active: bool = False) -> bool:
   vin_match = isinstance(vin, str) and len(vin) == 17 and vin[3:8] in KIA_EV6_GT_LINE_LONG_TUNING_VDS_PREFIXES
   return car_fingerprint == CAR.KIA_EV6 and (vin_match or testing_ground_active)
+
+
+def kia_ray_ev_vin(vin: str) -> bool:
+  return isinstance(vin, str) and len(vin) == 17 and vin[3:8] in KIA_RAY_EV_VIN_VDS_PREFIXES
 
 
 def get_platform_codes(fw_versions: list[bytes]) -> set[tuple[bytes, bytes | None]]:
