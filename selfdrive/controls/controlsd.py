@@ -326,6 +326,8 @@ TURN_LEAD_MAX_M = 14.0
 TURN_LEAD_MIN_SPEED = 3.0   # m/s: authority 0 here, ramps to full at FULL_SPEED
 TURN_LEAD_FULL_SPEED = 4.0  # m/s
 TURN_LEAD_MAX_SPEED = 7.0   # m/s (~15.7 mph)
+KIA_CARNIVAL_4TH_GEN_TURN_LEAD_FADE_SPEED = 8.0  # m/s (~17.9 mph)
+KIA_CARNIVAL_4TH_GEN_TURN_LEAD_MAX_SPEED = 8.5  # m/s (~19.0 mph)
 TURN_LEAD_SCALE = 0.85
 TURN_LEAD_CAP = 0.12       # 1/m
 TURN_LEAD_ENGAGED_FRAC = 0.5   # engagement fade starts here, zero authority at 1.0
@@ -338,6 +340,26 @@ TURN_LEAD_MODEL_OPPOSE = 0.003  # 1/m: model steering this hard against the blin
 # a held brake to standstill keeps it tripped, deferring the turn to the pre-wind.
 TURN_LEAD_STOP_MARGIN = 1.5
 TURN_LEAD_DECEL_GATE = -0.5  # m/s^2: only project a stop when genuinely braking
+
+
+def get_turn_lead_max_speed(car_fingerprint: str) -> float:
+  if car_fingerprint == HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN:
+    return KIA_CARNIVAL_4TH_GEN_TURN_LEAD_MAX_SPEED
+  return TURN_LEAD_MAX_SPEED
+
+
+def get_turn_lead_speed_weight(car_fingerprint: str, v_ego: float) -> float:
+  max_speed = get_turn_lead_max_speed(car_fingerprint)
+  if not TURN_LEAD_MIN_SPEED <= v_ego < max_speed:
+    return 0.0
+
+  speed_w = min(max((v_ego - TURN_LEAD_MIN_SPEED) / (TURN_LEAD_FULL_SPEED - TURN_LEAD_MIN_SPEED), 0.0), 1.0)
+  if car_fingerprint == HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN and v_ego > KIA_CARNIVAL_4TH_GEN_TURN_LEAD_FADE_SPEED:
+    # The spatial plan was already directionally correct in the held-out 18.4 mph
+    # Carnival turn. Fade it out before 19 mph rather than stepping it off at the
+    # ceiling; final curvature and actuator limits remain downstream.
+    speed_w *= (max_speed - v_ego) / (max_speed - KIA_CARNIVAL_4TH_GEN_TURN_LEAD_FADE_SPEED)
+  return speed_w
 
 
 def get_gm_hud_set_speed(set_speed_ms: float, starpilot_toggles) -> float:
@@ -716,10 +738,11 @@ class Controls:
     # edge: a model actively steering against the blinker is correcting something the
     # lead must not fight (see the constants comment for the 2026-07-19 failures).
     lateral_control_mode = self.sm['carOutput'].actuatorsOutput.lateralControlMode
+    turn_lead_speed_w = get_turn_lead_speed_weight(self.CP.carFingerprint, CS.vEgo)
     if (turn_lead_allowed(self.CP.brand, lateral_control_mode) and
         CC.latActive and blinker_dir != 0.0 and
         model_v2.meta.laneChangeState == LaneChangeState.off and
-        TURN_LEAD_MIN_SPEED <= CS.vEgo < TURN_LEAD_MAX_SPEED and
+        turn_lead_speed_w > 0.0 and
         new_desired_curvature * blinker_dir > -TURN_LEAD_MODEL_OPPOSE):
       d_near = max(min(TURN_LEAD_T * CS.vEgo, TURN_LEAD_MAX_M), TURN_LEAD_MIN_M)
       stopping_short = CS.aEgo < TURN_LEAD_DECEL_GATE and \
@@ -727,10 +750,9 @@ class Controls:
       lead_curvature = 0.0 if stopping_short else _plan_dual_probe(model_v2, d_near, d_near + 3.0) * TURN_LEAD_SCALE
       lead_curvature = max(min(lead_curvature, TURN_LEAD_CAP), -TURN_LEAD_CAP)
       if lead_curvature * blinker_dir > 0.0:
-        speed_w = min(max((CS.vEgo - TURN_LEAD_MIN_SPEED) / (TURN_LEAD_FULL_SPEED - TURN_LEAD_MIN_SPEED), 0.0), 1.0)
         engaged_ratio = abs(self.curvature) / abs(lead_curvature)
         engage_w = min(max((1.0 - engaged_ratio) / (1.0 - TURN_LEAD_ENGAGED_FRAC), 0.0), 1.0)
-        lead_curvature *= speed_w * engage_w
+        lead_curvature *= turn_lead_speed_w * engage_w
         if lead_curvature * blinker_dir > max(new_desired_curvature * blinker_dir, 0.0):
           new_desired_curvature = lead_curvature
           # Capture the applied lead into the hold (rate-limited like any moving-speed

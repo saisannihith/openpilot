@@ -10,7 +10,12 @@ from openpilot.selfdrive.controls.controlsd import (
   TWITCH_GUARD_DURATION,
   TWITCH_GUARD_FLOOR,
   TWITCH_GUARD_MAX_SPEED,
+  KIA_CARNIVAL_4TH_GEN_TURN_LEAD_FADE_SPEED,
+  KIA_CARNIVAL_4TH_GEN_TURN_LEAD_MAX_SPEED,
+  TURN_LEAD_MAX_SPEED,
   get_control_lateral_smooth_seconds,
+  get_turn_lead_max_speed,
+  get_turn_lead_speed_weight,
   limit_curvature_to_plan,
   turn_lead_allowed,
   update_twitch_guard,
@@ -41,6 +46,32 @@ def test_turn_lead_is_suppressed_only_during_applied_angle_control():
   assert turn_lead_allowed("rivian", LateralControlMode.torqueRecovering)
   assert turn_lead_allowed("rivian", LateralControlMode.inactive)
   assert turn_lead_allowed("ford", LateralControlMode.angle)
+
+
+def test_2024_carnival_gets_held_out_turn_lead_speed_extension():
+  assert get_turn_lead_max_speed("KIA_CARNIVAL_4TH_GEN") == KIA_CARNIVAL_4TH_GEN_TURN_LEAD_MAX_SPEED
+  assert get_turn_lead_max_speed("KIA_CARNIVAL_2025") == TURN_LEAD_MAX_SPEED
+  assert get_turn_lead_max_speed("HYUNDAI_SANTA_FE_2022") == TURN_LEAD_MAX_SPEED
+
+
+@pytest.mark.parametrize(("v_ego", "expected"), [
+  (2.99, 0.0),
+  (3.0, 0.0),
+  (3.5, 0.5),
+  (4.0, 1.0),
+  (7.5, 1.0),
+  (KIA_CARNIVAL_4TH_GEN_TURN_LEAD_FADE_SPEED, 1.0),
+  (8.25, 0.5),
+  (KIA_CARNIVAL_4TH_GEN_TURN_LEAD_MAX_SPEED, 0.0),
+  (9.0, 0.0),
+])
+def test_2024_carnival_turn_lead_speed_weight_is_continuous(v_ego, expected):
+  assert get_turn_lead_speed_weight("KIA_CARNIVAL_4TH_GEN", v_ego) == pytest.approx(expected)
+
+
+def test_other_cars_keep_the_generic_turn_lead_ceiling():
+  assert get_turn_lead_speed_weight("KIA_CARNIVAL_2025", 6.9) == 1.0
+  assert get_turn_lead_speed_weight("KIA_CARNIVAL_2025", TURN_LEAD_MAX_SPEED) == 0.0
 
 
 @pytest.mark.parametrize("v_ego", [0.0, 5.0, 30.0])
