@@ -16,6 +16,7 @@ from opendbc.car.hyundai.values import HyundaiFlags, HyundaiSafetyFlags, Hyundai
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.common.params import Params
+from openpilot.common.swaglog import cloudlog
 from openpilot.starpilot.common.testing_grounds import testing_ground
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
@@ -38,6 +39,8 @@ CARNIVAL_DRIVER_CONFLICT_TORQUE = 300
 CARNIVAL_DRIVER_CONFLICT_MIN_COMMAND = 40
 CARNIVAL_DRIVER_CONFLICT_HOLD_FRAMES = 20
 CARNIVAL_DRIVER_CONFLICT_UNWIND_STEP = 10
+CARNIVAL_EPS_ENVELOPE_NEAR_ANGLE_DEG = 70.0
+CARNIVAL_EPS_ENVELOPE_HEARTBEAT_FRAMES = 500
 HYUNDAI_CANFD_SCC_ACCEL_STEP = 5.0 / 50.0
 HYUNDAI_CANFD_SCC_DECEL_STEP = 12.5 / 50.0
 IONIQ_6_RESPONSE_MULTIPLIER = 1.2
@@ -490,6 +493,10 @@ class CarController(CarControllerBase):
     self.accel_last = 0
     self.apply_torque_last = 0
     self.carnival_driver_conflict_hold_frames = 0
+    # Diagnostic-only state: scalar transition tracking, never a route buffer.
+    self._carnival_eps_envelope_last_frame = -CARNIVAL_EPS_ENVELOPE_HEARTBEAT_FRAMES
+    self._carnival_eps_envelope_last_request_cut_frame = -CARNIVAL_EPS_ENVELOPE_HEARTBEAT_FRAMES
+    self._carnival_eps_envelope_last_state = (False, False, False, False, False)
     self.apply_angle_last = 0.0
     self.car_fingerprint = CP.carFingerprint
     self.last_button_frame = 0
@@ -516,6 +523,62 @@ class CarController(CarControllerBase):
       CP.safetyConfigs[-1].safetyParam & HyundaiSafetyFlags.CAN_REFRESH_MSGS
     )
     self._ray_lfa_packer = CANPacker("hyundai_kia_ray_lfa") if self._ray_lfa_8byte else None
+
+  def _log_carnival_eps_envelope(self, CS, requested_torque: int, applied_torque: int,
+                                  apply_steer_req: bool, lat_active: bool) -> None:
+    """Persist sparse EPS-envelope evidence without changing actuator behavior."""
+    if self.car_fingerprint != CAR.KIA_CARNIVAL_4TH_GEN:
+      return
+
+    steering_angle = float(CS.out.steeringAngleDeg)
+    driver_torque = float(CS.out.steeringTorque)
+    mdps_torque = float(CS.out.steeringTorqueEps)
+    temporary_fault = bool(CS.out.steerFaultTemporary)
+    near_angle_limit = abs(steering_angle) >= CARNIVAL_EPS_ENVELOPE_NEAR_ANGLE_DEG
+    request_cut = bool(lat_active and not apply_steer_req)
+    strong_driver_override = abs(driver_torque) >= CARNIVAL_DRIVER_CONFLICT_TORQUE
+    state = (bool(lat_active), temporary_fault, near_angle_limit, request_cut, strong_driver_override)
+    previous = self._carnival_eps_envelope_last_state
+
+    # Sample the first request-cut edge and then at most once per five seconds.
+    # The heartbeat gives sustained high-angle context without log-message spam.
+    transition = (
+      state[0] != previous[0] or
+      (state[1] and not previous[1]) or
+      (state[2] and not previous[2]) or
+      (state[4] and not previous[4])
+    )
+    request_cut_due = request_cut and (
+      self.frame - self._carnival_eps_envelope_last_request_cut_frame >= CARNIVAL_EPS_ENVELOPE_HEARTBEAT_FRAMES
+    )
+    heartbeat_due = near_angle_limit and (
+      self.frame - self._carnival_eps_envelope_last_frame >= CARNIVAL_EPS_ENVELOPE_HEARTBEAT_FRAMES
+    )
+    self._carnival_eps_envelope_last_state = state
+    if not transition and not request_cut_due and not heartbeat_due:
+      return
+
+    self._carnival_eps_envelope_last_frame = self.frame
+    if request_cut_due:
+      self._carnival_eps_envelope_last_request_cut_frame = self.frame
+    cloudlog.event(
+      "carnival_eps_envelope",
+      frame=self.frame,
+      vEgo=float(CS.out.vEgo),
+      steeringAngleDeg=round(steering_angle, 2),
+      requestedTorque=requested_torque,
+      appliedTorque=applied_torque,
+      mdpsTorque=round(mdps_torque, 2),
+      driverTorque=round(driver_torque, 2),
+      latActive=bool(lat_active),
+      nearAngleLimit=near_angle_limit,
+      angleGuardActive=abs(steering_angle) >= MAX_ANGLE,
+      angleLimitCounter=self.angle_limit_counter,
+      steerRequest=bool(apply_steer_req),
+      requestCut=request_cut,
+      steerFaultTemporary=temporary_fault,
+      strongDriverOverride=strong_driver_override,
+    )
 
   def _update_dash_icon_state(self, CC):
     if CC.latActive:
@@ -675,6 +738,7 @@ class CarController(CarControllerBase):
       # Hold torque with induced temporary fault when cutting the actuation bit
       # FIXME: we don't use this with CAN FD?
       torque_fault = CC.latActive and not apply_steer_req
+      self._log_carnival_eps_envelope(CS, new_torque, apply_torque, apply_steer_req, CC.latActive)
 
     self.apply_torque_last = apply_torque
 
