@@ -76,6 +76,18 @@ def evaluate_comm_issue(all_checks: bool, all_alive: bool, all_freq_ok: bool,
   return valid_only_frames >= VALID_ONLY_COMM_ISSUE_GRACE_FRAMES, valid_only_frames
 
 
+def localizer_alerts_active(sm, cal_status) -> tuple[bool, bool, bool]:
+  """Return localizer alerts only after the corresponding service has published."""
+  live_pose_seen = sm.seen['livePose']
+  invalid_posenet = live_pose_seen and not sm['livePose'].posenetOK
+  invalid_inputs = live_pose_seen and not sm['livePose'].inputsOK
+  invalid_parameters = (
+    sm.seen['liveParameters'] and not sm['liveParameters'].valid and
+    cal_status == log.LiveCalibrationData.Status.calibrated and not TESTING_CLOSET and (not SIMULATION or REPLAY)
+  )
+  return invalid_posenet, invalid_inputs, invalid_parameters
+
+
 def commanded_torque_at_max_for_saturation(CP, output: float) -> bool:
   torque_controller = (CP.steerControlType == car.CarParams.SteerControlType.torque and
                        CP.lateralTuning.which() == "torque")
@@ -739,11 +751,12 @@ class SelfdriveD:
       self.logged_comm_issue = None
 
     if not self.CP.notCar and not big_model_settling:
-      if not self.sm['livePose'].posenetOK:
+      invalid_posenet, invalid_inputs, invalid_parameters = localizer_alerts_active(self.sm, cal_status)
+      if invalid_posenet:
         self.events.add(EventName.posenetInvalid)
-      if not self.sm['livePose'].inputsOK:
+      if invalid_inputs:
         self.events.add(EventName.locationdTemporaryError)
-      if not self.sm['liveParameters'].valid and cal_status == log.LiveCalibrationData.Status.calibrated and not TESTING_CLOSET and (not SIMULATION or REPLAY):
+      if invalid_parameters:
         self.events.add(EventName.paramsdTemporaryError)
 
     # conservative HW alert. if the data or frequency are off, locationd will throw an error

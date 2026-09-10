@@ -13,6 +13,7 @@ from openpilot.selfdrive.selfdrived.selfdrived import (
   commanded_torque_at_max_for_saturation,
   controller_openpilot_event,
   evaluate_comm_issue,
+  localizer_alerts_active,
   should_report_steer_saturated,
 )
 
@@ -42,6 +43,26 @@ def test_route_length_validity_cascade_stays_silent():
 def test_dead_or_slow_comm_issue_is_immediate():
   assert evaluate_comm_issue(False, False, True, 0) == (True, 0)
   assert evaluate_comm_issue(False, True, False, 0) == (True, 0)
+
+
+def test_localizer_alerts_require_a_received_message():
+  class FakeSubMaster:
+    def __init__(self, live_pose_seen, live_parameters_seen):
+      self.seen = {
+        "livePose": live_pose_seen,
+        "liveParameters": live_parameters_seen,
+      }
+      self.messages = {
+        "livePose": SimpleNamespace(posenetOK=False, inputsOK=False),
+        "liveParameters": SimpleNamespace(valid=False),
+      }
+
+    def __getitem__(self, service):
+      return self.messages[service]
+
+  calibrated = log.LiveCalibrationData.Status.calibrated
+  assert localizer_alerts_active(FakeSubMaster(False, False), calibrated) == (False, False, False)
+  assert localizer_alerts_active(FakeSubMaster(True, True), calibrated) == (True, True, True)
 
 
 def test_controller_openpilot_requests_use_normal_engagement_events():
