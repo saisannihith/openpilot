@@ -26,8 +26,12 @@ export const SystemTools = {
       fastStatus: null,
       checkedForUpdates: false,
       busy: "",
+      autoUpdateBusy: false,
       profiles: [],
       profileBusy: "",
+      tailscaleInstalled: false,
+      tailscaleLoaded: false,
+      tailscaleBusy: false,
     }
   },
   created() {
@@ -37,7 +41,7 @@ export const SystemTools = {
     })
     this.poll.start()
   },
-  mounted() { this.loadBranches(); this.loadProfiles() },
+  mounted() { this.loadBranches(); this.loadProfiles(); this.loadTailscale() },
   beforeUnmount() { this.poll?.destroy() },
   computed: {
     updateAvailable() { return this.checkedForUpdates && !!this.fastStatus?.updateAvailable && !this.fastStatus?.running },
@@ -77,6 +81,7 @@ export const SystemTools = {
         const status = await api.getUpdateFastStatus()
         if (!status) throw new Error("Update status unavailable")
         this.fastStatus = status
+        this.isOnroad = !!status.isOnroad
       } catch (e) {
         this.fastStatus = null
         if (throwOnError) throw e
@@ -195,6 +200,21 @@ export const SystemTools = {
         this.busy = ""
       }
     },
+    async setAutomaticUpdates(enabled) {
+      if (this.autoUpdateBusy || this.isOnroad || this.fastStatus?.running || !this.fastStatus) return
+      const previous = !!this.fastStatus.automaticUpdates
+      this.autoUpdateBusy = true
+      this.fastStatus = { ...this.fastStatus, automaticUpdates: !!enabled }
+      try {
+        const payload = await api.updateParam({ key: "AutomaticUpdates", value: !!enabled, label: "Automatic Updates" })
+        showSnackbar(payload?.message || `Automatic updates ${enabled ? "enabled" : "disabled"}.`)
+      } catch (e) {
+        this.fastStatus = { ...this.fastStatus, automaticUpdates: previous }
+        showSnackbar(e?.message || "Failed to update Automatic Updates.", "error")
+      } finally {
+        this.autoUpdateBusy = false
+      }
+    },
     async applyFastUpdate() {
       if (this.busy || this.isOnroad) return
       if (this.fastStatus?.running) { showSnackbar("Fast update is already running."); return }
@@ -256,6 +276,51 @@ export const SystemTools = {
         showSnackbar(e?.message || "Failed to delete driving routes.", "error")
       }
     },
+    async loadTailscale() {
+      try {
+        const data = await api.getTailscaleInstalled()
+        this.tailscaleInstalled = !!data?.installed
+      } catch (e) {
+        this.tailscaleInstalled = false
+      } finally {
+        this.tailscaleLoaded = true
+      }
+    },
+    async installTailscale() {
+      if (this.tailscaleBusy) return
+      this.tailscaleBusy = true
+      showSnackbar("Install started...")
+      try {
+        const result = await api.setupTailscale()
+        showSnackbar(result?.message || "Tailscale setup started.")
+        if (result?.auth_url) window.open(result.auth_url, "_blank", "noopener")
+        await this.loadTailscale()
+      } catch (e) {
+        showSnackbar(e?.message || "Failed to install Tailscale.", "error")
+      } finally {
+        this.tailscaleBusy = false
+      }
+    },
+    async uninstallTailscale() {
+      if (this.tailscaleBusy) return
+      if (!(await GalaxyConfirm({
+        title: "Uninstall Tailscale?",
+        message: "This disconnects the device from your tailnet and removes the Tailscale binaries and state.",
+        confirmLabel: "Uninstall",
+        danger: true,
+      }))) return
+      this.tailscaleBusy = true
+      showSnackbar("Uninstall started...")
+      try {
+        const result = await api.uninstallTailscale()
+        showSnackbar(result?.message || "Tailscale uninstalled.")
+        await this.loadTailscale()
+      } catch (e) {
+        showSnackbar(e?.message || "Failed to uninstall Tailscale.", "error")
+      } finally {
+        this.tailscaleBusy = false
+      }
+    },
   },
   template: `
     <div>
@@ -298,6 +363,22 @@ export const SystemTools = {
                 <div v-if="fastStatus.agnosUpdate?.available && fastStatus.agnosUpdate?.warnings?.length" style="margin-top:4px;">
                   <div v-for="w in fastStatus.agnosUpdate.warnings" :key="w" class="gx-note gx-note--danger"><i class="bi bi-exclamation-triangle-fill"></i> {{ w }}</div>
                 </div>
+              </div>
+            </div>
+
+            <div class="gx-card" style="margin-bottom:12px;">
+              <div class="gx-row" style="border-top:none;">
+                <div class="gx-row__info">
+                  <span class="gx-row__label">Automatically Install Updates</span>
+                  <span class="gx-row__desc">Install updates automatically while parked with an active internet connection.</span>
+                </div>
+                <label class="gx-switch">
+                  <input type="checkbox" :checked="!!fastStatus?.automaticUpdates"
+                    :disabled="!fastStatus || isOnroad || autoUpdateBusy || !!fastStatus?.running"
+                    @change="setAutomaticUpdates($event.target.checked)" />
+                  <span class="gx-switch__track"></span>
+                  <span class="gx-switch__thumb"></span>
+                </label>
               </div>
             </div>
 
@@ -376,6 +457,32 @@ export const SystemTools = {
             <p v-if="factoryResetStatus.progressDetail" class="gx-note" style="margin:4px 0 0;">{{ factoryResetStatus.progressDetail }}</p>
             <p v-if="factoryResetStatus.lastError" class="gx-note gx-note--danger" style="margin:4px 0 0;">Last Error: {{ factoryResetStatus.lastError }}</p>
           </div>
+        </div>
+      </GalaxySection>
+
+      <GalaxySection title="Tailscale" icon="bi-shield-lock" :collapsible="false">
+        <div style="padding: var(--sp-3); display:grid; gap:12px;">
+          <p class="gx-note" style="margin:0;">
+            Tailscale creates a secure, private connection between your openpilot device and your phone or PC so you can access and control it from anywhere!
+          </p>
+          <GxNotice v-if="!tailscaleLoaded" tone="info" icon="bi-arrow-repeat" text="Checking Tailscale install status..." />
+          <template v-else>
+            <GxNotice tone="warn" text="Not recommended. Using Galaxy Tunnel is the preferred remote connection method." />
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+              <button v-if="!tailscaleInstalled" type="button" class="gx-btn" :disabled="tailscaleBusy" @click="installTailscale">
+                <i class="bi" :class="tailscaleBusy ? 'bi-arrow-repeat gx-spin' : 'bi-download'"></i>
+                {{ tailscaleBusy ? 'Installing...' : 'Install Tailscale' }}
+              </button>
+              <button v-else type="button" class="gx-btn gx-btn--danger" :disabled="tailscaleBusy" @click="uninstallTailscale">
+                <i class="bi" :class="tailscaleBusy ? 'bi-arrow-repeat gx-spin' : 'bi-trash'"></i>
+                {{ tailscaleBusy ? 'Uninstalling...' : 'Uninstall Tailscale' }}
+              </button>
+              <a class="gx-btn gx-btn--tonal" href="https://tailscale.com/download" target="_blank" rel="noopener">
+                <i class="bi bi-box-arrow-up-right"></i> Download for your other devices
+              </a>
+            </div>
+            <p class="gx-note" style="margin:0;">Installing opens the Tailscale login page to authenticate this device.</p>
+          </template>
         </div>
       </GalaxySection>
 
