@@ -21,7 +21,7 @@ def _load_augmented_road_view(monkeypatch):
 
   stub_module(
     "openpilot.selfdrive.ui.ui_state",
-    ui_state=SimpleNamespace(started=True, sm=SimpleNamespace()),
+    ui_state=SimpleNamespace(started=True, sm=SimpleNamespace(), ui_params=SimpleNamespace(get_bool=lambda *_args: False)),
     UIStatus=UIStatus,
   )
   stub_module("openpilot.selfdrive.ui.lib.starpilot_visuals", get_border_width=lambda *_args: 0)
@@ -30,6 +30,7 @@ def _load_augmented_road_view(monkeypatch):
   stub_module("openpilot.selfdrive.ui.onroad.driver_state", DriverStateRenderer=object)
   stub_module("openpilot.selfdrive.ui.onroad.hud_renderer", HudRenderer=object)
   stub_module("openpilot.selfdrive.ui.onroad.model_renderer", ModelRenderer=object)
+  stub_module("openpilot.selfdrive.ui.onroad.tesla_road_renderer", TeslaRoadRenderer=object)
   stub_module("openpilot.selfdrive.ui.onroad.cameraview", CameraView=CameraView)
   stub_module("openpilot.system.ui.lib.application", gui_app=SimpleNamespace(target_fps=20))
 
@@ -141,6 +142,7 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
   view.driver_state_renderer = Renderer("driver_state")
   view.alert_renderer = Renderer("alert")
   view._draw_driver_state = True
+  view._tesla_road_view = False
   view._pm = SimpleNamespace(send=lambda *_args: events.append("publish"))
 
   monkeypatch.setattr(augmented_road_view.rl, "begin_scissor_mode", lambda *_args: events.append("scissor_begin"))

@@ -30,7 +30,7 @@ THEME_KEY_CONFIG = {
 }
 
 COLOR_PRESETS = ["Stock", "#FFFFFF", "#178644", "#3B82F6", "#E63956", "#8B5CF6", "#F59E0B"]
-CAMERA_VIEWS = ["Auto", "Driver", "Standard", "Wide"]
+CAMERA_VIEWS = ["Auto", "Driver", "Standard", "Wide", "None", "Tesla Road"]
 
 # Keys are the int values stored in DeveloperSidebarMetric{1..7}; values are the
 # human-readable labels shown in both the row value and the picker dialog.
@@ -396,7 +396,7 @@ class StarPilotAppearanceLayout(_SettingsPage):
         self._system_rows = [
             SettingRow("CameraView", "value", tr_noop("Camera View"),
                        subtitle="",
-                       get_value=lambda: tr(CAMERA_VIEWS[self._params.get_int("CameraView", return_default=True, default=2)]),
+                       get_value=lambda: tr(CAMERA_VIEWS[max(0, min(self._params.get_int("CameraView", return_default=True, default=2), len(CAMERA_VIEWS) - 1))]),
                        on_click=self._show_camera_view_selector),
             SettingRow("DriverCamera", "toggle", tr_noop("Driver Camera"),
                        subtitle="",
@@ -602,7 +602,7 @@ class StarPilotAppearanceLayout(_SettingsPage):
     # ── Camera view ──
 
     def _show_camera_view_selector(self):
-        current = self._params.get_int("CameraView", return_default=True, default=2)
+        current = max(0, min(self._params.get_int("CameraView", return_default=True, default=2), len(CAMERA_VIEWS) - 1))
 
         def on_select(res):
             if res == DialogResult.CONFIRM and dialog.selection:
