@@ -4,7 +4,7 @@ import time
 from functools import lru_cache
 import numpy as np
 import pyray as rl
-from openpilot.selfdrive.ui.onroad.world_scene import WorldScene
+from openpilot.selfdrive.ui.onroad.world_scene import WorldScene, vehicle_center
 
 CAPACITY = 4095
 # Existing onroad instruments use light text. Keep their contrast intact.
@@ -180,9 +180,9 @@ class TeslaRoadRenderer:
             rl.begin_mode_3d(self._camera)
             rl.rl_disable_backface_culling()
         for obj in self.scene.objects:
-          position = rl.Vector3(obj.right,0,-obj.forward-2.4)
           if obj.vehicle:
-            self._meshes[1].draw(position)
+            forward,right = vehicle_center(obj)
+            self._meshes[1].draw(rl.Vector3(right,0,-forward),obj.yaw)
           else:
             # A radar return has no verified body shape or vehicle class.
             rl.draw_sphere_ex(rl.Vector3(obj.right,.12,-obj.forward),.12,4,6,rl.Color(125,133,140,255))
@@ -213,7 +213,8 @@ class TeslaRoadRenderer:
     obj = next((obj for obj in self.scene.objects if obj.key == ('lead', index)), None)
     if obj is None or self._target_size is None:
       return None
-    return self.project(obj.forward+2.4,obj.right,rect,height=1.8)
+    forward,right = vehicle_center(obj) if obj.vehicle else (obj.forward,obj.right)
+    return self.project(forward,right,rect,height=1.8)
 
   def project(self, forward, right, rect, height=0.02):
     if self._target_size is None or not all(math.isfinite(v) for v in (forward,right,height)):

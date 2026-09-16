@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from openpilot.selfdrive.ui.onroad.world_scene import MAX_OBJECTS, WorldScene, lateral_at, path_yaw, polyline
+from openpilot.selfdrive.ui.onroad.world_scene import MAX_OBJECTS, SceneObject, WorldScene, lateral_at, path_yaw, polyline, road_yaw, vehicle_center
 
 
 class Messages(dict):
@@ -144,3 +144,121 @@ def test_heading_filter_is_message_driven_and_expires():
   assert scene.ego_yaw == heading
   scene.update(sm,0,11.)
   assert scene.ego_yaw == 0.
+
+
+@pytest.mark.parametrize('curve',[-.006,0.,.006])
+@pytest.mark.parametrize('offset',[-3.6,-1.8,0.,1.8,3.6])
+def test_vehicle_tangent_across_lanes_and_crossings_without_snapping(curve,offset):
+  lines = tuple(tuple((float(x),y+curve*x*x) for x in range(0,81,2)) for y in (-5.4,-1.8,1.8,5.4))
+  forward,right = 20.,curve*400+offset
+  yaw = road_yaw(lines,forward,right)
+  assert yaw == pytest.approx(-math.degrees(math.atan(2*curve*forward)))
+  obj = SceneObject(('lead',0),forward,right,True,10.,yaw=yaw)
+  center_x,center_y = vehicle_center(obj)
+  a = math.radians(yaw)
+  assert center_x-2.4*math.cos(a) == pytest.approx(forward)
+  assert center_y+2.4*math.sin(a) == pytest.approx(right)
+  assert (obj.forward,obj.right) == (forward,right)
+
+
+def test_no_heading_is_invented_without_lane_support():
+  assert road_yaw(((),(),(),()),20.,0.) is None
+  assert road_yaw((((0,0),(50,0)),((0,9),(50,9))),20.,3.) is None
+  assert road_yaw((((0,0),(50,0)),((0,3.5),(50,3.5))),60.,1.) is None
+
+
+def test_track_replacement_does_not_slide_old_vehicle_into_new_target():
+  sm,scene = messages(),WorldScene()
+  lead = sm['radarState'].leadOne
+  lead.radar,lead.radarTrackId = True,7
+  scene.update(sm,0,10.)
+  lead.radarTrackId,lead.dRel,lead.yRel = 8,21.,2.5
+  sm.tick(3,10.05)
+  scene.update(sm,0,10.05)
+  assert (scene.objects[0].forward,scene.objects[0].right) == (21.,-2.5)
+
+
+def test_same_radar_identity_is_deduplicated_but_distinct_close_tracks_remain():
+  sm,scene = messages(),WorldScene()
+  lead = sm['radarState'].leadOne
+  lead.radar,lead.radarTrackId = True,7
+  sm['radarState'].leadTwo = NS(status=True,dRel=21.,yRel=2.5,modelProb=.99,radar=True,radarTrackId=8)
+  sm['liveTracks'] = NS(errors=NS(canError=False,radarFault=False,wrongConfig=False,radarUnavailableTemporary=False),
+                        points=[NS(trackId=7,dRel=24.,yRel=3.)])
+  sm.tick(2,10.)
+  scene.update(sm,0,10.)
+  assert len(scene.objects) == 2
+  assert {o.identity for o in scene.objects} == {('track',7),('track',8)}
+
+
+def test_slot_handoff_keeps_identity_and_does_not_blend_different_cars():
+  sm,scene = messages(),WorldScene()
+  lead = sm['radarState'].leadOne
+  lead.radar,lead.radarTrackId = True,7
+  scene.update(sm,0,10.)
+  sm['radarState'].leadTwo = lead
+  sm['radarState'].leadOne = NS(status=True,dRel=40.,yRel=-1.,modelProb=.99,radar=True,radarTrackId=8)
+  lead.dRel = 21.
+  sm.tick(3,10.05)
+  scene.update(sm,0,10.05)
+  by_id = {o.identity:o for o in scene.objects}
+  assert by_id[('track',8)].forward == 40.
+  assert 20. < by_id[('track',7)].forward < 21.
+  assert by_id[('track',7)].key == ('lead',1)
+
+
+def test_model_only_refresh_updates_heading_without_refiltering_positions():
+  sm,scene = messages(),WorldScene()
+  sm['radarState'].leadOne.yRel = 0.
+  scene.update(sm,0,10.)
+  before = scene.objects[0]
+  old_yaw = before.yaw
+  for line in sm['modelV2'].laneLines:
+    line.y = [y+.05*x for x,y in zip(line.x,line.y,strict=True)]
+  sm.recv_frame['modelV2'],sm.recv_time['modelV2'] = 3,10.05
+  scene.update(sm,0,10.05)
+  assert scene.objects[0] is before and before.right == 0. and before.forward == 20.
+  assert before.yaw < old_yaw
+
+
+def test_crossing_vehicle_is_not_pinned_to_a_lane_center():
+  sm,scene = messages(),WorldScene()
+  lead = sm['radarState'].leadOne
+  lead.yRel = 0.
+  scene.update(sm,0,10.)
+  rights = []
+  for step in range(1,21):
+    lead.yRel = -.2*step
+    sm.tick(step+2,10.+.05*step)
+    scene.update(sm,0,10.+.05*step)
+    rights.append(scene.objects[0].right)
+  assert all(b > a for a,b in zip(rights,rights[1:],strict=False))
+  assert 3.7 < rights[-1] <= 4.
+  lead.status = False
+  sm.tick(23,11.05)
+  scene.update(sm,0,11.05)
+  assert not scene.objects
+
+
+def test_new_drive_cannot_reuse_old_vehicle_smoothing():
+  sm,scene = messages(),WorldScene()
+  scene.update(sm,0,10.)
+  sm['radarState'].leadOne.dRel = 21.
+  sm.tick(5,10.05)
+  scene.update(sm,4,10.05)
+  assert scene.objects[0].forward == 21.
+
+
+def test_raw_refresh_does_not_reverse_smoothed_lead_position():
+  sm,scene = messages(),WorldScene()
+  sm['liveTracks'] = NS(errors=NS(canError=False,radarFault=False,wrongConfig=False,radarUnavailableTemporary=False),points=[])
+  sm.tick(2,10.)
+  scene.update(sm,0,10.)
+  sm['radarState'].leadOne.dRel = 21.
+  sm.recv_frame['radarState'],sm.recv_time['radarState'] = 3,10.05
+  scene.update(sm,0,10.05)
+  previous = scene.objects[0].forward
+  for step in range(6,11):
+    sm.recv_frame['liveTracks'],sm.recv_time['liveTracks'] = step,10.+.01*step
+    scene.update(sm,0,10.+.01*step)
+    assert scene.objects[0].forward == previous

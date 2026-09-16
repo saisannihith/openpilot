@@ -147,6 +147,41 @@ The device's view selection is preserved. Select Tesla Road to use this scene.
 The screenshot fixtures intentionally exercise both a STOP marker and primary
 lead metrics simultaneously; they are not a reconstructed complete road scene.
 
+## Vehicle Orientation and Identity Revision, 2026-09-16
+
+- Fixed surrounding meshes always rendering at zero yaw. A bounded local tangent
+  from the two confident lane boundaries surrounding each detection now supplies
+  illustrative body orientation. Boundary slopes interpolate across a crossing;
+  detected position is never snapped or biased toward a lane center.
+- The mesh center offset rotates with the body about its detected rear reference.
+  Lead icons project the same rotated center, rather than a separate straight-ahead
+  offset. Mesh length remains illustrative (4.8 m), not measured vehicle dimensions.
+- This is NOT measured target yaw, lane intent or direction classification. Missing
+  lane support uses neutral orientation; the display cannot infer arbitrary oncoming
+  headings or accurately reconstruct every object from these messages.
+- Radar track identity prevents duplicate representations and prevents smoothing
+  across different targets reusing leadOne/leadTwo. Identity continuity is retained
+  when a track changes lead slots. Vision-only targets use bounded geometric
+  continuity because no persistent vision object ID is exposed here.
+- Smoothing runs only with advancing source timestamps. Other-topic updates no
+  longer jump a smoothed position back to the raw coordinate. A new drive resets
+  continuity. Missing/status-false/stale/error targets are not artificially retained.
+- Corrected the synthetic curve fixture: adjacent vehicle coordinates now follow
+  its curved lane geometry. This fixture correction does not alter real detections.
+- 95 native tests pass, including left/right curves across five lane/crossing
+  positions, rear-reference preservation, identity swaps/deduplication, disappearance,
+  model-only refresh, asynchronous raw radar refresh, and new-drive resets.
+- Three actual segments replayed: 57,333 messages / 359 sampled GPU frames. Segment
+  44 contained 23 oriented vehicle-frames (>1 degree); the other two contained none.
+  All three passed duplicate-identity and primary-only annotation checks.
+- Full-scene 600-frame device benchmark: median 22.14 ms, p99 27.04 ms, maximum
+  99.24 ms including cold initialization. Scaled parent/HUD composition still passes.
+- Final resource run: 1,000 GPU frames and 12,000 changing-ID updates; 20,104
+  retained Python bytes, 403,368 peak bytes, scene-update median/p99 1.57/2.45 ms.
+  Renderer-only warm median/p99 13.14/17.35 ms. Cleanup RSS 60,832/61,076 KiB.
+  These bounded offroad tests do not establish unlimited leak-free/live-drive behavior.
+- No changes to fusion, planners, controllers, safety limits, or device settings.
+
 ## Reproduce
 
 From a configured repository, with a Raylib-capable Python environment:

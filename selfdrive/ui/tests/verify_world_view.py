@@ -44,7 +44,7 @@ def fixture(curve=0.0):
   return Messages(modelV2=NS(position=line(0),laneLines=[line(x) for x in (-5.4,-1.8,1.8,5.4)],
                   laneLineProbs=[.8,.99,.99,.8],roadEdges=[line(-7.1),line(7.1)],roadEdgeStds=[.2,.2]),
                   radarState=NS(leadOne=lead(15,-curve*225),leadTwo=lead(45,-curve*2025)),
-                  starpilotRadarState=NS(leadLeft=lead(10,3.5),leadRight=lead(24,-3.5)),
+                  starpilotRadarState=NS(leadLeft=lead(10,3.5-curve*100),leadRight=lead(24,-3.5-curve*576)),
                   liveTracks=NS(errors=errors,points=[NS(trackId=i,dRel=8+i*5,yRel=(i%3-1)*5,vRel=0) for i in range(32)]))
 
 

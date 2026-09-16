@@ -52,6 +52,35 @@ def path_yaw(points):
   return max(-35.0, min(35.0, -math.degrees(math.atan(slope))))
 
 
+def road_yaw(lanes, forward, right):
+  """Illustrative road tangent, not measured object heading or lane snapping."""
+  def sample(line):
+    if not line:
+      return None
+    lo,hi = max(line[0][0],forward-4.),min(line[-1][0],forward+4.)
+    y = lateral_at(line,forward)
+    if y is None or hi-lo < 2.:
+      return None
+    return y,(lateral_at(line,hi)-lateral_at(line,lo))/(hi-lo)
+  values = [sample(line) for line in lanes]
+  for left,right_line in zip(values,values[1:],strict=False):
+    if left is None or right_line is None:
+      continue
+    width = right_line[0]-left[0]
+    if 2. <= width <= 5.5 and left[0] <= right <= right_line[0]:
+      blend = (right-left[0])/width
+      slope = left[1]+blend*(right_line[1]-left[1])
+      return max(-75.,min(75.,-math.degrees(math.atan(slope))))
+  return None
+
+
+def vehicle_center(obj):
+  # dRel is the rear reference, not the mesh center. Rotate the center offset
+  # too, so the rear reference remains at the observed point through curves.
+  angle = math.radians(obj.yaw)
+  return obj.forward+2.4*math.cos(angle),obj.right-2.4*math.sin(angle)
+
+
 @dataclass(slots=True)
 class SceneObject:
   key: tuple
@@ -59,6 +88,9 @@ class SceneObject:
   right: float
   vehicle: bool
   received: float
+  identity: tuple = ()
+  yaw: float = 0.
+  heading_time: float = 0.
 
 
 class WorldScene:
@@ -85,6 +117,7 @@ class WorldScene:
   def update(self, sm, started_frame, now):
     model_ok = self.fresh(sm, 'modelV2', started_frame, now)
     model_key = (started_frame, sm.recv_frame['modelV2']) if model_ok else None
+    model_changed = model_key != self.model_key
     if model_key != self.model_key:
       self.model_key = model_key
       self.path, self.lanes, self.edges = (), ((), (), (), ()), ((), ())
@@ -109,7 +142,10 @@ class WorldScene:
     available = tuple(self.fresh(sm, key, started_frame, now) for key in sources)
     object_key = (started_frame, *(sm.recv_frame[key] if ok else -1 for key, ok in zip(sources, available, strict=False)))
     if object_key == self.object_key:
+      if model_changed:
+        self._orient_objects(sm.recv_time['modelV2'] if model_ok else now)
       return
+    same_drive = self.object_key is not None and self.object_key[0] == started_frame
     self.object_key = object_key
     candidates = []
 
@@ -117,9 +153,14 @@ class WorldScene:
       d, y = float(obj.dRel), -float(obj.yRel)
       if not (math.isfinite(d) and math.isfinite(y)) or not 0.5 <= d <= MAX_DISTANCE or abs(y) > 18:
         return
-      if any(abs(other.forward - d) < 2.5 and abs(other.right - y) < 1.0 for other in candidates):
+      track_id = int(getattr(obj,'trackId',-1)) if key[0] == 'radar' else int(getattr(obj,'radarTrackId',-1))
+      tracked = key[0] == 'radar' or bool(getattr(obj,'radar',False))
+      identity = ('track',track_id) if tracked and track_id >= 0 else ('slot',*key)
+      if any(other.identity == identity or
+             (not (other.identity[0] == identity[0] == 'track') and
+              abs(other.forward-d) < 2.5 and abs(other.right-y) < 1.0) for other in candidates):
         return
-      candidates.append(SceneObject(key, d, y, vehicle, received))
+      candidates.append(SceneObject(key, d, y, vehicle, received, identity))
 
     if available[0]:
       rs = sm['radarState']
@@ -140,15 +181,31 @@ class WorldScene:
         for point in islice(radar.points, MAX_RADAR_INPUTS):
           add(('radar', int(point.trackId)), point, False, sm.recv_time['liveTracks'])
     candidates.sort(key=lambda item: (not item.vehicle, item.forward))
-    previous = {obj.key: obj for obj in self.objects}
+    previous = {obj.identity: obj for obj in self.objects} if same_drive else {}
     for obj in candidates[:MAX_OBJECTS]:
-      old = previous.get(obj.key)
-      if old is not None and 0 < obj.received - old.received < MAX_AGE:
+      old = previous.get(obj.identity)
+      if old is not None and 0 <= obj.received - old.received < MAX_AGE:
         if abs(obj.forward - old.forward) < 4.0 and abs(obj.right - old.right) < 1.0:
           blend = 1.0 - math.exp(-(obj.received - old.received) / 0.045)
           obj.forward = old.forward + blend * (obj.forward - old.forward)
           obj.right = old.right + blend * (obj.right - old.right)
+          obj.yaw,obj.heading_time = old.yaw,old.heading_time
     self.objects = tuple(candidates[:MAX_OBJECTS])
+    self._orient_objects(sm.recv_time['modelV2'] if model_ok else now)
+
+  def _orient_objects(self, model_time):
+    for obj in self.objects:
+      if not obj.vehicle:
+        continue
+      target = road_yaw(self.lanes,obj.forward,obj.right)
+      received = max(model_time,obj.received)
+      if target is None:
+        obj.yaw,obj.heading_time = 0.,0.
+        continue
+      dt = received-obj.heading_time
+      blend = 1.0-math.exp(-dt/.12) if obj.heading_time and 0 <= dt < MAX_AGE else 1.
+      obj.yaw += blend*(target-obj.yaw)
+      obj.heading_time = received
 
   def path_half_width(self, forward, right):
     left = lateral_at(self.lanes[1], forward)

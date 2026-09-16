@@ -30,6 +30,7 @@ def replay_routes(routes, world, overlay, settings):
                  status=2,always_on_lateral_active=False)
       model_renderer.ui_state = path.ui_state = stopping_point.ui_state = state
       messages = models = rendered = 0
+      oriented = 0
       for message in LogReader(route,sort_by_time=True):
         name = message.which()
         if name not in services:
@@ -54,6 +55,9 @@ def replay_routes(routes, world, overlay, settings):
         rl.begin_drawing()
         rl.clear_background(rl.BLACK)
         world.render(rect,sm,0,True,now=replay_time,road_overlay=overlay.render_world_road)
+        identities = [o.identity for o in world.scene.objects]
+        assert len(identities) == len(set(identities)), 'Duplicate physical target in scene'
+        oriented += sum(o.vehicle and abs(o.yaw) > 1. for o in world.scene.objects)
         occupied = stopping_point.render_stopping_point(overlay,gui_app.font(),
           project_stop=lambda d, r=rect, s=state: world_overlays.stop_anchor(world,r,s,d))
         if occupied is not None:
@@ -65,7 +69,8 @@ def replay_routes(routes, world, overlay, settings):
         rendered += 1
         sm.updated = dict.fromkeys(services,False)
       assert rendered > 0
-      print('REAL_MESSAGE_REPLAY_OK',route,{'messages':messages,'model_frames':models,'gpu_frames':rendered},flush=True)
+      print('REAL_MESSAGE_REPLAY_OK',route,{'messages':messages,'model_frames':models,'gpu_frames':rendered,
+                                          'oriented_vehicle_frames':oriented},flush=True)
   finally:
     time.monotonic = clock
 
