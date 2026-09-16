@@ -13,6 +13,7 @@ from openpilot.selfdrive.ui.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.onroad.model_renderer import ModelRenderer
 from openpilot.selfdrive.ui.onroad.cameraview import CameraView
 from openpilot.selfdrive.ui.onroad.tesla_road_renderer import TeslaRoadRenderer
+from openpilot.selfdrive.ui.onroad.world_presentation import WorldAvailability
 from openpilot.selfdrive.ui.lib.starpilot_status import get_screen_edge_color
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.common.transformations.camera import DEVICE_CAMERAS, DeviceCameraConfig, view_frame_from_device_frame
@@ -71,6 +72,7 @@ class AugmentedRoadView(CameraView):
     self.tesla_road_renderer = TeslaRoadRenderer()
     self._world_failed = False
     self._using_world = False
+    self._world_availability = WorldAvailability()
     self._hud_renderer = HudRenderer()
     self.alert_renderer = AlertRenderer()
     self.driver_state_renderer = DriverStateRenderer()
@@ -90,7 +92,10 @@ class AugmentedRoadView(CameraView):
     self._camera_view_none = camera_view == CAMERA_VIEW_NONE
     in_reverse = self._is_in_reverse()
     reverse_camera_enabled = in_reverse and ui_state.ui_params.get_bool("DriverCamera")
-    self._tesla_road_view = camera_view == CAMERA_VIEW_TESLA_ROAD and not reverse_camera_enabled and not self._world_failed
+    world_ready = (camera_view == CAMERA_VIEW_TESLA_ROAD and
+                   self._world_availability.update(ui_state.sm, ui_state.started_frame, start_draw))
+    self._tesla_road_view = (camera_view == CAMERA_VIEW_TESLA_ROAD and not reverse_camera_enabled
+                            and not self._world_failed and world_ready)
     if self._tesla_road_view != self._using_world:
       self._reset_camera_connection()
       if not self._tesla_road_view:
@@ -186,6 +191,7 @@ class AugmentedRoadView(CameraView):
       renderer.close(parent_target=gui_app._render_texture)
     self._using_world = False
     self._world_failed = False
+    self._world_availability = WorldAvailability()
 
   def close(self):
     renderer = getattr(self, "tesla_road_renderer", None)

@@ -610,6 +610,8 @@ class ModelRenderer(Widget):
       if self._longitudinal_control:
         plan = ui_state.sm["starpilotPlan"]
         desired_follow_distance = float(plan.desiredFollowDistance) if plan and plan.desiredFollowDistance > 0 else 0.0
+        if not math.isfinite(desired_follow_distance):
+          desired_follow_distance = 0.0
         desired_distance = max(0, round(desired_follow_distance * distance_conversion))
         text_lines.append(f"{distance_string} {lead_distance_unit} (Desired: {desired_distance})")
       else:
@@ -622,9 +624,15 @@ class ModelRenderer(Widget):
       text_lines.append(f"{time_gap:.2f} seconds")
 
       if above:
-        text_lines = [f"{distance_string} {lead_distance_unit}  |  {speed_string}{lead_speed_unit}", f"{time_gap:.2f} s"]
-        if self._longitudinal_control:
-          text_lines[1] += f"  |  desired {desired_distance} {lead_distance_unit}"
+        from openpilot.selfdrive.ui.onroad.world_scene import WorldScene
+        from openpilot.selfdrive.ui.onroad.world_presentation import world_lead_lines
+        now = time.monotonic()
+        plan_fresh = WorldScene.fresh(ui_state.sm, 'starpilotPlan', ui_state.started_frame, now)
+        ego_fresh = WorldScene.fresh(ui_state.sm, 'carState', ui_state.started_frame, now)
+        text_lines = world_lead_lines(
+          lead_distance, lead_speed, v_ego if ego_fresh else float('nan'),
+          desired_follow_distance if self._longitudinal_control and plan_fresh else 0.,
+          lead_distance_unit, lead_speed_unit, distance_conversion, speed_conversion_metrics)
 
     from openpilot.system.ui.lib.application import gui_app, FontWeight
     from openpilot.selfdrive.ui.onroad.starpilot.path import _draw_text_with_outline

@@ -127,7 +127,7 @@ def _load_starpilot_onroad_view(monkeypatch):
   return importlib.import_module(module_name)
 
 
-@pytest.mark.parametrize('mode', ['camera', 'world', 'world_failure'])
+@pytest.mark.parametrize('mode', ['camera', 'world', 'world_failure', 'world_stale'])
 def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkeypatch, mode):
   augmented_road_view = _load_augmented_road_view(monkeypatch)
   events = []
@@ -174,6 +174,7 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
   view._tesla_road_view = False
   view._world_failed = False
   view._using_world = False
+  view._world_availability = SimpleNamespace(update=lambda *_args: mode != 'world_stale')
   view._pm = SimpleNamespace(send=lambda *_args: events.append("publish"))
   monkeypatch.setattr(augmented_road_view.cloudlog, 'exception', lambda *_args: events.append('error_log'))
 
@@ -187,8 +188,9 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
 
   view._render(augmented_road_view.rl.Rectangle(0, 0, 100, 50))
 
-  prefix = [] if mode == 'camera' else ['camera_reset']
-  content = ['camera', 'model', 'road_overlays'] if mode == 'camera' else ['world']
+  camera_mode = mode in ('camera', 'world_stale')
+  prefix = [] if camera_mode else ['camera_reset']
+  content = ['camera', 'model', 'road_overlays'] if camera_mode else ['world']
   if mode == 'world_failure':
     content += ['error_log', 'world_close', 'camera']
   elif mode == 'world':
@@ -225,6 +227,16 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
       view._render(augmented_road_view.rl.Rectangle(0,0,100,50))
       assert 'world' in events and 'world_leads' in events and 'alert' in events
       assert view._using_world
+  elif mode == 'world_stale':
+    assert not view._world_failed
+    view._world_availability.update = lambda *_args: True
+    events.clear()
+    view._render(augmented_road_view.rl.Rectangle(0,0,100,50))
+    assert 'world' in events and 'camera' not in events
+    view._world_availability.update = lambda *_args: False
+    events.clear()
+    view._render(augmented_road_view.rl.Rectangle(0,0,100,50))
+    assert 'world_close' in events and 'camera' in events and 'alert' in events
 
 
 def test_offroad_releases_world_and_camera_resources(monkeypatch):

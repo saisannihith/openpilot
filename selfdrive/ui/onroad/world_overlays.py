@@ -10,7 +10,7 @@ import numpy as np
 import pyray as rl
 
 from openpilot.selfdrive.ui.onroad.world_scene import lateral_at, display_lane_continuation
-from openpilot.selfdrive.ui.onroad.starpilot.path import render_adjacent_lanes, render_path_edges
+from openpilot.selfdrive.ui.onroad.starpilot.path import render_path_edges
 from openpilot.system.ui.lib.shader_polygon import draw_polygon
 
 
@@ -93,18 +93,8 @@ def render_road(renderer, world, rect, state):
   for boundary in scene.edges:
     draw_polygon(rect,world.project_ribbon(display_lane_continuation(boundary),ew,rect),rl.Color(230,48,48,255))
 
-  for side,(left,right) in enumerate(((display_lanes[0],display_lanes[1]),(display_lanes[2],display_lanes[3]))):
-    a,b = [],[]
-    for x,y in left:
-      other = lateral_at(right,x)
-      if other is None or not .5 < other-y < 6.:
-        continue
-      l,r = world.project(x,y,rect,clip=False),world.project(x,other,rect,clip=False)
-      if l is not None and r is not None:
-        a.append(l)
-        b.append(r)
-    renderer._adjacent_path_vertices[side] = np.asarray(a+b[::-1],np.float32).reshape(-1,2)
-  render_adjacent_lanes(renderer,fresh=fresh)
+  # Geometry does not establish adjacent traffic direction or lane availability.
+  # Leave neighboring road surfaces black, not red/green "unsafe/safe" lanes.
 
   renderer._experimental_mode = fresh('selfdriveState') and sm['selfdriveState'].experimentalMode
   renderer._use_rainbow = params.get_bool('RainbowPath')

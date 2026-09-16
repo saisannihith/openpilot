@@ -105,7 +105,6 @@ def test_world_path_styles_use_existing_methods_and_reset_camera_projection(monk
   renderer._update_experimental_gradient = lambda:calls.append('gradient')
   renderer._draw_path = lambda sm:calls.append('shared_path')
   monkeypatch.setattr(wo,'draw_polygon',lambda *args:None)
-  monkeypatch.setattr(wo,'render_adjacent_lanes',lambda *args,**kw:None)
   monkeypatch.setattr(wo,'render_path_edges',lambda *args:calls.append('edges'))
   widths = []
   world.project_ribbon = lambda points,w,rect: widths.append(w) or np.zeros((6,2),np.float32)
@@ -120,6 +119,7 @@ def test_world_path_styles_use_existing_methods_and_reset_camera_projection(monk
   assert renderer._use_rainbow and renderer._use_accel_path and renderer._transform_dirty
   assert renderer._acceleration_x.tolist() == pytest.approx([0.,.2,0.])
   assert len(renderer._adjacent_path_vertices) == 2
+  assert all(vertices.size == 0 for vertices in renderer._adjacent_path_vertices)
   scene = world.scene
   scene.path = ()
   wo.render_road(renderer,world,rl.Rectangle(0,0,1000,700),state)

@@ -4,7 +4,8 @@ import time
 from functools import lru_cache
 import numpy as np
 import pyray as rl
-from openpilot.selfdrive.ui.onroad.world_scene import WorldScene, vehicle_center, display_lane_continuation
+from openpilot.selfdrive.ui.onroad.world_scene import WorldScene, display_lane_continuation
+from openpilot.selfdrive.ui.onroad.world_presentation import WorldPresentation
 
 CAPACITY = 4095
 # Existing onroad instruments use light text. Keep their contrast intact.
@@ -67,6 +68,7 @@ def vehicle_mesh():
 class TeslaRoadRenderer:
   def __init__(self):
     self.scene = WorldScene()
+    self.presentation = WorldPresentation()
     self._meshes = []
     self._target = None
     self._target_size = None
@@ -138,6 +140,7 @@ class TeslaRoadRenderer:
   def render(self, rect, sm, started_frame, engaged, now=None, parent_target=None, road_overlay=None):
     now = time.monotonic() if now is None else now
     self.scene.update(sm, started_frame, now)
+    self.presentation.update(self.scene.objects, started_frame, now)
     self.overlay_exclusions.clear()
     # One color/depth target reused every frame, bounded independently of DPI.
     scale = min(1.0, 1440.0/max(1,rect.width), 810.0/max(1,rect.height))
@@ -184,8 +187,8 @@ class TeslaRoadRenderer:
             rl.rl_disable_backface_culling()
         for obj in self.scene.objects:
           if obj.vehicle or obj.radar_avatar:
-            forward,right = vehicle_center(obj)
-            self._meshes[1].draw(rl.Vector3(right,0,-forward),obj.yaw,RADAR_AVATAR if obj.radar_avatar else WHITE)
+            pose = self.presentation.pose(obj)
+            self._meshes[1].draw(rl.Vector3(pose.right,0,-pose.forward),pose.yaw,RADAR_AVATAR if obj.radar_avatar else WHITE)
           else:
             # A radar return has no verified body shape or vehicle class.
             rl.draw_sphere_ex(rl.Vector3(obj.right,.12,-obj.forward),.12,4,6,rl.Color(125,133,140,255))
@@ -216,7 +219,8 @@ class TeslaRoadRenderer:
     obj = next((obj for obj in self.scene.objects if obj.key == ('lead', index)), None)
     if obj is None or self._target_size is None:
       return None
-    forward,right = vehicle_center(obj) if obj.vehicle or obj.radar_avatar else (obj.forward,obj.right)
+    pose = self.presentation.pose(obj)
+    forward,right = (pose.forward,pose.right) if obj.vehicle or obj.radar_avatar else (obj.forward,obj.right)
     return self.project(forward,right,rect,height=1.8)
 
   def project(self, forward, right, rect, height=0.02, clip=True):
@@ -276,3 +280,4 @@ class TeslaRoadRenderer:
     self._target_size = None
     self._geometry_key = None
     self.scene.reset()
+    self.presentation.reset()

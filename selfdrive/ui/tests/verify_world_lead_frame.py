@@ -53,6 +53,15 @@ def replay_routes(routes, world, overlay, settings, out):
         world.scene.update(sm,0,replay_time)
         if name != 'modelV2':
           continue
+        # Exercise presentation at model cadence even when GPU is subsampled.
+        world.presentation.update(world.scene.objects,0,replay_time)
+        assert len(world.presentation.poses) <= 16
+        for obj in world.scene.objects:
+          if obj.vehicle or obj.radar_avatar:
+            from openpilot.selfdrive.ui.onroad.world_scene import vehicle_center
+            d,y = vehicle_center(obj)
+            pose = world.presentation.pose(obj)
+            assert abs(pose.forward-d) <= 4.01 and abs(pose.right-y) <= 1.01
         models += 1
         if models % 10:
           continue

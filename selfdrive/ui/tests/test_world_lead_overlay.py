@@ -17,10 +17,10 @@ def setup_overlay(monkeypatch):
   sm = Messages(radarState=NS(leadOne=lead, leadTwo=NS(status=False)),
                 carState=NS(vEgo=15.), starpilotPlan=NS(desiredFollowDistance=25.),
                 carParams=NS(openpilotLongitudinalControl=True))
-  sm.valid = {'radarState': True}
-  sm.alive = {'radarState': True}
-  sm.recv_frame = {'radarState': 2}
-  sm.recv_time = {'radarState': 10.}
+  sm.valid = dict.fromkeys(sm, True)
+  sm.alive = dict.fromkeys(sm, True)
+  sm.recv_frame = dict.fromkeys(sm, 2)
+  sm.recv_time = dict.fromkeys(sm, 10.)
   sm.updated = {'carParams': True}
   state = NS(sm=sm, started_frame=0, is_metric=True, starpilot_toggles={})
   monkeypatch.setattr(module, 'ui_state', state)
@@ -132,3 +132,22 @@ def test_world_metrics_follow_lead_and_stack_up_not_sideways(monkeypatch):
   calls.clear()
   renderer._draw_lead_metrics(False,[(5,438),(20,450),(35,438)],lead,above=True)
   assert not calls
+
+
+@pytest.mark.parametrize('desired,stale', [(0.,False),(float('inf'),False),(25.,True)])
+def test_actual_world_overlay_hides_invalid_or_stale_plan(monkeypatch, desired, stale):
+  renderer, world, state, lead = setup_overlay(monkeypatch)
+  renderer._longitudinal_control = True
+  renderer._rect = rl.Rectangle(0,0,1400,700)
+  renderer._lead_text_rects,renderer._adjacent_lead_text_rects = [],[]
+  state.sm['starpilotPlan'].desiredFollowDistance = desired
+  if stale:
+    state.sm.recv_time['starpilotPlan'] = 8.
+  from openpilot.selfdrive.ui.onroad.starpilot import path
+  from openpilot.system.ui.lib import application
+  calls = []
+  monkeypatch.setattr(application.gui_app,'font',lambda *_args:None)
+  monkeypatch.setattr(module,'measure_text_cached',lambda font,text,size:NS(x=len(text)*size/2,y=size))
+  monkeypatch.setattr(path,'_draw_text_with_outline',lambda text,*args:calls.append(text))
+  renderer._draw_lead_metrics(False,[(515,488),(500,500),(485,488)],lead,above=True)
+  assert calls == ['30 m  |  72 km/h','2.00 s']

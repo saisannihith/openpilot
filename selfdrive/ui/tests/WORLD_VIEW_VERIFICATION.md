@@ -263,6 +263,45 @@ lead metrics simultaneously; they are not a reconstructed complete road scene.
   Both runs stayed at <=128 history entries and <=16 displayed objects. These
   finite offroad tests do not establish unlimited leak-free or onroad performance.
 
+## Five Display Improvements, 2026-09-16
+
+- Added a bounded presentation layer for up to 16 visible vehicle identities.
+  Cars and their lead labels share the same interpolated pose. Radar/model
+  handoffs can carry asynchronously timestamped observations without changing
+  identity or spawning a duplicate. The underlying measured scene is untouched.
+- Observed motion is interpolated over 50 ms, including lateral cut-ins and
+  forward-range passing. There is no extrapolation, rear-traffic invention, lane
+  snapping, or resurrection of missing targets. Large jumps, stale data, new
+  drives and recycled IDs reset presentation history. Low-rate source data and
+  uncertain vehicle heading still limit visual fidelity.
+- Adjacent surfaces stay OLED black; model geometry does not prove traffic
+  direction, lane availability or a highway divider. Removed the world-only
+  red/green adjacent-lane fills; stock camera rendering is unchanged. Existing
+  HUD alerts and blind-spot indicators retain their own rendering paths.
+- Compact primary-lead metrics follow the rendered vehicle. Invalid, zero or
+  stale desired distances are hidden, as are time gaps when ego speed is stale
+  or below 1 m/s. Infinite desired distance no longer crashes label formatting.
+- Tesla Road falls back to Standard camera when model data is stale or its path
+  unusable. It requires 0.75 s of continuously fresh geometry before returning.
+  Unmarked roads do not trigger fallback merely because lane lines are absent.
+  Render exceptions retain the existing camera fallback latch and explicit retry.
+  No control state, Params value or driver alert is changed by these transitions.
+- 157 native tests passed, including actual overlay/fallback integration,
+  asynchronous handoffs, stale/recycled identities and real Cap'n Proto inputs.
+  Three existing optional pytest-plugin configuration warnings remain.
+- Three identified recorded segments (route 27 segments 5/12; route 28 segment
+  20) passed: 57,341 relevant messages, 3,600 model frames and 360 GPU samples.
+  Presentation is advanced at model cadence, not just screenshot cadence.
+  Pixel/lifecycle checks covered native 2160x1080, narrower/scaled parent targets,
+  rainbow toggling, STOP overlays and 20 resource recreations. Captures were
+  visually inspected; no real oncoming-avatar example exists in these segments.
+- The 800-update scene-plus-presentation stress test at 128 inputs retained
+  2,664 bytes after GC, with 19.23 ms median and 23.44 ms p99 update time.
+  This is finite offroad evidence, not an unlimited leak or onroad FPS guarantee.
+- Road-camera reconnection while moving is not verified by these offroad tests.
+  Camera fallback depends on a functioning camera stream. This display cannot
+  compensate for a missing perception model or make driving decisions.
+
 ## Reproduce
 
 From a configured repository, with a Raylib-capable Python environment:
