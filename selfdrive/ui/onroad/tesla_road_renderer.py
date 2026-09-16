@@ -1,282 +1,228 @@
-"""Lightweight model-space road visualization for the on-road UI.
-
-This is deliberately display-only: it consumes the same model and radar
-messages as the existing overlays and never publishes a control message.
-"""
-
-from __future__ import annotations
-
+"""Native 3D visualization with bounded reusable meshes and display-only input."""
 import math
 import time
-from dataclasses import dataclass
-
+from functools import lru_cache
+import numpy as np
 import pyray as rl
+from openpilot.selfdrive.ui.onroad.world_scene import WorldScene
 
-from openpilot.selfdrive.ui.ui_state import UIStatus, ui_state
-from openpilot.system.ui.widgets import Widget
-
-
-MAX_DISTANCE_M = 120.0
-MAX_RENDERED_TRACKS = 16
-TRACK_STALE_SECONDS = 1.25
-ROAD_HALF_WIDTH_M = 8.2
-PATH_HALF_WIDTH_M = 1.45
-
-SCENE_TOP_COLOR = rl.Color(7, 11, 17, 255)
-SCENE_BOTTOM_COLOR = rl.Color(16, 23, 31, 255)
-ROAD_COLOR = rl.Color(40, 47, 56, 255)
-ROAD_SHADOW_COLOR = rl.Color(23, 29, 36, 255)
-ROAD_EDGE_COLOR = rl.Color(88, 101, 116, 205)
-LANE_COLOR = rl.Color(190, 205, 221, 205)
-PATH_FILL_ENGAGED = rl.Color(21, 112, 232, 148)
-PATH_EDGE_ENGAGED = rl.Color(46, 162, 255, 255)
-PATH_FILL_DISENGAGED = rl.Color(90, 106, 124, 88)
-PATH_EDGE_DISENGAGED = rl.Color(149, 165, 183, 178)
-EGO_BODY_COLOR = rl.Color(23, 126, 246, 255)
-EGO_TOP_COLOR = rl.Color(77, 176, 255, 255)
-VEHICLE_BODY_COLOR = rl.Color(181, 192, 204, 255)
-VEHICLE_TOP_COLOR = rl.Color(224, 231, 239, 255)
-CLOSING_BODY_COLOR = rl.Color(218, 157, 77, 255)
+CAPACITY = 4095
+# Existing onroad instruments use light text. Keep their contrast intact.
+BACKGROUND = rl.Color(18, 20, 22, 255)
+GROUND = rl.Color(31, 33, 35, 255)
+WHITE = rl.Color(255, 255, 255, 255)
+UP = rl.Vector3(0, 1, 0)
+ONE = rl.Vector3(1, 1, 1)
+ORIGIN = rl.Vector3(0, 0, 0)
 
 
-@dataclass
-class VisualTrack:
-  d_rel: float
-  y_rel: float
-  v_rel: float
-  last_seen: float
+class GpuMesh:
+  """Own native heap buffers and one GPU mesh; release them together."""
+  def __init__(self, vertices, colors, dynamic=False):
+    vertices = np.ascontiguousarray(vertices, dtype=np.float32).reshape(-1, 3)
+    colors = np.ascontiguousarray(colors, dtype=np.uint8).reshape(-1, 4)
+    mesh = rl.Mesh()
+    mesh.vertexCount, mesh.triangleCount = len(vertices), len(vertices) // 3
+    mesh.vertices = rl.ffi.cast('float *', rl.mem_alloc(vertices.nbytes))
+    mesh.colors = rl.ffi.cast('unsigned char *', rl.mem_alloc(colors.nbytes))
+    if mesh.vertices == rl.ffi.NULL or mesh.colors == rl.ffi.NULL:
+      rl.unload_mesh(mesh)
+      raise MemoryError('3D scene mesh allocation failed')
+    rl.ffi.memmove(mesh.vertices, rl.ffi.cast('void *', vertices.ctypes.data), vertices.nbytes)
+    rl.ffi.memmove(mesh.colors, rl.ffi.cast('void *', colors.ctypes.data), colors.nbytes)
+    rl.upload_mesh(mesh, dynamic)
+    self.model = rl.load_model_from_mesh(mesh)
+    self.closed = False
+
+  def update(self, vertices, colors, count):
+    rl.update_mesh_buffer(self.model.meshes[0], 0, rl.ffi.cast('void *', vertices.ctypes.data), count * 12, 0)
+    rl.update_mesh_buffer(self.model.meshes[0], 3, rl.ffi.cast('void *', colors.ctypes.data), count * 4, 0)
+    self.model.meshes[0].triangleCount = count // 3
+    self.model.meshes[0].vertexCount = count
+
+  def draw(self, position=ORIGIN, yaw=0.0):
+    if self.model.meshes[0].triangleCount:
+      rl.draw_model_ex(self.model, position, UP, yaw, ONE, WHITE)
+
+  def close(self):
+    if not self.closed:
+      rl.unload_model(self.model)
+      self.closed = True
 
 
-class TeslaRoadRenderer(Widget):
-  """Draw a calm, Tesla-inspired road scene from already-published messages."""
+@lru_cache(maxsize=2)
+def vehicle_mesh(body):
+  vertices, colors = [], []
+  for i in range(24):
+    a, b = i * math.tau / 24, (i + 1) * math.tau / 24
+    vertices.extend(((0,.025,0), (1.2*math.cos(a),.025,2.8*math.sin(a)), (1.2*math.cos(b),.025,2.8*math.sin(b))))
+    colors.extend(((0,0,0,100),(0,0,0,0),(0,0,0,0)))
 
+  def face(points, color):
+    a, b, c = (np.asarray(p, dtype=float) for p in points[:3])
+    normal = np.cross(b - a, c - a)
+    normal /= max(1e-9, float(np.linalg.norm(normal)))
+    light = 0.72 + 0.24 * abs(normal[1]) + 0.04 * normal[0]
+    shade = tuple(int(max(0, min(255, value * light))) for value in color[:3]) + (255,)
+    for i in range(1, len(points) - 1):
+      vertices.extend((points[0], points[i], points[i + 1]))
+      colors.extend((shade,) * 3)
+
+  rings = []
+  for z, width, top in ((-2.4, .73, .66), (-2.18, .93, .85), (-1.35, .98, .98),
+                        (1.42, .98, 1.02), (2.18, .93, .93), (2.4, .78, .75)):
+    rings.append([(x, y, z) for x, y in ((-width*.83,.3), (width*.83,.3), (width,.47),
+                  (width,top-.14), (width*.79,top), (-width*.79,top), (-width,top-.14), (-width,.47))])
+  for front, rear in zip(rings, rings[1:], strict=False):
+    for i in range(8):
+      face((front[i], front[(i+1)%8], rear[(i+1)%8], rear[i]), body)
+  face(tuple(reversed(rings[0])), body)
+  face(rings[-1], body)
+  low = [(-.82,.92,-1.47),(.82,.92,-1.47),(.85,.98,1.76),(-.85,.98,1.76)]
+  high = [(-.66,1.62,-.75),(.66,1.62,-.75),(.7,1.62,1.15),(-.7,1.62,1.15)]
+  face(high, body)
+  for i in range(4):
+    j = (i+1)%4
+    face((low[i], low[j], high[j], high[i]), (40, 55, 68))
+  # Static tail lamps, never inferred brake state from relative velocity.
+  face(((-.7,.49,2.405),(.7,.49,2.405),(.7,.64,2.405),(-.7,.64,2.405)), (70,77,85))
+  for side in (-1, 1):
+    x0, x1 = sorted((side*.52, side*.8))
+    face(((x0,.65,2.405),(x1,.65,2.405),(x1,.73,2.405),(x0,.73,2.405)), (150,35,41))
+    for z in (-1.5, 1.5):
+      for radius, x, color in ((.34, side*.99, (24,27,31)), (.18, side*1.01, (112,121,129))):
+        center = (x,.34,z)
+        ring = [(x,.34+radius*math.cos(i*math.tau/12),z+radius*math.sin(i*math.tau/12)) for i in range(12)]
+        for i in range(12):
+          face((center,ring[i],ring[(i+1)%12]), color)
+  return np.array(vertices, np.float32), np.array(colors, np.uint8)
+
+
+class TeslaRoadRenderer:
   def __init__(self):
-    super().__init__()
-    self._tracks: dict[int, VisualTrack] = {}
+    self.scene = WorldScene()
+    self._meshes = []
+    self._target = None
+    self._target_size = None
+    self._geometry_key = None
+    self._vertices = np.zeros((CAPACITY, 3), dtype=np.float32)
+    self._colors = np.zeros((CAPACITY, 4), dtype=np.uint8)
+    self._count = 0
+    self._camera = rl.Camera3D(rl.Vector3(0, 10.5, 20), rl.Vector3(0, 0, -10), UP, 46,
+                              rl.CameraProjection.CAMERA_PERSPECTIVE)
 
-  @staticmethod
-  def _project(rect: rl.Rectangle, x_m: float, y_m: float) -> rl.Vector2:
-    """Map car-space coordinates into a stable perspective view."""
-    distance = max(0.0, min(MAX_DISTANCE_M, x_m))
-    horizon = rect.y + rect.height * 0.18
-    bottom = rect.y + rect.height * 1.02
-    depth = distance / (distance + 16.0)
-    scale = 480.0 / (distance + 8.0) + 7.0
-    return rl.Vector2(rect.x + rect.width * 0.5 - y_m * scale, bottom - (bottom - horizon) * depth)
-
-  @staticmethod
-  def _scale_for_distance(distance: float) -> float:
-    return 480.0 / (max(0.0, distance) + 8.0) + 7.0
-
-  @staticmethod
-  def _quad(a: rl.Vector2, b: rl.Vector2, c: rl.Vector2, d: rl.Vector2, color: rl.Color) -> None:
-    rl.draw_triangle(a, b, c, color)
-    rl.draw_triangle(a, c, d, color)
-
-  @staticmethod
-  def _blend(start: rl.Color, end: rl.Color, progress: float) -> rl.Color:
-    p = max(0.0, min(1.0, progress))
-    return rl.Color(
-      int(start.r + (end.r - start.r) * p),
-      int(start.g + (end.g - start.g) * p),
-      int(start.b + (end.b - start.b) * p),
-      int(start.a + (end.a - start.a) * p),
-    )
-
-  @staticmethod
-  def _model_points(points_x, points_y) -> list[tuple[float, float]]:
-    points: list[tuple[float, float]] = []
-    for x, y in zip(points_x, points_y, strict=False):
-      x_f, y_f = float(x), float(y)
-      if math.isfinite(x_f) and math.isfinite(y_f) and 0.0 <= x_f <= MAX_DISTANCE_M:
-        points.append((x_f, y_f))
-    return points
-
-  def _draw_background(self, rect: rl.Rectangle) -> None:
-    bands = 12
-    for index in range(bands):
-      top = rect.y + rect.height * index / bands
-      color = self._blend(SCENE_TOP_COLOR, SCENE_BOTTOM_COLOR, index / max(1, bands - 1))
-      rl.draw_rectangle(int(rect.x), int(top), int(rect.width), int(rect.height / bands + 2), color)
-
-  def _draw_surface(self, rect: rl.Rectangle, path: list[tuple[float, float]], left: float, right: float, color: rl.Color) -> None:
-    for (x0, y0), (x1, y1) in zip(path, path[1:], strict=False):
-      self._quad(
-        self._project(rect, x0, y0 + left),
-        self._project(rect, x0, y0 + right),
-        self._project(rect, x1, y1 + right),
-        self._project(rect, x1, y1 + left),
-        color,
-      )
-
-  def _draw_road(self, rect: rl.Rectangle, path: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    if len(path) < 2:
-      path = [(0.0, 0.0), (MAX_DISTANCE_M, 0.0)]
-
-    # The road is a bounded set of car-space quads, not a camera projection.
-    # It stays visually calm on curves and cannot accumulate mesh state.
-    self._draw_surface(rect, path, -ROAD_HALF_WIDTH_M, ROAD_HALF_WIDTH_M, ROAD_SHADOW_COLOR)
-    self._draw_surface(rect, path, -(ROAD_HALF_WIDTH_M - 0.35), ROAD_HALF_WIDTH_M - 0.35, ROAD_COLOR)
-
-    for edge in (-ROAD_HALF_WIDTH_M, ROAD_HALF_WIDTH_M):
-      for (x0, y0), (x1, y1) in zip(path, path[1:], strict=False):
-        p0, p1 = self._project(rect, x0, y0 + edge), self._project(rect, x1, y1 + edge)
-        rl.draw_line_ex(p0, p1, max(2.0, self._scale_for_distance(x0) * 0.055), ROAD_EDGE_COLOR)
-    return path
-
-  def _draw_lane_line(self, rect: rl.Rectangle, line: list[tuple[float, float]], probability: float) -> None:
-    if probability < 0.35 or len(line) < 2:
+  def _initialize(self):
+    if self._meshes:
       return
+    try:
+      for color in ((28,134,246), (181,190,199)):
+        self._meshes.append(GpuMesh(*vehicle_mesh(color)))
+      self._meshes.append(GpuMesh(self._vertices, self._colors, dynamic=True))
+    except Exception:
+      self.close()
+      raise
 
-    for (x0, y0), (x1, y1) in zip(line, line[1:], strict=False):
-      # Fixed distance dashes prevent screen-space flicker as the perspective changes.
-      if int(x0 // 8.0) % 2:
-        continue
-      p0, p1 = self._project(rect, x0, y0), self._project(rect, x1, y1)
-      alpha = int(80 + min(1.0, probability) * 150)
-      rl.draw_line_ex(p0, p1, max(1.6, self._scale_for_distance(x0) * 0.04), rl.Color(LANE_COLOR.r, LANE_COLOR.g, LANE_COLOR.b, alpha))
+  def _triangle(self, a, b, c, color):
+    if self._count + 3 > CAPACITY:
+      raise ValueError('3D scene exceeded fixed geometry budget')
+    self._vertices[self._count:self._count+3] = (a,b,c)
+    self._colors[self._count:self._count+3] = color
+    self._count += 3
 
-  def _draw_path(self, rect: rl.Rectangle, path: list[tuple[float, float]]) -> None:
-    if len(path) < 2:
+  def _ribbon(self, points, half_width, height, color, path=False):
+    if not points:
       return
+    sides = []
+    for i, (x, y) in enumerate(points):
+      before, after = points[max(0,i-1)], points[min(len(points)-1,i+1)]
+      dx, dy = after[0]-before[0], after[1]-before[1]
+      length = max(1e-6, math.hypot(dx,dy))
+      nx, ny = -dy/length, dx/length
+      width = self.scene.path_half_width(x,y) if path else half_width
+      sides.append(((y-ny*width, height, -(x-nx*width)), (y+ny*width, height, -(x+nx*width))))
+    for (a,b),(c,d) in zip(sides,sides[1:], strict=False):
+      self._triangle(a,b,c,color)
+      self._triangle(b,d,c,color)
 
-    engaged = ui_state.status == UIStatus.ENGAGED
-    fill = PATH_FILL_ENGAGED if engaged else PATH_FILL_DISENGAGED
-    edge = PATH_EDGE_ENGAGED if engaged else PATH_EDGE_DISENGAGED
-    self._draw_surface(rect, path, -PATH_HALF_WIDTH_M, PATH_HALF_WIDTH_M, fill)
+  def _update_geometry(self, engaged):
+    key = (self.scene.revision, engaged)
+    if key == self._geometry_key:
+      return
+    self._count = 0
+    for edge in self.scene.edges:
+      self._ribbon(edge,.06,.008,(87,93,99,255))
+    for lane in self.scene.lanes:
+      self._ribbon(lane,.045,.014,(246,247,249,255))
+    fill = (40,149,246,255) if engaged else (166,179,189,255)
+    self._ribbon(self.scene.path,.85,.018,fill,path=True)
+    self._meshes[2].update(self._vertices,self._colors,self._count)
+    self._geometry_key = key
 
-    for path_edge in (-PATH_HALF_WIDTH_M, PATH_HALF_WIDTH_M):
-      for (x0, y0), (x1, y1) in zip(path, path[1:], strict=False):
-        p0 = self._project(rect, x0, y0 + path_edge)
-        p1 = self._project(rect, x1, y1 + path_edge)
-        rl.draw_line_ex(p0, p1, max(2.2, self._scale_for_distance(x0) * 0.065), edge)
+  def render(self, rect, sm, started_frame, engaged, now=None, parent_target=None):
+    now = time.monotonic() if now is None else now
+    self.scene.update(sm, started_frame, now)
+    # One color/depth target reused every frame, bounded independently of DPI.
+    scale = min(1.0, 1440.0/max(1,rect.width), 810.0/max(1,rect.height))
+    size = (max(2,int(rect.width*scale)), max(2,int(rect.height*scale)))
+    # Raylib texture modes are not a stack. Preserve the app's transform and
+    # explicitly rebind its scaled/burn-in framebuffer before drawing the HUD.
+    rl.rl_draw_render_batch_active()
+    parent_modelview = rl.rl_get_matrix_modelview()
+    parent_projection = rl.rl_get_matrix_projection()
+    rl.rl_push_matrix()
+    rl.rl_load_identity()
+    rl.end_scissor_mode()
+    try:
+      self._initialize()
+      self._update_geometry(engaged)
+      if size != self._target_size:
+        if self._target is not None:
+          rl.unload_render_texture(self._target)
+        self._target = None
+        self._target_size = None
+        target = rl.load_render_texture(*size)
+        if not target.id:
+          raise RuntimeError('3D scene render target unavailable')
+        self._target, self._target_size = target, size
+        rl.set_texture_filter(target.texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+      rl.begin_texture_mode(self._target)
+      rl.clear_background(BACKGROUND)
+      rl.begin_mode_3d(self._camera)
+      rl.rl_disable_backface_culling()
+      try:
+        rl.draw_plane(rl.Vector3(0,-.02,-40), rl.Vector2(200,260), GROUND)
+        self._meshes[2].draw()
+        for obj in self.scene.objects:
+          position = rl.Vector3(obj.right,0,-obj.forward-2.4)
+          if obj.vehicle:
+            self._meshes[1].draw(position)
+          else:
+            rl.draw_cube_wires(rl.Vector3(obj.right,.2,-obj.forward),.55,.4,.55,rl.Color(109,122,136,255))
+        self._meshes[0].draw(rl.Vector3(0,0,2.4))
+      finally:
+        rl.rl_enable_backface_culling()
+        rl.end_mode_3d()
+    finally:
+      rl.end_texture_mode()
+      if parent_target is not None:
+        rl.begin_texture_mode(parent_target)
+      # Texture mode selected MODELVIEW rather than the saved transform stack.
+      # Re-select that stack before restoring our caller's transform.
+      rl.rl_push_matrix()
+      rl.rl_pop_matrix()
+      rl.rl_pop_matrix()
+      rl.rl_set_matrix_modelview(parent_modelview)
+      rl.rl_set_matrix_projection(parent_projection)
+      rl.begin_scissor_mode(int(rect.x),int(rect.y),int(rect.width),int(rect.height))
+    rl.draw_texture_pro(self._target.texture, rl.Rectangle(0,0,size[0],-size[1]), rect, rl.Vector2(0,0),0,WHITE)
 
-  @staticmethod
-  def _vehicle_points(center: rl.Vector2, width: float, height: float) -> tuple[rl.Vector2, ...]:
-    bottom = center.y + height * 0.24
-    top = center.y - height * 0.76
-    return (
-      rl.Vector2(center.x - width * 0.56, bottom),
-      rl.Vector2(center.x + width * 0.56, bottom),
-      rl.Vector2(center.x + width * 0.42, top + height * 0.22),
-      rl.Vector2(center.x + width * 0.23, top),
-      rl.Vector2(center.x - width * 0.23, top),
-      rl.Vector2(center.x - width * 0.42, top + height * 0.22),
-    )
-
-  def _draw_vehicle_body(self, center: rl.Vector2, width: float, height: float, body_color: rl.Color, top_color: rl.Color, braking: bool) -> None:
-    p = self._vehicle_points(center, width, height)
-    shadow = rl.Rectangle(center.x - width * 0.64, center.y - height * 0.08, width * 1.28, height * 0.74)
-    rl.draw_rectangle_rounded(shadow, 0.45, 8, rl.Color(0, 0, 0, 85))
-
-    self._quad(p[0], p[1], p[2], p[5], body_color)
-    self._quad(p[5], p[2], p[3], p[4], top_color)
-    windshield = rl.Color(38, 57, 78, 255)
-    self._quad(
-      rl.Vector2(p[5].x + width * 0.10, p[5].y - height * 0.03),
-      rl.Vector2(p[2].x - width * 0.10, p[2].y - height * 0.03),
-      rl.Vector2(p[3].x - width * 0.06, p[3].y + height * 0.12),
-      rl.Vector2(p[4].x + width * 0.06, p[4].y + height * 0.12),
-      windshield,
-    )
-    outline = rl.Color(10, 16, 23, 200)
-    for start, end in zip(p, (*p[1:], p[0]), strict=False):
-      rl.draw_line_ex(start, end, max(1.0, width * 0.045), outline)
-
-    light = rl.Color(255, 70, 77, 255) if braking else rl.Color(220, 232, 245, 240)
-    lamp_y = p[0].y - height * 0.13
-    lamp_w = max(2.0, width * 0.16)
-    lamp_h = max(2.0, height * 0.055)
-    rl.draw_rectangle(int(center.x - width * 0.42), int(lamp_y), int(lamp_w), int(lamp_h), light)
-    rl.draw_rectangle(int(center.x + width * 0.26), int(lamp_y), int(lamp_w), int(lamp_h), light)
-
-  def _update_tracks(self) -> list[VisualTrack]:
-    now = time.monotonic()
-    sm = ui_state.sm
-    raw_tracks = []
-    if sm.valid.get("liveTracks", False):
-      raw_tracks = list(sm["liveTracks"].points)
-
-    # Radar can be absent on some supported cars. The control leads remain a
-    # truthful visual fallback without pretending to discover extra objects.
-    if not raw_tracks and sm.valid.get("radarState", False):
-      radar_state = sm["radarState"]
-      raw_tracks = [lead for lead in (radar_state.leadOne, radar_state.leadTwo) if lead.status]
-
-    seen: set[int] = set()
-    for index, track in enumerate(raw_tracks[:MAX_RENDERED_TRACKS]):
-      d_rel = float(getattr(track, "dRel", float("nan")))
-      y_rel = float(getattr(track, "yRel", float("nan")))
-      v_rel = float(getattr(track, "vRel", 0.0))
-      if not (math.isfinite(d_rel) and math.isfinite(y_rel) and math.isfinite(v_rel)):
-        continue
-      if not 1.5 <= d_rel <= MAX_DISTANCE_M or abs(y_rel) > ROAD_HALF_WIDTH_M * 2.0:
-        continue
-
-      track_id = int(getattr(track, "trackId", -(index + 1)))
-      previous = self._tracks.get(track_id)
-      if previous is None:
-        visual = VisualTrack(d_rel, y_rel, v_rel, now)
-      else:
-        # Smooth the display position only; controls still consume untouched messages.
-        blend = 0.34
-        visual = VisualTrack(
-          previous.d_rel + (d_rel - previous.d_rel) * blend,
-          previous.y_rel + (y_rel - previous.y_rel) * blend,
-          previous.v_rel + (v_rel - previous.v_rel) * blend,
-          now,
-        )
-      self._tracks[track_id] = visual
-      seen.add(track_id)
-
-    for track_id, track in tuple(self._tracks.items()):
-      if track_id not in seen and now - track.last_seen > TRACK_STALE_SECONDS:
-        del self._tracks[track_id]
-
-    # Radar interfaces can legitimately recycle or churn IDs. Keep a hard
-    # display bound in addition to stale pruning so the UI cannot retain an
-    # unbounded history during a noisy drive.
-    if len(self._tracks) > MAX_RENDERED_TRACKS:
-      oldest_first = sorted(self._tracks.items(), key=lambda item: (item[1].last_seen, -item[1].d_rel))
-      for track_id, _ in oldest_first[:len(self._tracks) - MAX_RENDERED_TRACKS]:
-        del self._tracks[track_id]
-
-    return sorted(self._tracks.values(), key=lambda track: track.d_rel)[:MAX_RENDERED_TRACKS]
-
-  def _draw_vehicle(self, rect: rl.Rectangle, track: VisualTrack) -> None:
-    center = self._project(rect, track.d_rel, track.y_rel)
-    scale = self._scale_for_distance(track.d_rel)
-    width = max(10.0, min(70.0, scale * 1.8))
-    height = max(16.0, min(105.0, scale * 4.1))
-    braking = track.v_rel < -2.5
-    body = CLOSING_BODY_COLOR if braking else VEHICLE_BODY_COLOR
-    self._draw_vehicle_body(center, width, height, body, VEHICLE_TOP_COLOR, braking)
-
-  def _draw_ego(self, rect: rl.Rectangle) -> None:
-    center = self._project(rect, 0.0, 0.0)
-    width, height = min(98.0, rect.width * 0.11), min(178.0, rect.height * 0.19)
-    self._draw_vehicle_body(center, width, height, EGO_BODY_COLOR, EGO_TOP_COLOR, False)
-
-  def _render(self, rect: rl.Rectangle):
-    self._draw_background(rect)
-
-    sm = ui_state.sm
-    path: list[tuple[float, float]] = []
-    lane_lines: list[tuple[list[tuple[float, float]], float]] = []
-    if sm.valid.get("modelV2", False):
-      model = sm["modelV2"]
-      path = self._model_points(model.position.x, model.position.y)
-      probabilities = list(model.laneLineProbs)
-      for index in (1, 2):
-        if index < len(model.laneLines):
-          probability = float(probabilities[index]) if index < len(probabilities) else 0.0
-          lane = model.laneLines[index]
-          lane_lines.append((self._model_points(lane.x, lane.y), probability))
-
-    path = self._draw_road(rect, path)
-    for line, probability in lane_lines:
-      self._draw_lane_line(rect, line, probability)
-    self._draw_path(rect, path)
-    for track in reversed(self._update_tracks()):
-      self._draw_vehicle(rect, track)
-    self._draw_ego(rect)
+  def close(self):
+    for mesh in self._meshes:
+      mesh.close()
+    self._meshes.clear()
+    if self._target is not None:
+      rl.unload_render_texture(self._target)
+      self._target = None
+    self._target_size = None
+    self._geometry_key = None
+    self.scene.reset()

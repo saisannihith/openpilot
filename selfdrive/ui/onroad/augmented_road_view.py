@@ -17,6 +17,7 @@ from openpilot.selfdrive.ui.lib.starpilot_status import get_screen_edge_color
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.common.transformations.camera import DEVICE_CAMERAS, DeviceCameraConfig, view_frame_from_device_frame
 from openpilot.common.transformations.orientation import rot_from_euler
+from openpilot.common.swaglog import cloudlog
 
 OpState = log.SelfdriveState.OpenpilotState
 CALIBRATED = log.LiveCalibrationData.Status.calibrated
@@ -68,6 +69,8 @@ class AugmentedRoadView(CameraView):
 
     self.model_renderer = ModelRenderer()
     self.tesla_road_renderer = TeslaRoadRenderer()
+    self._world_failed = False
+    self._using_world = False
     self._hud_renderer = HudRenderer()
     self.alert_renderer = AlertRenderer()
     self.driver_state_renderer = DriverStateRenderer()
@@ -84,8 +87,15 @@ class AugmentedRoadView(CameraView):
     camera_view = self._camera_view()
     self._camera_view_none = camera_view == CAMERA_VIEW_NONE
     in_reverse = self._is_in_reverse()
-    reverse_camera_enabled = ui_state.ui_params.get_bool("DriverCamera") and in_reverse
-    self._tesla_road_view = camera_view == CAMERA_VIEW_TESLA_ROAD and not reverse_camera_enabled
+    reverse_camera_enabled = in_reverse and ui_state.ui_params.get_bool("DriverCamera")
+    self._tesla_road_view = camera_view == CAMERA_VIEW_TESLA_ROAD and not reverse_camera_enabled and not self._world_failed
+    if self._tesla_road_view != self._using_world:
+      self._reset_camera_connection()
+      if not self._tesla_road_view:
+        self.tesla_road_renderer.close()
+      self._using_world = self._tesla_road_view
+    if camera_view == CAMERA_VIEW_TESLA_ROAD and not self._tesla_road_view:
+      camera_view = CAMERA_VIEW_STANDARD
     self._switch_stream_if_needed(ui_state.sm, camera_view)
     self._driver_stream_active = self.stream_type == DRIVER_CAM
     self._draw_road_overlays = not in_reverse and not self._driver_stream_active and not (self._camera_view_none or self._tesla_road_view)
@@ -115,7 +125,14 @@ class AugmentedRoadView(CameraView):
 
     # Render the base camera view
     if self._tesla_road_view:
-      self.tesla_road_renderer.render(self._content_rect)
+      try:
+        self.tesla_road_renderer.render(self._content_rect, ui_state.sm, ui_state.started_frame,
+                                        ui_state.status == UIStatus.ENGAGED, parent_target=gui_app._render_texture)
+      except Exception:
+        cloudlog.exception("World view failed; returning to camera")
+        self._world_failed = True
+        self.tesla_road_renderer.close()
+        super()._render(self._content_rect)
     elif self._camera_view_none:
       rl.draw_rectangle_rec(self._content_rect, rl.BLACK)
     else:
@@ -147,6 +164,20 @@ class AugmentedRoadView(CameraView):
 
   def _render_extra_road_overlays(self, rect: rl.Rectangle) -> None:
     """Render subclass road overlays inside the content scissor, above the model and below the HUD."""
+
+  def _offroad_transition(self):
+    super()._offroad_transition()
+    renderer = getattr(self, "tesla_road_renderer", None)
+    if renderer is not None:
+      renderer.close()
+    self._using_world = False
+    self._world_failed = False
+
+  def close(self):
+    renderer = getattr(self, "tesla_road_renderer", None)
+    if renderer is not None:
+      renderer.close()
+    super().close()
 
   def _handle_mouse_press(self, _):
     if not self._hud_renderer.user_interacting() and self._click_callback is not None:
@@ -211,14 +242,15 @@ class AugmentedRoadView(CameraView):
     return camera_view
 
   def _switch_stream_if_needed(self, sm, camera_view: int):
-    reverse_driver_camera = self._update_reverse_driver_camera_state()
-    if camera_view in (CAMERA_VIEW_NONE, CAMERA_VIEW_TESLA_ROAD) and not reverse_driver_camera:
+    if camera_view in (CAMERA_VIEW_NONE, CAMERA_VIEW_TESLA_ROAD):
       self._cancel_pending_switch()
+      self._reverse_driver_camera_frames = 0
+      self._reverse_driver_camera_active = False
       return
 
     reentry_selection_pending = (getattr(self, "_onroad_reentry_pending", False) and
                                  not getattr(self, "_reentry_stream_selected", False))
-    if reverse_driver_camera:
+    if self._update_reverse_driver_camera_state():
       target = DRIVER_CAM
     else:
       if reentry_selection_pending or not self.available_streams:
