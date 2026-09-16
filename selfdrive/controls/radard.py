@@ -63,8 +63,57 @@ ADJACENT_STOP_REST_FRAMES = 15
 ADJACENT_STOP_MIN_Y = 1.8         # m — inside this is our own lane
 ADJACENT_STOP_MAX_Y = 7.5         # m — beyond this is roadside, not an adjacent lane
 ADJACENT_STOP_MAX_D = 110.0       # m
+CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN = 0xC4100
+CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MAX = 0xC41FF
+CARNIVAL_4TH_GEN_CONFIRMATION_DIST_SCALE = 0.22
+CARNIVAL_4TH_GEN_CONFIRMATION_DIST_FLOOR = 4.0
+CARNIVAL_4TH_GEN_CONFIRMATION_Y_STD_SCALE = 1.5
+CARNIVAL_4TH_GEN_CONFIRMATION_Y_FLOOR = 1.2
+CARNIVAL_4TH_GEN_CONFIRMATION_V_STD_SCALE = 3.0
+CARNIVAL_4TH_GEN_CONFIRMATION_V_FLOOR = 4.0
+CARNIVAL_4TH_GEN_CONFIRMATION_NIS_GATE = 11.345
+CARNIVAL_4TH_GEN_CONFIRMATION_PREFERRED_NIS_GATE = 14.156
+CARNIVAL_4TH_GEN_CONFIRMATION_SWITCH_SCORE_MARGIN = 3.841
+CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_D_STD = 0.25
+CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_Y_STD = 0.25
+CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_V_STD = 0.35
+CARNIVAL_4TH_GEN_REACQUIRE_MIN_FRAMES = 8
+CARNIVAL_4TH_GEN_REACQUIRE_MAX_DISTANCE = 25.0
+CARNIVAL_4TH_GEN_REACQUIRE_PATH_OFFSET = 1.1
+CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_FRAMES = 20
+CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_EGO = 3.0
+CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_DISTANCE = 1.5
+CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_DISTANCE = 18.0
+CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_OFFSET = 0.65
+CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_ABS_Y = 1.25
+CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_MIN_FRAMES = 8
+CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_V_LEAD = -1.5
+CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_LEAD = 6.0
+CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_FRAMES = 8
+CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_MAX_RESIDUAL = 1.5
+CARNIVAL_4TH_GEN_VELOCITY_HISTORY_FRAMES = 32
+CARNIVAL_4TH_GEN_VELOCITY_WINDOW = 0.60
+CARNIVAL_4TH_GEN_VELOCITY_MIN_SPAN = 0.40
+CARNIVAL_4TH_GEN_VELOCITY_MIN_POINTS = 8
+CARNIVAL_4TH_GEN_VELOCITY_MAX_RMSE = 0.15
+CARNIVAL_4TH_GEN_VELOCITY_MIN_TRACK_FRAMES = 20
+CARNIVAL_4TH_GEN_VELOCITY_MIN_SELECTED_FRAMES = 12
+CARNIVAL_4TH_GEN_VELOCITY_MIN_MODEL_PROB = 0.75
+CARNIVAL_4TH_GEN_VELOCITY_RAW_DELAY = 0.55
+CARNIVAL_4TH_GEN_VELOCITY_MAX_DISAGREEMENT = 0.75
+CARNIVAL_4TH_GEN_VELOCITY_MIN_RESIDUAL = 0.20
+CARNIVAL_4TH_GEN_VELOCITY_GAIN = 0.10
+CARNIVAL_4TH_GEN_VELOCITY_MAX_CORRECTION = 0.10
+
+
+def is_carnival_confirmation_track(identifier: int) -> bool:
+  return CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MIN <= identifier <= CARNIVAL_4TH_GEN_CONFIRMATION_TRACK_ID_MAX
 ADJACENT_STOP_QUEUE_GAP_M = 5.0   # m — anything stopped beyond the furthest qualifier means
                                   # the bar is past it too, so the hint would stop us short
+
+
+def is_carnival_r0100_track(identifier: int) -> bool:
+  return is_carnival_confirmation_track(identifier)
 
 
 class KalmanParams:
@@ -89,6 +138,7 @@ class KalmanParams:
 class Track:
   def __init__(self, identifier: int, v_lead: float, kalman_params: KalmanParams):
     self.identifier = identifier
+    self.carnivalR0100 = is_carnival_r0100_track(identifier)
     self.cnt = 0
     self.aLeadTau = FirstOrderFilter(_LEAD_ACCEL_TAU, 0.45, DT_MDL)
     self.K_A = kalman_params.A
@@ -102,9 +152,13 @@ class Track:
     self.moving_frames = 0
     self.rest_frames = 0
     self.seen_moving = False
+    self.radar_only_path_frames = 0
+    self.radar_only_distance_history = deque(maxlen=CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_FRAMES)
+    self.carnival_distance_history = deque(maxlen=CARNIVAL_4TH_GEN_VELOCITY_HISTORY_FRAMES)
+    self.carnival_history_time = -DT_MDL
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: bool,
-             measurement_update: bool | None = None):
+             measurement_update: bool | None = None, measurement_time: float | None = None):
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
@@ -119,6 +173,20 @@ class Track:
       # Preserve the historical Track.update behaviour for direct/legacy callers. The radar source
       # adapter supplies an explicit False only for a duplicate Civic Bosch payload.
       measurement_update = True
+    if measurement_update:
+      self.radar_only_distance_history.append(d_rel)
+      if self.carnivalR0100:
+        if measurement_time is None:
+          measurement_time = self.carnival_history_time + DT_MDL
+        if self.carnival_distance_history:
+          previous_time, previous_distance = self.carnival_distance_history[-1]
+          dt = measurement_time - previous_time
+          continuous = (0.0 < dt <= 0.20 and
+                        abs(d_rel - previous_distance) <= max(1.5, 60.0 * dt))
+          if not continuous:
+            self.carnival_distance_history.clear()
+        self.carnival_distance_history.append((measurement_time, d_rel))
+        self.carnival_history_time = measurement_time
 
     # computed velocity and accelerations
     if measurement_update and self.cnt > 0:
@@ -168,6 +236,9 @@ class Track:
     }
 
   def potential_adjacent_lead(self, left: bool, standstill: bool, model_data: capnp._DynamicStructReader):
+    if self.carnivalR0100:
+      return False
+
     if standstill or self.vLead < 1 or self.leadTrackID == self.identifier:
       return False
 
@@ -185,7 +256,7 @@ class Track:
     y == -yRel, laneLines[1] left boundary and [2] right), plus an outer bound so
     roadside returns past the neighbouring lane don't qualify.
     """
-    if not (self.seen_moving and self.rest_frames >= ADJACENT_STOP_REST_FRAMES):
+    if self.carnivalR0100 or not (self.seen_moving and self.rest_frames >= ADJACENT_STOP_REST_FRAMES):
       return False
 
     if self.leadTrackID == self.identifier:
@@ -206,7 +277,12 @@ class Track:
     right_lane = np.interp(self.dRel, model_data.laneLines[2].x, model_data.laneLines[2].y)
     return bool(model_y < left_lane or model_y > right_lane)
 
-  def potential_low_speed_lead(self, v_ego: float):
+  def potential_low_speed_lead(self, v_ego: float, model_data: capnp._DynamicStructReader | None = None,
+                               previously_selected: bool = False,
+                               model_path: tuple[list[float], list[float]] | None = None):
+    if self.carnivalR0100:
+      return carnival_low_speed_radar_lead_sane(self, v_ego, model_data, previously_selected, model_path)
+
     # stop for stuff in front of you and low speed, even without model confirmation
     # Radar points closer than 0.75, are almost always glitches on toyota radars
     return abs(self.yRel) < 1.0 and (v_ego < V_EGO_STATIONARY) and (0.75 < self.dRel < 25)
@@ -245,6 +321,53 @@ def g90_low_speed_radar_lead_sane(track: Track, v_ego: float) -> bool:
           abs(track.yRel) < G90_RADAR_LOW_SPEED_MAX_Y)
 
 
+def carnival_low_speed_radar_lead_sane(track: Track, v_ego: float, model_data: capnp._DynamicStructReader | None,
+                                       previously_selected: bool,
+                                       model_path: tuple[list[float], list[float]] | None = None) -> bool:
+  if model_data is None or not track.measured:
+    track.radar_only_path_frames = 0
+    return False
+
+  if model_path is None:
+    position = getattr(model_data, "position", None)
+    path_x = list(getattr(position, "x", []))
+    path_y = list(getattr(position, "y", []))
+  else:
+    path_x, path_y = model_path
+  if len(path_x) < 2 or len(path_x) != len(path_y):
+    track.radar_only_path_frames = 0
+    return False
+
+  object_x = track.dRel + RADAR_TO_CAMERA
+  if object_x < path_x[0] or object_x > path_x[-1]:
+    track.radar_only_path_frames = 0
+    return False
+  path_offset = abs(-track.yRel - float(np.interp(object_x, path_x, path_y)))
+  if len(track.radar_only_distance_history) < CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_FRAMES:
+    track.radar_only_path_frames = 0
+    return False
+  observed_v_rel = ((track.radar_only_distance_history[-1] - track.radar_only_distance_history[0]) /
+                    ((len(track.radar_only_distance_history) - 1) * DT_MDL))
+  distance_rate_sane = abs(observed_v_rel - track.vRel) <= CARNIVAL_4TH_GEN_RADAR_ONLY_DISTANCE_RATE_MAX_RESIDUAL
+
+  if previously_selected:
+    track.radar_only_path_frames = 0
+    return (track.cnt >= CARNIVAL_4TH_GEN_REACQUIRE_MIN_FRAMES and
+            v_ego < V_EGO_STATIONARY and
+            CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_DISTANCE < track.dRel < CARNIVAL_4TH_GEN_REACQUIRE_MAX_DISTANCE and
+            path_offset < CARNIVAL_4TH_GEN_REACQUIRE_PATH_OFFSET and
+            distance_rate_sane)
+
+  path_aligned = (track.cnt >= CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_FRAMES and
+                  v_ego < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_EGO and
+                  CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_DISTANCE < track.dRel < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_DISTANCE and
+                  abs(track.yRel) < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_ABS_Y and
+                  path_offset < CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_OFFSET and
+                  CARNIVAL_4TH_GEN_RADAR_ONLY_MIN_V_LEAD < track.vLead < CARNIVAL_4TH_GEN_RADAR_ONLY_MAX_V_LEAD)
+  track.radar_only_path_frames = track.radar_only_path_frames + 1 if path_aligned else 0
+  return track.radar_only_path_frames >= CARNIVAL_4TH_GEN_RADAR_ONLY_PATH_MIN_FRAMES and distance_rate_sane
+
+
 def honda_bosch_a_low_speed_radar_lead_sane(track: Track, v_ego: float) -> bool:
   return track.cnt >= HONDA_BOSCH_A_LOW_SPEED_MIN_COUNT and track.potential_low_speed_lead(v_ego)
 
@@ -267,9 +390,122 @@ def track_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: 
   return dist_sane and vel_sane and lat_sane
 
 
+def carnival_confirmation_matches_vision(track: Track, lead: capnp._DynamicStructReader, v_ego: float,
+                                         model_v_ego: float | None = None) -> bool:
+  if not getattr(track, "carnivalR0100", False) or track.cnt < 1:
+    return False
+
+  offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
+  dist_sane = abs(track.dRel - offset_vision_dist) < max(abs(offset_vision_dist) * CARNIVAL_4TH_GEN_CONFIRMATION_DIST_SCALE,
+                                                         CARNIVAL_4TH_GEN_CONFIRMATION_DIST_FLOOR)
+  lat_sane = abs(track.yRel + lead.y[0]) < max(CARNIVAL_4TH_GEN_CONFIRMATION_Y_FLOOR,
+                                               CARNIVAL_4TH_GEN_CONFIRMATION_Y_STD_SCALE * max(float(lead.yStd[0]), 0.2))
+  association_v_ego = v_ego if model_v_ego is None else model_v_ego
+  velocity_residual = abs(track.vRel - (lead.v[0] - association_v_ego))
+  moving_target = track.vRel + v_ego > 3.0
+  vel_sane = moving_target or velocity_residual < max(
+    CARNIVAL_4TH_GEN_CONFIRMATION_V_FLOOR,
+    CARNIVAL_4TH_GEN_CONFIRMATION_V_STD_SCALE * max(float(lead.vStd[0]), 0.5),
+  )
+  return dist_sane and lat_sane and vel_sane and track.vRel + v_ego > -2.0
+
+
+def carnival_confirmation_innovation_score(track: Track, lead: capnp._DynamicStructReader,
+                                            model_v_ego: float) -> float:
+  if not getattr(track, "carnivalR0100", False) or track.cnt < 1:
+    return math.inf
+  try:
+    moving_target = float(track.vRel) + float(model_v_ego) > 3.0
+    residual = np.asarray([
+      float(track.dRel) - (float(lead.x[0]) - RADAR_TO_CAMERA),
+      float(track.yRel) + float(lead.y[0]),
+      0.0 if moving_target else float(track.vRel) - (float(lead.v[0]) - float(model_v_ego)),
+    ])
+    model_std = np.asarray([
+      np.clip(float(lead.xStd[0]), 0.75, 6.0),
+      np.clip(float(lead.yStd[0]), 0.25, 1.5),
+      np.clip(float(lead.vStd[0]), 0.5, 3.0),
+    ])
+    radar_std = np.asarray([
+      CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_D_STD,
+      CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_Y_STD,
+      CARNIVAL_4TH_GEN_CONFIRMATION_RADAR_V_STD,
+    ])
+    if not np.isfinite(residual).all() or not np.isfinite(model_std).all():
+      return math.inf
+    return float(np.sum(residual ** 2 / (model_std ** 2 + radar_std ** 2)))
+  except (AttributeError, IndexError, TypeError, ValueError):
+    return math.inf
+
+
+def carnival_trailing_relative_velocity(track: Track, model_a_rel: float) -> float | None:
+  if not getattr(track, "carnivalR0100", False) or len(track.carnival_distance_history) < CARNIVAL_4TH_GEN_VELOCITY_MIN_POINTS:
+    return None
+  end_time = track.carnival_distance_history[-1][0]
+  observations = [(time_s, distance) for time_s, distance in track.carnival_distance_history
+                  if time_s >= end_time - CARNIVAL_4TH_GEN_VELOCITY_WINDOW]
+  if (len(observations) < CARNIVAL_4TH_GEN_VELOCITY_MIN_POINTS or
+      observations[-1][0] - observations[0][0] < CARNIVAL_4TH_GEN_VELOCITY_MIN_SPAN):
+    return None
+  count = len(observations)
+  mean_time = sum(item[0] for item in observations) / count
+  mean_distance = sum(item[1] for item in observations) / count
+  centered_xx = sum((item[0] - mean_time) ** 2 for item in observations)
+  if centered_xx <= 1e-9:
+    return None
+  slope = sum((item[0] - mean_time) * (item[1] - mean_distance) for item in observations) / centered_xx
+  residual_rmse = math.sqrt(sum(
+    (distance - (mean_distance + slope * (time_s - mean_time))) ** 2
+    for time_s, distance in observations
+  ) / count)
+  if not math.isfinite(slope) or residual_rmse > CARNIVAL_4TH_GEN_VELOCITY_MAX_RMSE:
+    return None
+  return slope + model_a_rel * (end_time - mean_time)
+
+
+def carnival_model_first_velocity(track: Track, model_v_rel: float, model_a_rel: float,
+                                  model_prob: float, selected_frames: int,
+                                  preferred_track_id: int) -> float:
+  if (track.identifier != preferred_track_id or track.cnt < CARNIVAL_4TH_GEN_VELOCITY_MIN_TRACK_FRAMES or
+      selected_frames < CARNIVAL_4TH_GEN_VELOCITY_MIN_SELECTED_FRAMES or
+      model_prob < CARNIVAL_4TH_GEN_VELOCITY_MIN_MODEL_PROB):
+    return model_v_rel
+  trailing_v_rel = carnival_trailing_relative_velocity(track, model_a_rel)
+  if trailing_v_rel is None:
+    return model_v_rel
+  raw_current_v_rel = track.vRel + model_a_rel * CARNIVAL_4TH_GEN_VELOCITY_RAW_DELAY
+  if (not math.isfinite(raw_current_v_rel) or
+      abs(raw_current_v_rel - trailing_v_rel) > CARNIVAL_4TH_GEN_VELOCITY_MAX_DISAGREEMENT):
+    return model_v_rel
+  residual = trailing_v_rel - model_v_rel
+  if abs(residual) < CARNIVAL_4TH_GEN_VELOCITY_MIN_RESIDUAL:
+    return model_v_rel
+  correction = float(np.clip(CARNIVAL_4TH_GEN_VELOCITY_GAIN * residual,
+                             -CARNIVAL_4TH_GEN_VELOCITY_MAX_CORRECTION,
+                             CARNIVAL_4TH_GEN_VELOCITY_MAX_CORRECTION))
+  return model_v_rel + correction
+
+
+def get_RadarState_from_carnival_confirmation(track: Track, lead_msg: capnp._DynamicStructReader,
+                                              v_ego: float, model_v_ego: float, model_prob: float,
+                                              model_a_ego: float = 0.0, selected_frames: int = 0,
+                                              preferred_track_id: int = -1):
+  model_v_rel = float(lead_msg.v[0] - model_v_ego)
+  model_a_rel = float(lead_msg.a[0] - model_a_ego)
+  model_v_rel = carnival_model_first_velocity(track, model_v_rel, model_a_rel, float(lead_msg.prob),
+                                              selected_frames, preferred_track_id)
+  v_lead = float(v_ego + model_v_rel)
+  return {
+    "dRel": float(track.dRel), "yRel": float(track.yRel), "vRel": model_v_rel,
+    "vLead": v_lead, "vLeadK": v_lead, "aLeadK": float(lead_msg.a[0]), "aLeadTau": 0.3,
+    "status": True, "fcw": track.is_potential_fcw(model_prob), "modelProb": model_prob,
+    "radar": True, "radarTrackId": track.identifier,
+  }
+
+
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, model_data: capnp._DynamicStructReader, tracks: dict[int, Track],
                           starpilot_toggles: SimpleNamespace, g90_radar_filter: bool = False,
-                          preferred_track_id: int = -1):
+                          preferred_track_id: int = -1, model_v_ego: float | None = None):
   if model_data.meta.laneChangeState == LaneChangeState.laneChangeStarting and getattr(starpilot_toggles, "human_lane_changes", False):
     direction = model_data.meta.laneChangeDirection
     if direction == LaneChangeDirection.left:
@@ -280,6 +516,29 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, model_
   if g90_radar_filter:
     tracks = {k: v for k, v in tracks.items() if g90_radar_lead_lateral_sane(v)}
 
+  if not tracks:
+    return None
+
+  association_v_ego = v_ego if model_v_ego is None else model_v_ego
+  confirmation_candidates = []
+  for identifier, track in tracks.items():
+    if not carnival_confirmation_matches_vision(track, lead, v_ego, association_v_ego):
+      continue
+    score = carnival_confirmation_innovation_score(track, lead, association_v_ego)
+    gate = (CARNIVAL_4TH_GEN_CONFIRMATION_PREFERRED_NIS_GATE
+            if identifier == preferred_track_id and track.cnt >= 3
+            else CARNIVAL_4TH_GEN_CONFIRMATION_NIS_GATE)
+    if score <= gate and track.vRel + v_ego > -2.0:
+      confirmation_candidates.append((score, identifier, track))
+  if confirmation_candidates:
+    best_score, _, best_track = min(confirmation_candidates, key=lambda candidate: candidate[0])
+    preferred = next((candidate for candidate in confirmation_candidates if candidate[1] == preferred_track_id), None)
+    if preferred is not None and preferred[0] <= best_score + CARNIVAL_4TH_GEN_CONFIRMATION_SWITCH_SCORE_MARGIN:
+      return preferred[2]
+    return best_track
+
+  tracks = {identifier: track for identifier, track in tracks.items()
+            if not getattr(track, "carnivalR0100", False)}
   if not tracks:
     return None
 
@@ -329,20 +588,24 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
              model_v_ego: float, model_data: capnp._DynamicStructReader, standstill: bool,
              starpilot_plan: capnp._DynamicStructReader, starpilot_toggles: SimpleNamespace,
              low_speed_override: bool = True, g90_radar_filter: bool = False, lead_prob: float | None = None,
-             preferred_track_id: int = -1, honda_bosch_a_radar: bool = False) -> dict[str, Any]:
+             preferred_track_id: int = -1, honda_bosch_a_radar: bool = False,
+             model_a_ego: float = 0.0, selected_frames: int = 0) -> dict[str, Any]:
   lead_detection_probability = float(getattr(starpilot_toggles, "lead_detection_probability", 0.35))
   filtered_lead_prob = float(lead_msg.prob if lead_prob is None else lead_prob)
 
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and filtered_lead_prob > lead_detection_probability:
     track = match_vision_to_track(v_ego, lead_msg, model_data, tracks, starpilot_toggles, g90_radar_filter,
-                                  preferred_track_id=preferred_track_id)
+                                  preferred_track_id=preferred_track_id, model_v_ego=model_v_ego)
   else:
     track = None
 
   lead_dict = {'status': False}
   if track is not None:
-    lead_dict = track.get_RadarState(filtered_lead_prob)
+    lead_dict = (get_RadarState_from_carnival_confirmation(
+      track, lead_msg, v_ego, model_v_ego, filtered_lead_prob,
+      model_a_ego, selected_frames, preferred_track_id,
+    ) if track.carnivalR0100 else track.get_RadarState(filtered_lead_prob))
   elif (track is None) and ready and (filtered_lead_prob > lead_detection_probability):
     lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, filtered_lead_prob)
 
@@ -352,7 +615,12 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
     elif honda_bosch_a_radar:
       low_speed_tracks = [c for c in tracks.values() if honda_bosch_a_low_speed_radar_lead_sane(c, v_ego)]
     else:
-      low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego)]
+      position = getattr(model_data, "position", None)
+      model_path = (list(getattr(position, "x", [])), list(getattr(position, "y", [])))
+      low_speed_tracks = [
+        c for c in tracks.values()
+        if c.potential_low_speed_lead(v_ego, model_data, c.identifier == preferred_track_id, model_path)
+      ]
 
     model_lead_available = ready and filtered_lead_prob > lead_detection_probability
 
@@ -462,6 +730,7 @@ class RadarD:
     lead_prob_dt = DT_MDL if self.honda_bosch_a_radar else radar_ts
     self.lead_prob_filters = [FirstOrderFilter(0.0, 0.2, lead_prob_dt) for _ in range(2)]
     self.prev_lead_track_ids = [-1, -1]
+    self.prev_lead_track_frames = [0, 0]
     self.preferred_stale_track_ids = [-1, -1]
     self.preferred_challenger_stale_counts = [0, 0]
     self.preferred_gross_distance_stale_counts = [0, 0]
@@ -598,10 +867,10 @@ class RadarD:
       self.v_ego_hist.append(self.v_ego)
       self.last_v_ego_frame = sm.recv_frame['carState']
 
-    radar_fresh = True
-    if self.honda_bosch_a_radar:
-      radar_fresh = sm.recv_frame['liveTracks'] != self._last_tracks_frame
-      self._last_tracks_frame = sm.recv_frame['liveTracks']
+    tracks_fresh = sm.recv_frame['liveTracks'] != self._last_tracks_frame
+    self._last_tracks_frame = sm.recv_frame['liveTracks']
+    radar_fresh = tracks_fresh if self.honda_bosch_a_radar else True
+    measurement_time = 1e-9 * sm.logMonoTime['liveTracks']
 
     ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured] for pt in rr.points}
 
@@ -621,8 +890,9 @@ class RadarD:
       measured = rpt[3] if not self.honda_bosch_a_radar else bool(rpt[3] and radar_fresh)
       # Non-Bosch sources retain the historical per-model-cycle update semantics. Only Civic Bosch
       # suppresses duplicate measurement updates when liveTracks has not advanced.
-      measurement_update = True if not self.honda_bosch_a_radar else measured
-      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, measured, measurement_update)
+      measurement_update = (tracks_fresh if self.tracks[ids].carnivalR0100 else
+                            (True if not self.honda_bosch_a_radar else measured))
+      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, measured, measurement_update, measurement_time)
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
@@ -637,6 +907,10 @@ class RadarD:
       model_v_ego = sm['modelV2'].velocity.x[0]
     else:
       model_v_ego = self.v_ego
+    if len(sm['modelV2'].acceleration.x):
+      model_a_ego = sm['modelV2'].acceleration.x[0]
+    else:
+      model_a_ego = 0.0
 
     leads_v3 = sm['modelV2'].leadsV3
     if len(leads_v3) > 1:
@@ -653,23 +927,28 @@ class RadarD:
                           standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=True,
                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[0].x,
                           preferred_track_id=self.prev_lead_track_ids[0],
-                          honda_bosch_a_radar=self.honda_bosch_a_radar)
+                          honda_bosch_a_radar=self.honda_bosch_a_radar,
+                          model_a_ego=model_a_ego, selected_frames=self.prev_lead_track_frames[0])
       self.radar_state.leadOne = self._filter_post_standstill_lead(lead_one)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, sm['modelV2'],
                                           sm['carState'].standstill, sm['starpilotPlan'], self.starpilot_toggles, low_speed_override=False,
                                           g90_radar_filter=self.g90_radar_filter, lead_prob=self.lead_prob_filters[1].x,
                                           preferred_track_id=self.prev_lead_track_ids[1],
-                                          honda_bosch_a_radar=self.honda_bosch_a_radar)
+                                          honda_bosch_a_radar=self.honda_bosch_a_radar,
+                                          model_a_ego=model_a_ego, selected_frames=self.prev_lead_track_frames[1])
 
       for i, lead in enumerate((self.radar_state.leadOne, self.radar_state.leadTwo)):
         if lead.status and getattr(lead, "radar", False):
           track_id = int(getattr(lead, "radarTrackId", -1))
+          self.prev_lead_track_frames[i] = self.prev_lead_track_frames[i] + 1 if track_id == self.prev_lead_track_ids[i] else 1
           if track_id != self.prev_lead_track_ids[i]:
             self._reset_preferred_stale_evidence(i, track_id)
           self.prev_lead_track_ids[i] = track_id
-        elif (not lead.status) or (self.prev_lead_track_ids[i] not in self.tracks):
-          self.prev_lead_track_ids[i] = -1
-          self._reset_preferred_stale_evidence(i)
+        else:
+          self.prev_lead_track_frames[i] = 0
+          if (not lead.status) or (self.prev_lead_track_ids[i] not in self.tracks):
+            self.prev_lead_track_ids[i] = -1
+            self._reset_preferred_stale_evidence(i)
 
     if self.ready and (self.starpilot_toggles.adjacent_lead_tracking or self.starpilot_toggles.human_lane_changes):
       self.starpilot_radar_state.leadLeft = get_adjacent_lead(self.tracks, sm['carState'].standstill, sm['modelV2'], left=True)
