@@ -145,6 +145,9 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
     def close(self, **_kwargs):
       events.append(self.name + '_close')
 
+    def render_world_leads(self, *_args):
+      events.append('world_leads')
+
   view = object.__new__(LayeredRoadView)
   view.events = events
   view.stream_type = augmented_road_view.ROAD_CAM
@@ -182,6 +185,8 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
   content = ['camera', 'model', 'road_overlays'] if mode == 'camera' else ['world']
   if mode == 'world_failure':
     content += ['error_log', 'world_close', 'camera']
+  elif mode == 'world':
+    content += ['world_leads']
   assert events == prefix + [
     "scissor_begin",
     *content,

@@ -40,6 +40,18 @@ def lateral_at(points, distance):
   return points[-1][1]
 
 
+def path_yaw(points):
+  """Near-field intent heading in Raylib's right-handed Y-up coordinates."""
+  if not points or points[0][0] > 2.0:
+    return 0.0
+  start = points[0][0]
+  end = min(start + 6.0, points[-1][0])
+  if end - start < 1.0:
+    return 0.0
+  slope = (lateral_at(points, end) - points[0][1]) / (end - start)
+  return max(-35.0, min(35.0, -math.degrees(math.atan(slope))))
+
+
 @dataclass(slots=True)
 class SceneObject:
   key: tuple
@@ -61,6 +73,8 @@ class WorldScene:
     self.model_key = None
     self.object_key = None
     self.revision = 0
+    self.ego_yaw = 0.0
+    self.heading_time = None
 
   @staticmethod
   def fresh(sm, name, started_frame, now):
@@ -83,6 +97,12 @@ class WorldScene:
         self.edges = tuple(polyline(model.roadEdges[i]) if i < len(model.roadEdges)
                            and i < len(model.roadEdgeStds) and math.isfinite(model.roadEdgeStds[i])
                            and 0 <= model.roadEdgeStds[i] < 0.7 else () for i in range(2))
+      received = sm.recv_time['modelV2'] if model_ok else None
+      target_yaw = path_yaw(self.path)
+      dt = received - self.heading_time if received is not None and self.heading_time is not None else 0.0
+      blend = 1.0 - math.exp(-dt / .15) if 0 < dt < MAX_AGE else 1.0
+      self.ego_yaw += blend * (target_yaw - self.ego_yaw)
+      self.heading_time = received
       self.revision += 1
 
     sources = ('radarState', 'starpilotRadarState', 'liveTracks')

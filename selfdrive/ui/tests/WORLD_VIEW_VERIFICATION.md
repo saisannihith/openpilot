@@ -11,7 +11,7 @@ TOI/EPS protection, and vehicle parameters are unchanged.
 The model path is shown honestly, including disagreement with lane lines. It
 is not visually snapped to the lane center. Radar yRel is converted from
 left-positive to model right-positive exactly once. Model-associated leads
-use a generic vehicle mesh; unclassified radar returns use small wire markers.
+use a generic rounded vehicle mesh; unclassified radar returns use small dots.
 No truck/sedan classification, brake-light state, rear coverage, or road
 topology is invented. Vehicle dimensions and shadows are illustrative.
 
@@ -51,6 +51,49 @@ topology is invented. Vehicle dimensions and shadows are illustrative.
 These are isolated-renderer, replay, and offroad proofs, not a live-drive
 thermal/performance guarantee or proof of complete object perception. The
 real onroad uiDebug timing and device thermals remain useful acceptance data.
+
+## OLED / Lead Overlay Revision, 2026-09-16
+
+- RGB 0/0/0 background and ground, shaded white vehicles, white lane lines,
+  red road edges. The blue predicted-path ribbon is retained. This reduces
+  lit background pixels; it does not guarantee prevention of OLED burn-in.
+- Reusable swept rounded body/cabin meshes replace the coarse body. Radar
+  returns without model vehicle evidence remain neutral dots, not invented
+  cars or trucks. Static tail lamps do not claim detected braking.
+- Ego avatar heading follows the first six meters of the predicted path,
+  with a receive-time-based 0.15 s filter and a 35 degree visual bound. It
+  pivots at the path origin, resets when geometry expires, and does not
+  rotate early for far-away bends. This is illustrative planned heading,
+  NOT measured body yaw, steering-wheel angle or a steering command.
+- Restored the shared ModelRenderer lead icon and metrics in world mode.
+  Anchors come from the same 3D scene object. Distance is radarState dRel,
+  speed is absolute vLead (not vRel), and existing LeadInfo/HideLeadMarker,
+  metric/imperial/SI formatting and desired-gap logic are retained. Missing,
+  stale, invalid or deduplicated leads do not get an unrelated label.
+- 60 targeted tests pass on the comma's native libraries. Coverage includes
+  shared metric formatting, freshness, hidden icons, invalid speed, coordinate
+  sign, heading filter, fallback, cleanup and alert layering.
+- Three archived segments: 14,375 relevant messages and 24 GPU geometry
+  snapshots; desktop 600-frame resource/resize regression passed.
+- Comma GPU: 2,000 frames, median 12.71 ms, p99 17.44 ms, maximum 22.64 ms,
+  including benchmark readback. 12,000 changing-ID updates retained 17,880
+  Python bytes. Repeated resource resets passed; no runaway growth observed.
+- Actual GPU pixels verified black background, red edges, white cars/lanes,
+  and both narrow/landscape parent-target restoration.
+- Separate native-font captures verify straight/left/right scenes with real
+  production lead text and an exact lead-icon color sample. This caught a
+  reversed triangle winding before deployment; that regression is now tested.
+
+The optional full-overlay headless capture needs the venv CFFI backend first
+in LD_PRELOAD, before the GBM test adapter, to avoid an incompatible system
+libffi callback ABI. This is test-only and never applied to the driving UI:
+
+```sh
+PYTHONPATH=/data/openpilot \
+LD_PRELOAD=/usr/local/venv/lib/python3.12/site-packages/_cffi_backend.cpython-312-aarch64-linux-gnu.so:/tmp/egl_gbm_headless.so \
+RAYLIB_BACKEND=headless /usr/local/venv/bin/python3 \
+  selfdrive/ui/tests/verify_world_lead_frame.py --out /tmp/world-lead-check
+```
 
 ## Reproduce
 

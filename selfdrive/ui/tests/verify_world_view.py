@@ -203,6 +203,20 @@ def main():
           screenshot = rl.load_image_from_screen()
           try:
             assert rl.export_image(screenshot, str(args.out/f'world-{frame}.png'))
+            background = rl.get_image_color(screenshot, 25, 25)
+            assert (background.r,background.g,background.b) == (0,0,0), 'World background is not OLED black'
+            if frame == 100:
+              import numpy as np
+              rl.image_format(screenshot,rl.PixelFormat.PIXELFORMAT_UNCOMPRESSED_R8G8B8A8)
+              pixels = np.frombuffer(rl.ffi.buffer(screenshot.data,screenshot.width*screenshot.height*4),dtype=np.uint8).reshape(-1,4)
+              red = (pixels[:,0] > 180) & (pixels[:,1] < 90) & (pixels[:,2] < 90)
+              white = (pixels[:,:3].min(axis=1) > 175) & (np.ptp(pixels[:,:3],axis=1) < 12)
+              assert int(red.sum()) > 200, 'Red road edges did not render'
+              assert int(white.sum()) > 1000, 'White vehicles/lanes did not render'
+              report['palette_checks'] = {'black':True,'red_pixels':int(red.sum()),'white_pixels':int(white.sum())}
+              anchor = renderer.lead_anchor(0,rect)
+              assert anchor is not None and rect.x < anchor[0] < rect.x+rect.width and rect.y < anchor[1] < rect.y+rect.height
+              assert renderer.lead_anchor(7,rect) is None
           finally:
             rl.unload_image(screenshot)
           rss_samples.append(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)

@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from openpilot.selfdrive.ui.onroad.world_scene import MAX_OBJECTS, WorldScene, lateral_at, polyline
+from openpilot.selfdrive.ui.onroad.world_scene import MAX_OBJECTS, WorldScene, lateral_at, path_yaw, polyline
 
 
 class Messages(dict):
@@ -113,3 +113,34 @@ def test_disappeared_object_has_no_ghost_retention():
   sm.tick(3, 10.1)
   scene.update(sm, 0, 10.1)
   assert not scene.objects
+
+
+@pytest.mark.parametrize('slope', [-.4, 0., .4])
+def test_avatar_heading_matches_near_path_and_raylib_axis(slope):
+  points = ((0.,0.),(6.,6*slope),(30.,-20.))
+  yaw = path_yaw(points)
+  assert yaw == pytest.approx(-math.degrees(math.atan(slope)))
+  # A right turn rotates the negative-Z nose toward positive-X.
+  assert -math.sin(math.radians(yaw)) == pytest.approx(slope/math.sqrt(1+slope*slope))
+
+
+def test_heading_does_not_anticipate_far_curve_or_use_missing_path():
+  assert path_yaw(((0,0),(6,0),(60,30))) == 0.
+  assert path_yaw(()) == 0.
+  assert path_yaw(((10,4),(20,8))) == 0.
+  assert abs(path_yaw(((0,0),(2,40)))) == 35.
+
+
+def test_heading_filter_is_message_driven_and_expires():
+  sm, scene = messages(), WorldScene()
+  scene.update(sm, 0, 10.)
+  old = scene.ego_yaw
+  sm['modelV2'].position.y = [0,4,8]
+  sm.tick(3,10.05)
+  scene.update(sm,0,10.05)
+  assert path_yaw(scene.path) < scene.ego_yaw < old
+  heading = scene.ego_yaw
+  scene.update(sm,0,10.1)
+  assert scene.ego_yaw == heading
+  scene.update(sm,0,11.)
+  assert scene.ego_yaw == 0.

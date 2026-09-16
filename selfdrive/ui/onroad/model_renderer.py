@@ -1,4 +1,6 @@
 import colorsys
+import math
+import time
 import numpy as np
 import pyray as rl
 from cereal import messaging, car
@@ -182,6 +184,31 @@ class ModelRenderer(Widget):
 
   def _should_render_lead_indicator(self, radar_state) -> bool:
     return radar_state is not None and lead_indicator_enabled(self._params)
+
+  def render_world_leads(self, rect, world):
+    """Share lead telemetry/icons with camera view, using the world's projection."""
+    sm = ui_state.sm
+    self._rect = rect
+    self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
+    self._lead_text_rects, self._adjacent_lead_text_rects = [], []
+    if not world.scene.fresh(sm, 'radarState', ui_state.started_frame, time.monotonic()):
+      return
+    radar_state = sm['radarState']
+    if not self._should_render_lead_indicator(radar_state):
+      return
+    if sm.updated.get('carParams', False):
+      self._longitudinal_control = sm['carParams'].openpilotLongitudinalControl
+    self._lead_info_enabled = self._params.get_bool('LeadInfo')
+    for i, lead in enumerate((radar_state.leadOne, radar_state.leadTwo)):
+      point = world.lead_anchor(i, rect)
+      if point is None or not lead.status or not all(math.isfinite(v) for v in (lead.dRel, lead.vLead, lead.vRel)):
+        continue
+      x, y = point
+      # Compact, opaque identification marker above the vehicle silhouette.
+      self._lead_vehicles[i] = LeadVehicle(
+        glow=[(x-19,y-12),(x,y+3),(x+19,y-12)],
+        chevron=[(x-15,y-12),(x,y),(x+15,y-12)], fill_alpha=255)
+    self._draw_lead_indicator(radar_state, above=True)
 
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
@@ -470,7 +497,7 @@ class ModelRenderer(Widget):
       )
       draw_polygon(self._rect, self._path.projected_points, gradient=gradient)
 
-  def _draw_lead_indicator(self, radar_state):
+  def _draw_lead_indicator(self, radar_state, above=False):
     # Draw lead vehicles if available
     lead_color = get_theme_color("LeadMarker", rl.Color(201, 34, 49, 255))
     leads = [radar_state.leadOne, radar_state.leadTwo]
@@ -501,7 +528,7 @@ class ModelRenderer(Widget):
 
       # Draw metrics if enabled
       if self._lead_info_enabled and i < len(leads) and leads[i] and leads[i].status:
-        self._draw_lead_metrics(False, lead.chevron, leads[i])
+        self._draw_lead_metrics(False, lead.chevron, leads[i], above=above)
 
   def _update_adjacent_leads(self, starpilot_radar_state, path_x_array):
     self._adjacent_lead_vehicles = [LeadVehicle(), LeadVehicle()]
@@ -547,7 +574,7 @@ class ModelRenderer(Widget):
       if self._lead_info_enabled:
         self._draw_lead_metrics(True, lead.chevron, lead_data)
 
-  def _draw_lead_metrics(self, adjacent, chevron, lead_data):
+  def _draw_lead_metrics(self, adjacent, chevron, lead_data, above=False):
     is_metric = ui_state.is_metric
     use_si_metrics = ui_state.starpilot_toggles.get("UseSiMetrics", False)
 
@@ -602,6 +629,16 @@ class ModelRenderer(Widget):
 
     centerX = chevron[1][0]
     startY = max(chevron[0][1], chevron[2][1]) + line_height + 5
+    if above:
+      # Never squeeze readable text into a tiny world viewport or let it
+      # cover the vehicle. Existing HUD/alerts are drawn after these labels.
+      if max_text_width + 24 > self._rect.width:
+        return
+      centerX = float(np.clip(centerX, self._rect.x + max_text_width/2 + 12,
+                             self._rect.x + self._rect.width - max_text_width/2 - 12))
+      startY = min(p[1] for p in chevron) - len(text_lines)*line_height - 10
+      if startY < self._rect.y + 12:
+        return
 
     x_margin = max_text_width * 0.1
     y_margin = line_height * 0.1

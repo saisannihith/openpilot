@@ -128,6 +128,7 @@ class AugmentedRoadView(CameraView):
       try:
         self.tesla_road_renderer.render(self._content_rect, ui_state.sm, ui_state.started_frame,
                                         ui_state.status == UIStatus.ENGAGED, parent_target=gui_app._render_texture)
+        self.model_renderer.render_world_leads(self._content_rect, self.tesla_road_renderer)
       except Exception:
         cloudlog.exception("World view failed; returning to camera")
         self._world_failed = True

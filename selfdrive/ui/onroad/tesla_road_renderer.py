@@ -8,8 +8,8 @@ from openpilot.selfdrive.ui.onroad.world_scene import WorldScene
 
 CAPACITY = 4095
 # Existing onroad instruments use light text. Keep their contrast intact.
-BACKGROUND = rl.Color(18, 20, 22, 255)
-GROUND = rl.Color(31, 33, 35, 255)
+BACKGROUND = rl.Color(0, 0, 0, 255)
+GROUND = rl.Color(0, 0, 0, 255)
 WHITE = rl.Color(255, 255, 255, 255)
 UP = rl.Vector3(0, 1, 0)
 ONE = rl.Vector3(1, 1, 1)
@@ -68,22 +68,35 @@ def vehicle_mesh(body):
       vertices.extend((points[0], points[i], points[i + 1]))
       colors.extend((shade,) * 3)
 
+  # Rounded superellipse body, swept cabin and wheel geometry are built once,
+  # not allocated per vehicle/frame. These are generic vehicle silhouettes.
   rings = []
-  for z, width, top in ((-2.4, .73, .66), (-2.18, .93, .85), (-1.35, .98, .98),
-                        (1.42, .98, 1.02), (2.18, .93, .93), (2.4, .78, .75)):
-    rings.append([(x, y, z) for x, y in ((-width*.83,.3), (width*.83,.3), (width,.47),
-                  (width,top-.14), (width*.79,top), (-width*.79,top), (-width,top-.14), (-width,.47))])
+  for z in np.linspace(-2.4, 2.4, 25):
+    width = .99 * (1 - (abs(z) / 2.43)**4)**.25
+    ring = []
+    for angle in np.linspace(0, math.tau, 32, endpoint=False):
+      c, s = math.cos(angle), math.sin(angle)
+      ring.append((width * math.copysign(abs(c)**.5, c),
+                   .64 + .35 * math.copysign(abs(s)**.5, s), float(z)))
+    rings.append(ring)
   for front, rear in zip(rings, rings[1:], strict=False):
-    for i in range(8):
-      face((front[i], front[(i+1)%8], rear[(i+1)%8], rear[i]), body)
+    for i in range(32):
+      face((front[i], front[(i+1)%32], rear[(i+1)%32], rear[i]), body)
   face(tuple(reversed(rings[0])), body)
   face(rings[-1], body)
-  low = [(-.82,.92,-1.47),(.82,.92,-1.47),(.85,.98,1.76),(-.85,.98,1.76)]
-  high = [(-.66,1.62,-.75),(.66,1.62,-.75),(.7,1.62,1.15),(-.7,1.62,1.15)]
-  face(high, body)
-  for i in range(4):
-    j = (i+1)%4
-    face((low[i], low[j], high[j], high[i]), (40, 55, 68))
+  cabin = []
+  for z in np.linspace(-1.48, 1.65, 21):
+    t = (z + 1.48) / 3.13
+    height = .65 * math.sin(math.pi * t)**.7
+    cabin.append([(.82 * math.cos(a), 1.0 + height * math.sin(a)**.55, float(z))
+                  for a in np.linspace(0, math.pi, 25)])
+  for front, rear in zip(cabin, cabin[1:], strict=False):
+    z = (front[0][2] + rear[0][2]) / 2
+    for i in range(24):
+      roof = 5 <= i < 19 and -.65 < z < .85
+      pillar = abs(z - .22) < .09 or i in (0, 23)
+      color = body if roof or pillar else (49, 58, 67)
+      face((front[i], front[i+1], rear[i+1], rear[i]), color)
   # Static tail lamps, never inferred brake state from relative velocity.
   face(((-.7,.49,2.405),(.7,.49,2.405),(.7,.64,2.405),(-.7,.64,2.405)), (70,77,85))
   for side in (-1, 1):
@@ -92,9 +105,9 @@ def vehicle_mesh(body):
     for z in (-1.5, 1.5):
       for radius, x, color in ((.34, side*.99, (24,27,31)), (.18, side*1.01, (112,121,129))):
         center = (x,.34,z)
-        ring = [(x,.34+radius*math.cos(i*math.tau/12),z+radius*math.sin(i*math.tau/12)) for i in range(12)]
-        for i in range(12):
-          face((center,ring[i],ring[(i+1)%12]), color)
+        ring = [(x,.34+radius*math.cos(i*math.tau/24),z+radius*math.sin(i*math.tau/24)) for i in range(24)]
+        for i in range(24):
+          face((center,ring[i],ring[(i+1)%24]), color)
   return np.array(vertices, np.float32), np.array(colors, np.uint8)
 
 
@@ -115,7 +128,7 @@ class TeslaRoadRenderer:
     if self._meshes:
       return
     try:
-      for color in ((28,134,246), (181,190,199)):
+      for color in ((255,255,255), (255,255,255)):
         self._meshes.append(GpuMesh(*vehicle_mesh(color)))
       self._meshes.append(GpuMesh(self._vertices, self._colors, dynamic=True))
     except Exception:
@@ -150,7 +163,7 @@ class TeslaRoadRenderer:
       return
     self._count = 0
     for edge in self.scene.edges:
-      self._ribbon(edge,.06,.008,(87,93,99,255))
+      self._ribbon(edge,.06,.008,(230,48,48,255))
     for lane in self.scene.lanes:
       self._ribbon(lane,.045,.014,(246,247,249,255))
     fill = (40,149,246,255) if engaged else (166,179,189,255)
@@ -197,8 +210,13 @@ class TeslaRoadRenderer:
           if obj.vehicle:
             self._meshes[1].draw(position)
           else:
-            rl.draw_cube_wires(rl.Vector3(obj.right,.2,-obj.forward),.55,.4,.55,rl.Color(109,122,136,255))
-        self._meshes[0].draw(rl.Vector3(0,0,2.4))
+            # A radar return has no verified body shape or vehicle class.
+            rl.draw_sphere_ex(rl.Vector3(obj.right,.12,-obj.forward),.12,4,6,rl.Color(125,133,140,255))
+        yaw = self.scene.ego_yaw
+        angle = math.radians(yaw)
+        # Pivot at the nose/path origin so the avatar cannot drift sideways
+        # when showing near-path heading. This is intent, not measured yaw.
+        self._meshes[0].draw(rl.Vector3(2.4*math.sin(angle),0,2.4*math.cos(angle)), yaw)
       finally:
         rl.rl_enable_backface_culling()
         rl.end_mode_3d()
@@ -215,6 +233,17 @@ class TeslaRoadRenderer:
       rl.rl_set_matrix_projection(parent_projection)
       rl.begin_scissor_mode(int(rect.x),int(rect.y),int(rect.width),int(rect.height))
     rl.draw_texture_pro(self._target.texture, rl.Rectangle(0,0,size[0],-size[1]), rect, rl.Vector2(0,0),0,WHITE)
+
+  def lead_anchor(self, index, rect):
+    """Project the same displayed lead, not a camera-calibrated coordinate."""
+    obj = next((obj for obj in self.scene.objects if obj.key == ('lead', index)), None)
+    if obj is None or self._target_size is None:
+      return None
+    point = rl.get_world_to_screen_ex(rl.Vector3(obj.right,1.8,-obj.forward-2.4),
+                                      self._camera,*self._target_size)
+    x = rect.x + point.x * rect.width / self._target_size[0]
+    y = rect.y + point.y * rect.height / self._target_size[1]
+    return (x,y) if rect.x <= x <= rect.x+rect.width and rect.y <= y <= rect.y+rect.height else None
 
   def close(self, parent_target=None):
     has_resources = bool(self._meshes) or self._target is not None
