@@ -5,8 +5,8 @@ from openpilot.system.ui.widgets import Widget
 
 ON_COLOR = rl.Color(51, 171, 76, 255)
 OFF_COLOR = rl.Color(0x39, 0x39, 0x39, 255)
-ON_KNOB_COLOR = rl.Color(126, 232, 151, 255)
-OFF_KNOB_COLOR = rl.Color(242, 143, 139, 255)
+ON_KNOB_COLOR = rl.Color(183, 245, 191, 255)
+OFF_KNOB_COLOR = rl.Color(145, 48, 48, 255)
 DISABLED_ON_COLOR = rl.Color(0x22, 0x77, 0x22, 255)  # Dark green when disabled + on
 DISABLED_OFF_COLOR = rl.Color(0x39, 0x39, 0x39, 255)
 DISABLED_KNOB_COLOR = rl.Color(0x88, 0x88, 0x88, 255)

@@ -1727,7 +1727,7 @@ def draw_toggle_switch(
     knob_progress = 1.0 if enabled else 0.0
 
   if knob_color is None:
-    knob_color = rl.Color(126, 232, 151, 255) if enabled else rl.Color(242, 143, 139, 255)
+    knob_color = rl.Color(183, 245, 191, 255) if enabled else rl.Color(145, 48, 48, 255)
 
   if not is_enabled:
     knob_color = with_alpha(knob_color, 132)
