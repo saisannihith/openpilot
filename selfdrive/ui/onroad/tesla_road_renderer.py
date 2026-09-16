@@ -217,12 +217,19 @@ class TeslaRoadRenderer:
     rl.draw_texture_pro(self._target.texture, rl.Rectangle(0,0,size[0],-size[1]), rect, rl.Vector2(0,0),0,WHITE)
 
   def close(self):
+    has_resources = bool(self._meshes) or self._target is not None
+    parent_framebuffer = rl.rl_get_active_framebuffer() if has_resources else None
+    released_framebuffer = self._target.id if self._target is not None else None
     for mesh in self._meshes:
       mesh.close()
     self._meshes.clear()
     if self._target is not None:
       rl.unload_render_texture(self._target)
       self._target = None
+    # UnloadRenderTexture can bind framebuffer 0. View changes must not steal
+    # the application's active target while it continues drawing this frame.
+    if parent_framebuffer is not None and parent_framebuffer != released_framebuffer:
+      rl.rl_enable_framebuffer(parent_framebuffer)
     self._target_size = None
     self._geometry_key = None
     self.scene.reset()

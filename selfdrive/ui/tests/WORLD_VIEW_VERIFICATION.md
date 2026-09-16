@@ -37,6 +37,9 @@ topology is invented. Vehicle dimensions and shadows are illustrative.
   parent-framebuffer pixel checks passed.
 - Comma 3x, Qualcomm Adreno 630, OpenGL ES 3.2, Raylib 6.0: 6,000 headless GPU
   frames and the same scaled-parent pixel checks passed.
+- A final 600-frame regression on both backends additionally verified closing
+  the view mid-frame preserves the parent's framebuffer for subsequent HUD
+  drawing. This cleanup hardening followed the extended benchmark.
 - Device render time, including a benchmark-only pixel readback: median
   12.22 ms, p99 16.60 ms, maximum 23.37 ms. CPU median 11.24 ms, p99 14.58 ms.
 - Device scene-update time: median 0.94 ms, p99 1.39 ms, maximum 1.67 ms.

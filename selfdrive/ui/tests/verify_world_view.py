@@ -242,6 +242,8 @@ def main():
           sm.tick(50000,10000.)
           renderer.render(rl.Rectangle(0,0,width,height),sm,0,True,now=10000.,parent_target=parent)
           rl.draw_rectangle(80,40,80,40,rl.RED)
+          renderer.close()
+          rl.draw_rectangle(200,40,80,40,rl.GREEN)
           rl.end_scissor_mode()
           rl.rl_pop_matrix()
           rl.end_texture_mode()
@@ -251,6 +253,8 @@ def main():
             pixel = rl.get_image_color(screen,90,720-45)
             assert rl.export_image(screen,str(args.out/f'composition-{aspect}.png'))
             assert pixel.r > 200 and pixel.g < 100, f'HUD transform or parent framebuffer lost: {pixel.r},{pixel.g},{pixel.b}'
+            pixel = rl.get_image_color(screen,180,720-45)
+            assert pixel.g > 200 and pixel.r < 100, 'View cleanup lost the active framebuffer'
           finally:
             rl.unload_image(screen)
         report['scaled_parent_composition_checks'] = 2
