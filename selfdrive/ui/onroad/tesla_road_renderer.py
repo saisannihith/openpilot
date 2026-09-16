@@ -19,17 +19,24 @@ from openpilot.system.ui.widgets import Widget
 MAX_DISTANCE_M = 120.0
 MAX_RENDERED_TRACKS = 16
 TRACK_STALE_SECONDS = 1.25
-ROAD_HALF_WIDTH_M = 5.6
+ROAD_HALF_WIDTH_M = 8.2
+PATH_HALF_WIDTH_M = 1.45
 
-SKY_COLOR = rl.Color(17, 22, 30, 255)
-ROAD_COLOR = rl.Color(42, 47, 54, 255)
-ROAD_EDGE_COLOR = rl.Color(90, 96, 104, 210)
-LANE_COLOR = rl.Color(228, 234, 240, 220)
-PATH_ENGAGED_COLOR = rl.Color(44, 158, 255, 175)
-PATH_DISENGAGED_COLOR = rl.Color(130, 145, 165, 120)
-EGO_COLOR = rl.Color(47, 142, 250, 255)
-VEHICLE_COLOR = rl.Color(204, 213, 224, 255)
-CLOSING_VEHICLE_COLOR = rl.Color(245, 176, 76, 255)
+SCENE_TOP_COLOR = rl.Color(7, 11, 17, 255)
+SCENE_BOTTOM_COLOR = rl.Color(16, 23, 31, 255)
+ROAD_COLOR = rl.Color(40, 47, 56, 255)
+ROAD_SHADOW_COLOR = rl.Color(23, 29, 36, 255)
+ROAD_EDGE_COLOR = rl.Color(88, 101, 116, 205)
+LANE_COLOR = rl.Color(190, 205, 221, 205)
+PATH_FILL_ENGAGED = rl.Color(21, 112, 232, 148)
+PATH_EDGE_ENGAGED = rl.Color(46, 162, 255, 255)
+PATH_FILL_DISENGAGED = rl.Color(90, 106, 124, 88)
+PATH_EDGE_DISENGAGED = rl.Color(149, 165, 183, 178)
+EGO_BODY_COLOR = rl.Color(23, 126, 246, 255)
+EGO_TOP_COLOR = rl.Color(77, 176, 255, 255)
+VEHICLE_BODY_COLOR = rl.Color(181, 192, 204, 255)
+VEHICLE_TOP_COLOR = rl.Color(224, 231, 239, 255)
+CLOSING_BODY_COLOR = rl.Color(218, 157, 77, 255)
 
 
 @dataclass
@@ -62,6 +69,21 @@ class TeslaRoadRenderer(Widget):
     return 480.0 / (max(0.0, distance) + 8.0) + 7.0
 
   @staticmethod
+  def _quad(a: rl.Vector2, b: rl.Vector2, c: rl.Vector2, d: rl.Vector2, color: rl.Color) -> None:
+    rl.draw_triangle(a, b, c, color)
+    rl.draw_triangle(a, c, d, color)
+
+  @staticmethod
+  def _blend(start: rl.Color, end: rl.Color, progress: float) -> rl.Color:
+    p = max(0.0, min(1.0, progress))
+    return rl.Color(
+      int(start.r + (end.r - start.r) * p),
+      int(start.g + (end.g - start.g) * p),
+      int(start.b + (end.b - start.b) * p),
+      int(start.a + (end.a - start.a) * p),
+    )
+
+  @staticmethod
   def _model_points(points_x, points_y) -> list[tuple[float, float]]:
     points: list[tuple[float, float]] = []
     for x, y in zip(points_x, points_y, strict=False):
@@ -70,21 +92,37 @@ class TeslaRoadRenderer(Widget):
         points.append((x_f, y_f))
     return points
 
-  def _draw_road(self, rect: rl.Rectangle, path: list[tuple[float, float]]) -> None:
+  def _draw_background(self, rect: rl.Rectangle) -> None:
+    bands = 12
+    for index in range(bands):
+      top = rect.y + rect.height * index / bands
+      color = self._blend(SCENE_TOP_COLOR, SCENE_BOTTOM_COLOR, index / max(1, bands - 1))
+      rl.draw_rectangle(int(rect.x), int(top), int(rect.width), int(rect.height / bands + 2), color)
+
+  def _draw_surface(self, rect: rl.Rectangle, path: list[tuple[float, float]], left: float, right: float, color: rl.Color) -> None:
+    for (x0, y0), (x1, y1) in zip(path, path[1:], strict=False):
+      self._quad(
+        self._project(rect, x0, y0 + left),
+        self._project(rect, x0, y0 + right),
+        self._project(rect, x1, y1 + right),
+        self._project(rect, x1, y1 + left),
+        color,
+      )
+
+  def _draw_road(self, rect: rl.Rectangle, path: list[tuple[float, float]]) -> list[tuple[float, float]]:
     if len(path) < 2:
       path = [(0.0, 0.0), (MAX_DISTANCE_M, 0.0)]
 
-    # A wide sequence of perspective segments is cheaper and smoother than a
-    # per-frame mesh while keeping the road attached to the model path.
-    for (x0, y0), (x1, y1) in zip(path, path[1:], strict=False):
-      p0, p1 = self._project(rect, x0, y0), self._project(rect, x1, y1)
-      width = max(20.0, ROAD_HALF_WIDTH_M * 2.0 * self._scale_for_distance((x0 + x1) * 0.5))
-      rl.draw_line_ex(p0, p1, width, ROAD_COLOR)
+    # The road is a bounded set of car-space quads, not a camera projection.
+    # It stays visually calm on curves and cannot accumulate mesh state.
+    self._draw_surface(rect, path, -ROAD_HALF_WIDTH_M, ROAD_HALF_WIDTH_M, ROAD_SHADOW_COLOR)
+    self._draw_surface(rect, path, -(ROAD_HALF_WIDTH_M - 0.35), ROAD_HALF_WIDTH_M - 0.35, ROAD_COLOR)
 
     for edge in (-ROAD_HALF_WIDTH_M, ROAD_HALF_WIDTH_M):
       for (x0, y0), (x1, y1) in zip(path, path[1:], strict=False):
         p0, p1 = self._project(rect, x0, y0 + edge), self._project(rect, x1, y1 + edge)
-        rl.draw_line_ex(p0, p1, max(1.5, self._scale_for_distance(x0) * 0.045), ROAD_EDGE_COLOR)
+        rl.draw_line_ex(p0, p1, max(2.0, self._scale_for_distance(x0) * 0.055), ROAD_EDGE_COLOR)
+    return path
 
   def _draw_lane_line(self, rect: rl.Rectangle, line: list[tuple[float, float]], probability: float) -> None:
     if probability < 0.35 or len(line) < 2:
@@ -102,10 +140,55 @@ class TeslaRoadRenderer(Widget):
     if len(path) < 2:
       return
 
-    color = PATH_ENGAGED_COLOR if ui_state.status == UIStatus.ENGAGED else PATH_DISENGAGED_COLOR
-    for (x0, y0), (x1, y1) in zip(path, path[1:], strict=False):
-      p0, p1 = self._project(rect, x0, y0), self._project(rect, x1, y1)
-      rl.draw_line_ex(p0, p1, max(5.0, self._scale_for_distance(x0) * 2.0), color)
+    engaged = ui_state.status == UIStatus.ENGAGED
+    fill = PATH_FILL_ENGAGED if engaged else PATH_FILL_DISENGAGED
+    edge = PATH_EDGE_ENGAGED if engaged else PATH_EDGE_DISENGAGED
+    self._draw_surface(rect, path, -PATH_HALF_WIDTH_M, PATH_HALF_WIDTH_M, fill)
+
+    for path_edge in (-PATH_HALF_WIDTH_M, PATH_HALF_WIDTH_M):
+      for (x0, y0), (x1, y1) in zip(path, path[1:], strict=False):
+        p0 = self._project(rect, x0, y0 + path_edge)
+        p1 = self._project(rect, x1, y1 + path_edge)
+        rl.draw_line_ex(p0, p1, max(2.2, self._scale_for_distance(x0) * 0.065), edge)
+
+  @staticmethod
+  def _vehicle_points(center: rl.Vector2, width: float, height: float) -> tuple[rl.Vector2, ...]:
+    bottom = center.y + height * 0.24
+    top = center.y - height * 0.76
+    return (
+      rl.Vector2(center.x - width * 0.56, bottom),
+      rl.Vector2(center.x + width * 0.56, bottom),
+      rl.Vector2(center.x + width * 0.42, top + height * 0.22),
+      rl.Vector2(center.x + width * 0.23, top),
+      rl.Vector2(center.x - width * 0.23, top),
+      rl.Vector2(center.x - width * 0.42, top + height * 0.22),
+    )
+
+  def _draw_vehicle_body(self, center: rl.Vector2, width: float, height: float, body_color: rl.Color, top_color: rl.Color, braking: bool) -> None:
+    p = self._vehicle_points(center, width, height)
+    shadow = rl.Rectangle(center.x - width * 0.64, center.y - height * 0.08, width * 1.28, height * 0.74)
+    rl.draw_rectangle_rounded(shadow, 0.45, 8, rl.Color(0, 0, 0, 85))
+
+    self._quad(p[0], p[1], p[2], p[5], body_color)
+    self._quad(p[5], p[2], p[3], p[4], top_color)
+    windshield = rl.Color(38, 57, 78, 255)
+    self._quad(
+      rl.Vector2(p[5].x + width * 0.10, p[5].y - height * 0.03),
+      rl.Vector2(p[2].x - width * 0.10, p[2].y - height * 0.03),
+      rl.Vector2(p[3].x - width * 0.06, p[3].y + height * 0.12),
+      rl.Vector2(p[4].x + width * 0.06, p[4].y + height * 0.12),
+      windshield,
+    )
+    outline = rl.Color(10, 16, 23, 200)
+    for start, end in zip(p, (*p[1:], p[0]), strict=False):
+      rl.draw_line_ex(start, end, max(1.0, width * 0.045), outline)
+
+    light = rl.Color(255, 70, 77, 255) if braking else rl.Color(220, 232, 245, 240)
+    lamp_y = p[0].y - height * 0.13
+    lamp_w = max(2.0, width * 0.16)
+    lamp_h = max(2.0, height * 0.055)
+    rl.draw_rectangle(int(center.x - width * 0.42), int(lamp_y), int(lamp_w), int(lamp_h), light)
+    rl.draw_rectangle(int(center.x + width * 0.26), int(lamp_y), int(lamp_w), int(lamp_h), light)
 
   def _update_tracks(self) -> list[VisualTrack]:
     now = time.monotonic()
@@ -150,6 +233,14 @@ class TeslaRoadRenderer(Widget):
       if track_id not in seen and now - track.last_seen > TRACK_STALE_SECONDS:
         del self._tracks[track_id]
 
+    # Radar interfaces can legitimately recycle or churn IDs. Keep a hard
+    # display bound in addition to stale pruning so the UI cannot retain an
+    # unbounded history during a noisy drive.
+    if len(self._tracks) > MAX_RENDERED_TRACKS:
+      oldest_first = sorted(self._tracks.items(), key=lambda item: (item[1].last_seen, -item[1].d_rel))
+      for track_id, _ in oldest_first[:len(self._tracks) - MAX_RENDERED_TRACKS]:
+        del self._tracks[track_id]
+
     return sorted(self._tracks.values(), key=lambda track: track.d_rel)[:MAX_RENDERED_TRACKS]
 
   def _draw_vehicle(self, rect: rl.Rectangle, track: VisualTrack) -> None:
@@ -157,28 +248,17 @@ class TeslaRoadRenderer(Widget):
     scale = self._scale_for_distance(track.d_rel)
     width = max(10.0, min(70.0, scale * 1.8))
     height = max(16.0, min(105.0, scale * 4.1))
-    body = rl.Rectangle(center.x - width * 0.5, center.y - height * 0.72, width, height)
-    color = CLOSING_VEHICLE_COLOR if track.v_rel < -2.5 else VEHICLE_COLOR
-    rl.draw_rectangle_rounded(body, 0.33, 8, color)
-    glass = rl.Rectangle(body.x + width * 0.18, body.y + height * 0.18, width * 0.64, height * 0.25)
-    rl.draw_rectangle_rounded(glass, 0.30, 6, rl.Color(83, 98, 113, 255))
-    lamp_color = rl.Color(255, 87, 87, 255) if track.v_rel < -2.5 else rl.Color(240, 246, 255, 255)
-    lamp_y = body.y + body.height * 0.78
-    lamp_w = max(2.0, width * 0.16)
-    rl.draw_rectangle(int(body.x + width * 0.16), int(lamp_y), int(lamp_w), max(2, int(height * 0.06)), lamp_color)
-    rl.draw_rectangle(int(body.x + width * 0.68), int(lamp_y), int(lamp_w), max(2, int(height * 0.06)), lamp_color)
+    braking = track.v_rel < -2.5
+    body = CLOSING_BODY_COLOR if braking else VEHICLE_BODY_COLOR
+    self._draw_vehicle_body(center, width, height, body, VEHICLE_TOP_COLOR, braking)
 
   def _draw_ego(self, rect: rl.Rectangle) -> None:
     center = self._project(rect, 0.0, 0.0)
     width, height = min(98.0, rect.width * 0.11), min(178.0, rect.height * 0.19)
-    body = rl.Rectangle(center.x - width * 0.5, center.y - height * 0.72, width, height)
-    rl.draw_rectangle_rounded(body, 0.32, 10, EGO_COLOR)
-    glass = rl.Rectangle(body.x + width * 0.17, body.y + height * 0.17, width * 0.66, height * 0.30)
-    rl.draw_rectangle_rounded(glass, 0.30, 8, rl.Color(28, 62, 99, 255))
-    rl.draw_rectangle_rounded_lines_ex(body, 0.32, 10, 2.0, rl.Color(184, 224, 255, 220))
+    self._draw_vehicle_body(center, width, height, EGO_BODY_COLOR, EGO_TOP_COLOR, False)
 
   def _render(self, rect: rl.Rectangle):
-    rl.draw_rectangle_rec(rect, SKY_COLOR)
+    self._draw_background(rect)
 
     sm = ui_state.sm
     path: list[tuple[float, float]] = []
@@ -193,7 +273,7 @@ class TeslaRoadRenderer(Widget):
           lane = model.laneLines[index]
           lane_lines.append((self._model_points(lane.x, lane.y), probability))
 
-    self._draw_road(rect, path)
+    path = self._draw_road(rect, path)
     for line, probability in lane_lines:
       self._draw_lane_line(rect, line, probability)
     self._draw_path(rect, path)
