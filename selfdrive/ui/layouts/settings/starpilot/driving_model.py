@@ -1082,6 +1082,9 @@ class StarPilotDrivingModelLayout(_SettingsPage):
       return False
     if selected_model == self._current_model_key:
       return True
+    if ui_state.started:
+      gui_app.push_widget(alert_dialog(tr("Change the driving model while parked. The current model stays active while driving.")))
+      return False
 
     self._params.put("Model", selected_model)
     self._params.put("DrivingModel", selected_model)
@@ -1099,9 +1102,6 @@ class StarPilotDrivingModelLayout(_SettingsPage):
     )
     update_starpilot_toggles()
     self._update_model_metadata()
-    if ui_state.started:
-      self._params.put_bool("OnroadCycleRequested", True)
-      gui_app.push_widget(alert_dialog(tr("Drive-cycle requested for immediate apply.")))
     return True
 
   def start_download(self, model_key: str):

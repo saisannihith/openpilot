@@ -560,6 +560,11 @@ class DrivingModelBigButton(BigButton):
       self._show_message("Model not downloaded", "Download this model first.", return_to_manager=True)
       return
 
+    if ui_state.started:
+      self._show_message("Change model while parked",
+                         "The current model stays active while driving.", return_to_manager=True)
+      return
+
     self._params.put("Model", entry.key)
     self._params.put("DrivingModel", entry.key)
     self._params.put("DrivingModelName", entry.name)
@@ -575,10 +580,6 @@ class DrivingModelBigButton(BigButton):
       entry.name,
       version,
     )
-
-    if ui_state.started:
-      self._params.put_bool("OnroadCycleRequested", True)
-      self._show_message("Model switched", "Drive-cycle requested for immediate apply.", return_to_manager=True)
 
     self.refresh()
 
