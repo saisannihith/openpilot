@@ -32,6 +32,8 @@ _HUD_TEXT_DIM = rl.Color(220, 220, 230, 220)
 _CONST_PRIMARY = rl.Color(235, 240, 255, 255)
 _CONST_SECONDARY = rl.Color(180, 195, 220, 255)
 _CONST_TERTIARY = rl.Color(145, 155, 175, 255)
+_TOGGLE_KNOB_OFF = rl.Color(151, 40, 50, 255)
+_TOGGLE_KNOB_ON = rl.Color(92, 220, 134, 255)
 
 _NODE_NUM_MIN = 3
 _NODE_NUM_MAX = 5
@@ -1727,7 +1729,7 @@ def draw_toggle_switch(
     knob_progress = 1.0 if enabled else 0.0
 
   if knob_color is None:
-    knob_color = rl.Color(183, 245, 191, 255) if enabled else rl.Color(145, 48, 48, 255)
+    knob_color = mix_colors(_TOGGLE_KNOB_OFF, _TOGGLE_KNOB_ON, knob_progress, alpha=255)
 
   if not is_enabled:
     knob_color = with_alpha(knob_color, 132)
