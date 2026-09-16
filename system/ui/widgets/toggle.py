@@ -5,7 +5,8 @@ from openpilot.system.ui.widgets import Widget
 
 ON_COLOR = rl.Color(51, 171, 76, 255)
 OFF_COLOR = rl.Color(0x39, 0x39, 0x39, 255)
-KNOB_COLOR = rl.WHITE
+ON_KNOB_COLOR = rl.Color(126, 232, 151, 255)
+OFF_KNOB_COLOR = rl.Color(242, 143, 139, 255)
 DISABLED_ON_COLOR = rl.Color(0x22, 0x77, 0x22, 255)  # Dark green when disabled + on
 DISABLED_OFF_COLOR = rl.Color(0x39, 0x39, 0x39, 255)
 DISABLED_KNOB_COLOR = rl.Color(0x88, 0x88, 0x88, 255)
@@ -58,7 +59,7 @@ class Toggle(Widget):
 
     if self._enabled:
       bg_color = self._blend_color(OFF_COLOR, ON_COLOR, self._progress)
-      knob_color = KNOB_COLOR
+      knob_color = self._blend_color(OFF_KNOB_COLOR, ON_KNOB_COLOR, self._progress)
     else:
       bg_color = self._blend_color(DISABLED_OFF_COLOR, DISABLED_ON_COLOR, self._progress)
       knob_color = DISABLED_KNOB_COLOR

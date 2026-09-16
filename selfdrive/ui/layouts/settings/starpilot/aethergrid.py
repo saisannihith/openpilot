@@ -1712,7 +1712,7 @@ def draw_toggle_switch(
   knob_progress: float | None = None,
   is_enabled: bool = True,
   track_color: rl.Color = AetherListColors.PRIMARY,
-  knob_color: rl.Color = rl.WHITE,
+  knob_color: rl.Color | None = None,
   width: int = AETHER_LIST_METRICS.toggle_width,
   height: int = AETHER_LIST_METRICS.toggle_height,
   right_inset: int = AETHER_LIST_METRICS.toggle_right_inset,
@@ -1725,6 +1725,9 @@ def draw_toggle_switch(
 
   if knob_progress is None:
     knob_progress = 1.0 if enabled else 0.0
+
+  if knob_color is None:
+    knob_color = rl.Color(126, 232, 151, 255) if enabled else rl.Color(242, 143, 139, 255)
 
   if not is_enabled:
     knob_color = with_alpha(knob_color, 132)
@@ -5599,4 +5602,3 @@ class TileGrid(Widget):
           tile.set_parent_rect(parent_rect)
         tile.render(snap_rect(rl.Rectangle(row_x + c * (row_tile_w + self._gap), rect.y + y_offset + r * (tile_h + self._gap), row_tile_w, tile_h)))
         tile_idx += 1
-
