@@ -13,7 +13,7 @@ def _draw_poly_outline(cx: float, cy: float, sides: int, radius: float, rotation
     p2 = rl.Vector2(int(cx + radius * math.cos(a2)), int(cy + radius * math.sin(a2)))
     rl.draw_line_ex(p1, p2, thickness, color)
 
-def render_stopping_point(renderer, font):
+def render_stopping_point(renderer, font, project_stop=None):
   params = ui_state.ui_params
   if not params.get_bool("ShowStoppingPoint"):
     return
@@ -27,16 +27,24 @@ def render_stopping_point(renderer, font):
   if ui_state.sm.valid.get("carState", False) and ui_state.sm["carState"].standstill:
     stopping_distance = 0.0
 
-  # Get the end of the projected path on the screen
-  projected = renderer._path.projected_points
-  if projected.size < 4:
+  if not math.isfinite(stopping_distance) or stopping_distance < 0:
     return
 
-  mid_idx = len(projected) // 2
-  v_left = projected[mid_idx - 1]
-  v_right = projected[mid_idx]
-  cx = (v_left[0] + v_right[0]) / 2.0
-  cy = (v_left[1] + v_right[1]) / 2.0
+  # Get the end of the projected path on the screen
+  if project_stop is not None:
+    anchor = project_stop(stopping_distance)
+    if anchor is None:
+      return
+    cx,cy = anchor
+  else:
+    projected = renderer._path.projected_points
+    if projected.size < 4:
+      return
+    mid_idx = len(projected) // 2
+    v_left = projected[mid_idx - 1]
+    v_right = projected[mid_idx]
+    cx = (v_left[0] + v_right[0]) / 2.0
+    cy = (v_left[1] + v_right[1]) / 2.0
 
   # Draw programmatic stop sign (octagon)
   radius = 35.0
@@ -73,3 +81,5 @@ def render_stopping_point(renderer, font):
     rl.draw_text_ex(font, dist_text, rl.Vector2(int(tx + 1), int(ty + 1)), 24, 0, rl.BLACK)
     # Draw white text
     rl.draw_text_ex(font, dist_text, rl.Vector2(int(tx), int(ty)), 24, 0, rl.WHITE)
+
+  return rl.Rectangle(cx-55,cy-110,110,115)

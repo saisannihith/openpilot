@@ -44,7 +44,7 @@ def _draw_text_with_outline(text: str, x: float, y: float, font, font_size: int)
   rl.draw_text_ex(font, text, pos, font_size, 0, rl.WHITE)
 
 
-def render_adjacent_lanes(renderer) -> None:
+def render_adjacent_lanes(renderer, fresh=None) -> None:
   """Draw left and right adjacent lane paths.
 
   Consolidates adjacent width path rendering and blind spot warning overlays.
@@ -65,7 +65,7 @@ def render_adjacent_lanes(renderer) -> None:
   # Fetch blindspot status if blind spot path is enabled
   blindspot_left = False
   blindspot_right = False
-  if blind_spot_enabled and sm.recv_frame["carState"] >= ui_state.started_frame:
+  if blind_spot_enabled and sm.recv_frame["carState"] >= ui_state.started_frame and (fresh is None or fresh('carState')):
     car_state = sm["carState"]
     blindspot_left = bool(car_state.leftBlindspot)
     blindspot_right = bool(car_state.rightBlindspot)
@@ -78,7 +78,7 @@ def render_adjacent_lanes(renderer) -> None:
   lane_width_left = 0.0
   lane_width_right = 0.0
   lane_detection_width = 3.5
-  if adjacent_enabled and sm.recv_frame["starpilotPlan"] >= ui_state.started_frame:
+  if adjacent_enabled and sm.recv_frame["starpilotPlan"] >= ui_state.started_frame and (fresh is None or fresh('starpilotPlan')):
     plan = sm["starpilotPlan"]
     lane_width_left = float(plan.laneWidthLeft)
     lane_width_right = float(plan.laneWidthRight)

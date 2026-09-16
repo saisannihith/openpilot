@@ -220,6 +220,15 @@ class StarPilotOnroadView(AugmentedRoadView):
     # Keep the CSC glow above the camera/model/path layers, but below the HUD.
     render_behind(rect, self._get_border_width())
 
+  def _render_world_overlays(self, rect: rl.Rectangle) -> None:
+    from openpilot.selfdrive.ui.onroad.world_overlays import stop_anchor
+    world = self.tesla_road_renderer
+    occupied = render_stopping_point(self.model_renderer, self._font_bold,
+                                     project_stop=lambda distance: stop_anchor(world,rect,ui_state,distance))
+    if occupied is not None:
+      world.overlay_exclusions.append(occupied)
+    render_behind(rect, self._get_border_width())
+
   def _full_alert_showing(self) -> bool:
     alert_showing, _ = self.alert_renderer.will_render()
     return alert_showing is not None and alert_showing.size == AlertSize.full

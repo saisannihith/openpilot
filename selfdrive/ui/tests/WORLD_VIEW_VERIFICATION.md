@@ -11,7 +11,7 @@ TOI/EPS protection, and vehicle parameters are unchanged.
 The model path is shown honestly, including disagreement with lane lines. It
 is not visually snapped to the lane center. Radar yRel is converted from
 left-positive to model right-positive exactly once. Model-associated leads
-use a generic rounded vehicle mesh; unclassified radar returns use small dots.
+use a generic authored sedan mesh; unclassified radar returns use small dots.
 No truck/sedan classification, brake-light state, rear coverage, or road
 topology is invented. Vehicle dimensions and shadows are illustrative.
 
@@ -94,6 +94,58 @@ LD_PRELOAD=/usr/local/venv/lib/python3.12/site-packages/_cffi_backend.cpython-31
 RAYLIB_BACKEND=headless /usr/local/venv/bin/python3 \
   selfdrive/ui/tests/verify_world_lead_frame.py --out /tmp/world-lead-check
 ```
+
+## Authored Cars and Shared Overlays, 2026-09-16
+
+This revision supersedes the procedural vehicle body and prior overlay behavior
+above. Earlier benchmark numbers describe their respective earlier revisions.
+
+- Added Quaternius's CC0 NormalCar1 sedan, with wheels, arches, mirrors, glazing,
+  and pillars. Original OBJ/MTL/license and a reproducible offline bake are included.
+  Runtime reads one cached, validated 23 KiB NPZ; 2,874 triangles per car.
+- Only radarState.leadOne can receive a lead chevron or distance/speed/gap labels
+  in world view. There is no secondary-lead fallback or display-side lead selection.
+  Other associated vehicles can remain visible without lead annotations.
+- Shared StarPilot stopping-point octagon/metrics now use fresh planner distance
+  projected into the world. It is a planned-stop indicator, not physical sign
+  classification. ShowStoppingPoint and ShowStoppingPointMetrics retain authority.
+- The existing path width, edge, color, rainbow, acceleration, dynamic-width,
+  adjacent-lane and blindspot display policies now draw through world projection.
+  White lane lines and red road edges intentionally retain the requested palette.
+  The current branch's Tesla Road selector is CameraView=5; no separate Tesla-path
+  toggle was found. No new driving policy or parameter writes were introduced.
+- Speed, cruise, steering/experimental button, driver monitor and alerts remain
+  in the existing HUD layers. Full-alert suppression and camera fallback remain.
+- STOP bounds are reserved before primary lead metrics are laid out. Collision
+  handling tries a bounded left/right placement and otherwise omits crowded text.
+- Batched projection matches Raylib's native projection within 0.001 pixels at
+  tested points. It avoids hundreds of Python/CFFI projection crossings per frame.
+- Actual Cap'n Proto model messages exposed unsupported list slicing during audit;
+  bounded islice/fromiter conversion fixes that issue, with a real-schema regression.
+
+Verification against this revision on the offroad comma 3x:
+
+- 72 focused tests passed; three warnings concern unavailable optional pytest plugins.
+- Three archived segments: 57,333 relevant messages, 3,599 model frames, 359 sampled
+  complete GPU render frames using actual messages and all three path color modes.
+- Full native-font scene captures: primary-only lead marker, STOP/lead non-overlap,
+  straight/left/right turns, exact lead-icon pixels, and projection equivalence.
+- 600-frame complete-scene timing including benchmark-only readback: median 22.18 ms,
+  p99 31.99 ms, maximum 120.92 ms (includes cold initialization). This is not an
+  onroad frame-time guarantee. Full HUD/live camera-process load was not benchmarked.
+- 1,000-frame mesh/resource run: median 12.70 ms, p99 17.99 ms, max 20.75 ms after
+  warmup. 12,000 changing-ID scene updates retained 17,880 Python bytes. RSS after
+  two cleanup cycles was 60,204/60,488 KiB; this is bounded-test evidence, not proof
+  against every possible leak.
+- Both standalone and shared-road-callback modes passed landscape/narrow scaled
+  parent framebuffer tests, including drawing HUD pixels after view cleanup.
+- New modules pass lint; changed modules introduce no new lint findings versus
+  HEAD (eight pre-existing upstream findings remain). Compile and diff-scope
+  checks pass and exclude control-code changes.
+
+The device's view selection is preserved. Select Tesla Road to use this scene.
+The screenshot fixtures intentionally exercise both a STOP marker and primary
+lead metrics simultaneously; they are not a reconstructed complete road scene.
 
 ## Reproduce
 

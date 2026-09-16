@@ -148,6 +148,9 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
     def render_world_leads(self, *_args):
       events.append('world_leads')
 
+    def render_world_road(self, *_args):
+      pass
+
   view = object.__new__(LayeredRoadView)
   view.events = events
   view.stream_type = augmented_road_view.ROAD_CAM

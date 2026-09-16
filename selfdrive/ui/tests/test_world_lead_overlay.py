@@ -48,6 +48,21 @@ def test_world_uses_selected_lead_and_shared_icons(monkeypatch):
   assert len(metrics) == 1 and not renderer._lead_vehicles[0].chevron
 
 
+def test_secondary_lead_never_gets_an_icon_label_or_primary_fallback(monkeypatch):
+  renderer, world, state, lead = setup_overlay(monkeypatch)
+  state.sm['radarState'].leadTwo = NS(status=True,dRel=50.,vLead=25.,vRel=2.,modelProb=.99)
+  world.lead_anchor = lambda i, rect: (500+i*200,500)
+  triangles,metrics = [],[]
+  monkeypatch.setattr(module.rl,'draw_triangle_fan',lambda *args: triangles.append(args))
+  monkeypatch.setattr(renderer,'_draw_lead_metrics',lambda *args,**kwargs: metrics.append(args))
+  renderer.render_world_leads(rl.Rectangle(0,0,1440,810),world)
+  assert len(metrics) == 1 and metrics[0][2] is lead
+  assert len(triangles) == 2 and not renderer._lead_vehicles[1].chevron
+  lead.status = False
+  renderer.render_world_leads(rl.Rectangle(0,0,1440,810),world)
+  assert len(metrics) == 1 and len(triangles) == 2
+
+
 @pytest.mark.parametrize('invalid', ['hidden', 'nan', 'no_anchor', 'inactive'])
 def test_invalid_or_hidden_lead_is_never_annotated(monkeypatch, invalid):
   renderer, world, state, lead = setup_overlay(monkeypatch)

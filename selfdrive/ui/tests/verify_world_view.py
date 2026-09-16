@@ -161,6 +161,14 @@ def main():
       print('CPU checks finished; initializing graphics', flush=True)
     import pyray as rl
     renderer_module = load('world_renderer_under_test',args.source/'tesla_road_renderer.py')
+    if (args.source/'selfdrive/assets/world/sedan.npz').exists():
+      from openpilot.common import basedir
+      old_base = basedir.BASEDIR
+      try:
+        basedir.BASEDIR = str(args.source)
+        renderer_module.vehicle_mesh()
+      finally:
+        basedir.BASEDIR = old_base
     rl.set_trace_log_level(rl.TraceLogLevel.LOG_INFO)
     rl.init_window(1440,720,'World view verification')
     if args.progress:

@@ -127,7 +127,9 @@ class AugmentedRoadView(CameraView):
     if self._tesla_road_view:
       try:
         self.tesla_road_renderer.render(self._content_rect, ui_state.sm, ui_state.started_frame,
-                                        ui_state.status == UIStatus.ENGAGED, parent_target=gui_app._render_texture)
+                                        ui_state.status == UIStatus.ENGAGED, parent_target=gui_app._render_texture,
+                                        road_overlay=self.model_renderer.render_world_road)
+        self._render_world_overlays(self._content_rect)
         self.model_renderer.render_world_leads(self._content_rect, self.tesla_road_renderer)
       except Exception:
         cloudlog.exception("World view failed; returning to camera")
@@ -162,6 +164,9 @@ class AugmentedRoadView(CameraView):
     msg = messaging.new_message('uiDebug')
     msg.uiDebug.drawTimeMillis = (time.monotonic() - start_draw) * 1000
     self._pm.send('uiDebug', msg)
+
+  def _render_world_overlays(self, rect: rl.Rectangle) -> None:
+    pass
 
   def _render_extra_road_overlays(self, rect: rl.Rectangle) -> None:
     """Render subclass road overlays inside the content scissor, above the model and below the HUD."""

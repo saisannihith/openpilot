@@ -190,7 +190,8 @@ class ModelRenderer(Widget):
     sm = ui_state.sm
     self._rect = rect
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
-    self._lead_text_rects, self._adjacent_lead_text_rects = [], []
+    self._lead_text_rects = list(getattr(world,'overlay_exclusions',()))
+    self._adjacent_lead_text_rects = []
     if not world.scene.fresh(sm, 'radarState', ui_state.started_frame, time.monotonic()):
       return
     radar_state = sm['radarState']
@@ -199,7 +200,8 @@ class ModelRenderer(Widget):
     if sm.updated.get('carParams', False):
       self._longitudinal_control = sm['carParams'].openpilotLongitudinalControl
     self._lead_info_enabled = self._params.get_bool('LeadInfo')
-    for i, lead in enumerate((radar_state.leadOne, radar_state.leadTwo)):
+    # The UI must not select a different lead or annotate secondary targets.
+    for i, lead in enumerate((radar_state.leadOne,)):
       point = world.lead_anchor(i, rect)
       if point is None or not lead.status or not all(math.isfinite(v) for v in (lead.dRel, lead.vLead, lead.vRel)):
         continue
@@ -209,6 +211,10 @@ class ModelRenderer(Widget):
         glow=[(x-19,y-12),(x,y+3),(x+19,y-12)],
         chevron=[(x-15,y-12),(x,y),(x+15,y-12)], fill_alpha=255)
     self._draw_lead_indicator(radar_state, above=True)
+
+  def render_world_road(self, world, rect):
+    from openpilot.selfdrive.ui.onroad.world_overlays import render_road
+    render_road(self, world, rect, ui_state)
 
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
@@ -645,6 +651,8 @@ class ModelRenderer(Widget):
 
     rect_x = centerX - max_text_width / 2 - x_margin
     rect_y = startY - line_height - y_margin
+    if above:
+      rect_y = startY - y_margin
     rect_w = max_text_width + 2 * x_margin
     rect_h = len(text_lines) * line_height + 2 * y_margin
     text_rect = rl.Rectangle(rect_x, rect_y, rect_w, rect_h)
@@ -655,6 +663,17 @@ class ModelRenderer(Widget):
         collision = True
         break
 
+    if collision and above:
+      occupied = self._lead_text_rects+self._adjacent_lead_text_rects
+      candidates = [x for r in occupied for x in (r.x-max_text_width/2-x_margin-12,
+                                                  r.x+r.width+max_text_width/2+x_margin+12)]
+      for candidate in candidates:
+        candidate = float(np.clip(candidate,self._rect.x+max_text_width/2+12,
+                                   self._rect.x+self._rect.width-max_text_width/2-12))
+        text_rect.x = candidate-max_text_width/2-x_margin
+        if not any(rl.check_collision_recs(text_rect,r) for r in self._lead_text_rects+self._adjacent_lead_text_rects):
+          centerX,collision = candidate,False
+          break
     if collision:
       return
 

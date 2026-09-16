@@ -50,66 +50,18 @@ class GpuMesh:
       self.closed = True
 
 
-@lru_cache(maxsize=2)
-def vehicle_mesh(body):
-  vertices, colors = [], []
-  for i in range(24):
-    a, b = i * math.tau / 24, (i + 1) * math.tau / 24
-    vertices.extend(((0,.025,0), (1.2*math.cos(a),.025,2.8*math.sin(a)), (1.2*math.cos(b),.025,2.8*math.sin(b))))
-    colors.extend(((0,0,0,100),(0,0,0,0),(0,0,0,0)))
-
-  def face(points, color):
-    a, b, c = (np.asarray(p, dtype=float) for p in points[:3])
-    normal = np.cross(b - a, c - a)
-    normal /= max(1e-9, float(np.linalg.norm(normal)))
-    light = 0.72 + 0.24 * abs(normal[1]) + 0.04 * normal[0]
-    shade = tuple(int(max(0, min(255, value * light))) for value in color[:3]) + (255,)
-    for i in range(1, len(points) - 1):
-      vertices.extend((points[0], points[i], points[i + 1]))
-      colors.extend((shade,) * 3)
-
-  # Rounded superellipse body, swept cabin and wheel geometry are built once,
-  # not allocated per vehicle/frame. These are generic vehicle silhouettes.
-  rings = []
-  for z in np.linspace(-2.4, 2.4, 25):
-    width = .99 * (1 - (abs(z) / 2.43)**4)**.25
-    ring = []
-    for angle in np.linspace(0, math.tau, 32, endpoint=False):
-      c, s = math.cos(angle), math.sin(angle)
-      ring.append((width * math.copysign(abs(c)**.5, c),
-                   .64 + .35 * math.copysign(abs(s)**.5, s), float(z)))
-    rings.append(ring)
-  for front, rear in zip(rings, rings[1:], strict=False):
-    for i in range(32):
-      face((front[i], front[(i+1)%32], rear[(i+1)%32], rear[i]), body)
-  face(tuple(reversed(rings[0])), body)
-  face(rings[-1], body)
-  cabin = []
-  for z in np.linspace(-1.48, 1.65, 21):
-    t = (z + 1.48) / 3.13
-    height = .65 * math.sin(math.pi * t)**.7
-    cabin.append([(.82 * math.cos(a), 1.0 + height * math.sin(a)**.55, float(z))
-                  for a in np.linspace(0, math.pi, 25)])
-  for front, rear in zip(cabin, cabin[1:], strict=False):
-    z = (front[0][2] + rear[0][2]) / 2
-    for i in range(24):
-      roof = 5 <= i < 19 and -.65 < z < .85
-      pillar = abs(z - .22) < .09 or i in (0, 23)
-      color = body if roof or pillar else (49, 58, 67)
-      face((front[i], front[i+1], rear[i+1], rear[i]), color)
-  # Static tail lamps, never inferred brake state from relative velocity.
-  face(((-.7,.49,2.405),(.7,.49,2.405),(.7,.64,2.405),(-.7,.64,2.405)), (70,77,85))
-  for side in (-1, 1):
-    x0, x1 = sorted((side*.52, side*.8))
-    face(((x0,.65,2.405),(x1,.65,2.405),(x1,.73,2.405),(x0,.73,2.405)), (150,35,41))
-    for z in (-1.5, 1.5):
-      for radius, x, color in ((.34, side*.99, (24,27,31)), (.18, side*1.01, (112,121,129))):
-        center = (x,.34,z)
-        ring = [(x,.34+radius*math.cos(i*math.tau/24),z+radius*math.sin(i*math.tau/24)) for i in range(24)]
-        for i in range(24):
-          face((center,ring[i],ring[(i+1)%24]), color)
-  return np.array(vertices, np.float32), np.array(colors, np.uint8)
-
+@lru_cache(maxsize=1)
+def vehicle_mesh():
+  # Author-modeled CC0 mesh, baked offline: no OBJ parsing or textures onroad.
+  from openpilot.common.basedir import BASEDIR
+  from pathlib import Path
+  with np.load(Path(BASEDIR)/'selfdrive/assets/world/sedan.npz',allow_pickle=False) as asset:
+    vertices,colors = asset['vertices'],asset['colors']
+  if (vertices.dtype != np.float32 or colors.dtype != np.uint8 or vertices.shape != (len(colors),3)
+      or colors.shape != (len(vertices),4) or not 0 < len(vertices) <= 20000 or len(vertices)%3
+      or not np.isfinite(vertices).all()):
+    raise ValueError('Invalid world vehicle asset')
+  return vertices,colors
 
 class TeslaRoadRenderer:
   def __init__(self):
@@ -121,15 +73,24 @@ class TeslaRoadRenderer:
     self._vertices = np.zeros((CAPACITY, 3), dtype=np.float32)
     self._colors = np.zeros((CAPACITY, 4), dtype=np.uint8)
     self._count = 0
+    self.overlay_exclusions = []
     self._camera = rl.Camera3D(rl.Vector3(0, 10.5, 20), rl.Vector3(0, 0, -10), UP, 46,
                               rl.CameraProjection.CAMERA_PERSPECTIVE)
+    eye,target,up = (np.array([v.x,v.y,v.z],dtype=np.float64) for v in (self._camera.position,self._camera.target,self._camera.up))
+    forward = target-eye
+    forward /= np.linalg.norm(forward)
+    right = np.cross(forward,up)
+    right /= np.linalg.norm(right)
+    self._view_basis = np.array([right,np.cross(right,forward),forward])
+    self._eye = eye
+    self._focal_factor = .5/math.tan(math.radians(self._camera.fovy)/2)
 
   def _initialize(self):
     if self._meshes:
       return
     try:
-      for color in ((255,255,255), (255,255,255)):
-        self._meshes.append(GpuMesh(*vehicle_mesh(color)))
+      for _ in range(2):
+        self._meshes.append(GpuMesh(*vehicle_mesh()))
       self._meshes.append(GpuMesh(self._vertices, self._colors, dynamic=True))
     except Exception:
       self.close()
@@ -171,9 +132,10 @@ class TeslaRoadRenderer:
     self._meshes[2].update(self._vertices,self._colors,self._count)
     self._geometry_key = key
 
-  def render(self, rect, sm, started_frame, engaged, now=None, parent_target=None):
+  def render(self, rect, sm, started_frame, engaged, now=None, parent_target=None, road_overlay=None):
     now = time.monotonic() if now is None else now
     self.scene.update(sm, started_frame, now)
+    self.overlay_exclusions.clear()
     # One color/depth target reused every frame, bounded independently of DPI.
     scale = min(1.0, 1440.0/max(1,rect.width), 810.0/max(1,rect.height))
     size = (max(2,int(rect.width*scale)), max(2,int(rect.height*scale)))
@@ -187,7 +149,8 @@ class TeslaRoadRenderer:
     rl.end_scissor_mode()
     try:
       self._initialize()
-      self._update_geometry(engaged)
+      if road_overlay is None:
+        self._update_geometry(engaged)
       if size != self._target_size:
         if self._target is not None:
           rl.unload_render_texture(self._target)
@@ -204,7 +167,18 @@ class TeslaRoadRenderer:
       rl.rl_disable_backface_culling()
       try:
         rl.draw_plane(rl.Vector3(0,-.02,-40), rl.Vector2(200,260), GROUND)
-        self._meshes[2].draw()
+        if road_overlay is None:
+          self._meshes[2].draw()
+        else:
+          # Shared path styles render on the ground before the vehicle pass;
+          # drawing them over the completed world would paint through cars.
+          rl.rl_enable_backface_culling()
+          rl.end_mode_3d()
+          try:
+            road_overlay(self,rl.Rectangle(0,0,*size))
+          finally:
+            rl.begin_mode_3d(self._camera)
+            rl.rl_disable_backface_culling()
         for obj in self.scene.objects:
           position = rl.Vector3(obj.right,0,-obj.forward-2.4)
           if obj.vehicle:
@@ -239,11 +213,45 @@ class TeslaRoadRenderer:
     obj = next((obj for obj in self.scene.objects if obj.key == ('lead', index)), None)
     if obj is None or self._target_size is None:
       return None
-    point = rl.get_world_to_screen_ex(rl.Vector3(obj.right,1.8,-obj.forward-2.4),
-                                      self._camera,*self._target_size)
-    x = rect.x + point.x * rect.width / self._target_size[0]
-    y = rect.y + point.y * rect.height / self._target_size[1]
+    return self.project(obj.forward+2.4,obj.right,rect,height=1.8)
+
+  def project(self, forward, right, rect, height=0.02):
+    if self._target_size is None or not all(math.isfinite(v) for v in (forward,right,height)):
+      return None
+    dx,dy,dz = right-self._eye[0],height-self._eye[1],-forward-self._eye[2]
+    h,v,d = self._view_basis
+    depth = d[0]*dx+d[1]*dy+d[2]*dz
+    if depth <= .01:
+      return None
+    focal = self._target_size[1]*self._focal_factor
+    x = rect.x+rect.width*(.5+(h[0]*dx+h[1]*dy+h[2]*dz)*focal/depth/self._target_size[0])
+    y = rect.y+rect.height*(.5-(v[0]*dx+v[1]*dy+v[2]*dz)*focal/depth/self._target_size[1])
     return (x,y) if rect.x <= x <= rect.x+rect.width and rect.y <= y <= rect.y+rect.height else None
+
+  def project_ribbon(self, points, width, rect):
+    if not points or not math.isfinite(width) or width < 0:
+      return np.empty((0,2),np.float32)
+    if len(points) < 2:
+      return np.empty((0,2),np.float32)
+    p = np.asarray(points,dtype=np.float64)
+    delta = np.empty_like(p)
+    delta[1:-1] = p[2:]-p[:-2]
+    delta[0],delta[-1] = p[1]-p[0],p[-1]-p[-2]
+    norm = np.maximum(1e-6,np.hypot(delta[:,0],delta[:,1]))
+    offset = np.column_stack((-delta[:,1],delta[:,0]))*(width/norm[:,None])
+    both = np.concatenate((p-offset,p+offset))
+    xyz = np.column_stack((both[:,1],np.full(len(both),.02),-both[:,0]))
+    view = (xyz-self._eye) @ self._view_basis.T
+    depth = np.maximum(.01,view[:,2])
+    focal = self._target_size[1]*self._focal_factor
+    screen = np.column_stack((rect.x+rect.width*(.5+view[:,0]*focal/depth/self._target_size[0]),
+                              rect.y+rect.height*(.5-view[:,1]*focal/depth/self._target_size[1])))
+    valid = (view[:,2] > .01) & np.isfinite(screen).all(axis=1)
+    valid &= (screen[:,0] >= rect.x) & (screen[:,0] <= rect.x+rect.width)
+    valid &= (screen[:,1] >= rect.y) & (screen[:,1] <= rect.y+rect.height)
+    n = len(p)
+    paired = valid[:n] & valid[n:]
+    return np.concatenate((screen[:n][paired],screen[n:][paired][::-1])).astype(np.float32)
 
   def close(self, parent_target=None):
     has_resources = bool(self._meshes) or self._target is not None
