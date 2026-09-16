@@ -80,6 +80,7 @@ def main():
   parser.add_argument('--source', type=Path)
   parser.add_argument('--out', type=Path, required=True)
   parser.add_argument('--frames',type=int,default=3)
+  parser.add_argument('--with-stop',action='store_true',help='Explicit synthetic STOP/collision test; not a detected sign')
   parser.add_argument('--route',action='append',default=[])
   args = parser.parse_args()
   if Path('/AGNOS').exists():
@@ -127,7 +128,7 @@ def main():
       sm['carState'] = NS(vEgo=22.,standstill=False,leftBlindspot=True,rightBlindspot=False)
       sm['carParams'] = NS(openpilotLongitudinalControl=True)
       sm['starpilotPlan'] = NS(desiredFollowDistance=30.,laneWidthLeft=3.5,laneWidthRight=3.5,
-                              redLight=True,forcingStopLength=28.)
+                              redLight=args.with_stop,forcingStopLength=28.)
       sm['longitudinalPlan'] = NS(allowThrottle=True)
       sm['selfdriveState'] = NS(experimentalMode=False)
       for lead in (sm['radarState'].leadOne,sm['radarState'].leadTwo):

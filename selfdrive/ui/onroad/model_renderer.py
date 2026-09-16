@@ -621,10 +621,15 @@ class ModelRenderer(Widget):
       time_gap = lead_distance / max(v_ego, 1.0)
       text_lines.append(f"{time_gap:.2f} seconds")
 
+      if above:
+        text_lines = [f"{distance_string} {lead_distance_unit}  |  {speed_string}{lead_speed_unit}", f"{time_gap:.2f} s"]
+        if self._longitudinal_control:
+          text_lines[1] += f"  |  desired {desired_distance} {lead_distance_unit}"
+
     from openpilot.system.ui.lib.application import gui_app, FontWeight
     from openpilot.selfdrive.ui.onroad.starpilot.path import _draw_text_with_outline
     font = gui_app.font(FontWeight.SEMI_BOLD)
-    font_size = 36
+    font_size = 24 if above else 36
     line_height = font_size + 2
 
     max_text_width = 0.0
@@ -638,11 +643,10 @@ class ModelRenderer(Widget):
     if above:
       # Never squeeze readable text into a tiny world viewport or let it
       # cover the vehicle. Existing HUD/alerts are drawn after these labels.
-      if max_text_width + 24 > self._rect.width:
+      half_width = max_text_width*.6
+      if centerX-half_width < self._rect.x+12 or centerX+half_width > self._rect.x+self._rect.width-12:
         return
-      centerX = float(np.clip(centerX, self._rect.x + max_text_width/2 + 12,
-                             self._rect.x + self._rect.width - max_text_width/2 - 12))
-      startY = min(p[1] for p in chevron) - len(text_lines)*line_height - 10
+      startY = min(p[1] for p in chevron) - len(text_lines)*line_height - 6
       if startY < self._rect.y + 12:
         return
 
@@ -664,16 +668,19 @@ class ModelRenderer(Widget):
         break
 
     if collision and above:
+      # Keep the label attached horizontally to its car. Stack upward only
+      # when a real stopping-point overlay occupies the space above the roof.
       occupied = self._lead_text_rects+self._adjacent_lead_text_rects
-      candidates = [x for r in occupied for x in (r.x-max_text_width/2-x_margin-12,
-                                                  r.x+r.width+max_text_width/2+x_margin+12)]
-      for candidate in candidates:
-        candidate = float(np.clip(candidate,self._rect.x+max_text_width/2+12,
-                                   self._rect.x+self._rect.width-max_text_width/2-12))
-        text_rect.x = candidate-max_text_width/2-x_margin
-        if not any(rl.check_collision_recs(text_rect,r) for r in self._lead_text_rects+self._adjacent_lead_text_rects):
-          centerX,collision = candidate,False
+      for _ in range(len(occupied)+1):
+        hits = [r for r in occupied if rl.check_collision_recs(text_rect,r)]
+        if not hits:
+          collision = False
           break
+        top = min(r.y for r in hits)-8-text_rect.height
+        if top < self._rect.y+12:
+          return
+        startY += top-text_rect.y
+        text_rect.y = top
     if collision:
       return
 

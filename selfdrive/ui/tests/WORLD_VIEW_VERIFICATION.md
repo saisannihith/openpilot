@@ -182,6 +182,20 @@ lead metrics simultaneously; they are not a reconstructed complete road scene.
   These bounded offroad tests do not establish unlimited leak-free/live-drive behavior.
 - No changes to fusion, planners, controllers, safety limits, or device settings.
 
+## Compact Lead Label Revision, 2026-09-16
+
+- World-only lead text is now 24 px rather than 36 px, arranged in two lines:
+  distance and absolute speed; time gap and desired distance (when applicable).
+- The label follows the primary car's projected anchor and remains horizontally
+  centered on it. STOP collisions stack the label upward, never off to the side.
+  Labels without enough viewport space are omitted rather than clipped/detached.
+- Camera-mode label size/format and planner/control behavior are unchanged.
+- The synthetic renderer preview now defaults to no STOP state. Pass --with-stop
+  explicitly for its stopping-point/collision test. Real display still requires
+  ShowStoppingPoint plus a valid redLight planner state and fresh world geometry.
+- 96 native unit tests pass. Native-font straight/left/right captures and scaled
+  framebuffer checks pass both with and without the synthetic STOP state.
+
 ## Reproduce
 
 From a configured repository, with a Raylib-capable Python environment:

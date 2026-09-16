@@ -82,9 +82,9 @@ def test_invalid_or_hidden_lead_is_never_annotated(monkeypatch, invalid):
 
 
 @pytest.mark.parametrize('metric,si,expected', [
-  (True,False,['30 m (Desired: 25)','72 km/h','2.00 seconds']),
-  (False,False,['98 ft (Desired: 82)','45 mph','2.00 seconds']),
-  (False,True,['30 m (Desired: 25)','20 m/s','2.00 seconds']),
+  (True,False,['30 m  |  72 km/h','2.00 s  |  desired 25 m']),
+  (False,False,['98 ft  |  45 mph','2.00 s  |  desired 82 ft']),
+  (False,True,['30 m  |  20 m/s','2.00 s  |  desired 25 m']),
 ])
 def test_shared_metrics_keep_absolute_speed_and_units(monkeypatch, metric, si, expected):
   renderer, world, state, lead = setup_overlay(monkeypatch)
@@ -96,8 +96,39 @@ def test_shared_metrics_keep_absolute_speed_and_units(monkeypatch, metric, si, e
   from openpilot.system.ui.lib import application
   calls = []
   monkeypatch.setattr(application.gui_app, 'font', lambda *_args: None)
-  monkeypatch.setattr(module, 'measure_text_cached', lambda font,text,size: NS(x=len(text)*16,y=36))
+  monkeypatch.setattr(module, 'measure_text_cached', lambda font,text,size: NS(x=len(text)*size/2,y=size))
   monkeypatch.setattr(path, '_draw_text_with_outline', lambda text,*args: calls.append((text,args)))
   renderer._draw_lead_metrics(False, [(515,488),(500,500),(485,488)], lead, above=True)
   assert [text for text,args in calls] == expected
   assert all(100 <= args[0] < 1300 and 50 <= args[1] < 488 for text,args in calls)
+  assert all(args[-1] == 24 and args[0]+len(text)*12/2 == 500 for text,args in calls)
+
+
+def test_world_metrics_follow_lead_and_stack_up_not_sideways(monkeypatch):
+  renderer,world,state,lead = setup_overlay(monkeypatch)
+  renderer._longitudinal_control = False
+  renderer._rect = rl.Rectangle(0,0,1400,700)
+  from openpilot.selfdrive.ui.onroad.starpilot import path
+  from openpilot.system.ui.lib import application
+  calls = []
+  monkeypatch.setattr(application.gui_app,'font',lambda *_args:None)
+  monkeypatch.setattr(module,'measure_text_cached',lambda font,text,size:NS(x=len(text)*size/2,y=size))
+  monkeypatch.setattr(path,'_draw_text_with_outline',lambda text,*args:calls.append((text,args)))
+  for x,y in ((500,500),(650,440),(800,550)):
+    renderer._lead_text_rects,renderer._adjacent_lead_text_rects = [],[]
+    calls.clear()
+    renderer._draw_lead_metrics(False,[(x-15,y-12),(x,y),(x+15,y-12)],lead,above=True)
+    assert len(calls) == 2
+    assert all(args[0]+len(text)*12/2 == x for text,args in calls)
+    assert calls[0][1][1] == y-12-52-6
+  stop = rl.Rectangle(745,430,110,100)
+  renderer._lead_text_rects = [stop]
+  calls.clear()
+  renderer._draw_lead_metrics(False,[(785,538),(800,550),(815,538)],lead,above=True)
+  assert len(calls) == 2
+  assert all(args[0]+len(text)*12/2 == 800 for text,args in calls)
+  assert not rl.check_collision_recs(stop,renderer._lead_text_rects[-1])
+  renderer._lead_text_rects = []
+  calls.clear()
+  renderer._draw_lead_metrics(False,[(5,438),(20,450),(35,438)],lead,above=True)
+  assert not calls
