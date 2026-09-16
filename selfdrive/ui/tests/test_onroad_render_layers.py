@@ -142,7 +142,7 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
       if self.name == 'world' and mode == 'world_failure':
         raise RuntimeError('injected graphics failure')
 
-    def close(self):
+    def close(self, **_kwargs):
       events.append(self.name + '_close')
 
   view = object.__new__(LayeredRoadView)
@@ -203,7 +203,7 @@ def test_offroad_releases_world_and_camera_resources(monkeypatch):
   module = _load_augmented_road_view(monkeypatch)
   view = object.__new__(module.AugmentedRoadView)
   view.events = []
-  view.tesla_road_renderer = SimpleNamespace(close=lambda: view.events.append('world_close'))
+  view.tesla_road_renderer = SimpleNamespace(close=lambda **_kwargs: view.events.append('world_close'))
   view._using_world = True
   view._world_failed = True
   view._offroad_transition()

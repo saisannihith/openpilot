@@ -92,7 +92,7 @@ class AugmentedRoadView(CameraView):
     if self._tesla_road_view != self._using_world:
       self._reset_camera_connection()
       if not self._tesla_road_view:
-        self.tesla_road_renderer.close()
+        self.tesla_road_renderer.close(parent_target=gui_app._render_texture)
       self._using_world = self._tesla_road_view
     if camera_view == CAMERA_VIEW_TESLA_ROAD and not self._tesla_road_view:
       camera_view = CAMERA_VIEW_STANDARD
@@ -131,7 +131,7 @@ class AugmentedRoadView(CameraView):
       except Exception:
         cloudlog.exception("World view failed; returning to camera")
         self._world_failed = True
-        self.tesla_road_renderer.close()
+        self.tesla_road_renderer.close(parent_target=gui_app._render_texture)
         super()._render(self._content_rect)
     elif self._camera_view_none:
       rl.draw_rectangle_rec(self._content_rect, rl.BLACK)
@@ -169,14 +169,14 @@ class AugmentedRoadView(CameraView):
     super()._offroad_transition()
     renderer = getattr(self, "tesla_road_renderer", None)
     if renderer is not None:
-      renderer.close()
+      renderer.close(parent_target=gui_app._render_texture)
     self._using_world = False
     self._world_failed = False
 
   def close(self):
     renderer = getattr(self, "tesla_road_renderer", None)
     if renderer is not None:
-      renderer.close()
+      renderer.close(parent_target=gui_app._render_texture)
     super().close()
 
   def _handle_mouse_press(self, _):

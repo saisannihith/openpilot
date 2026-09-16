@@ -216,10 +216,12 @@ class TeslaRoadRenderer:
       rl.begin_scissor_mode(int(rect.x),int(rect.y),int(rect.width),int(rect.height))
     rl.draw_texture_pro(self._target.texture, rl.Rectangle(0,0,size[0],-size[1]), rect, rl.Vector2(0,0),0,WHITE)
 
-  def close(self):
+  def close(self, parent_target=None):
     has_resources = bool(self._meshes) or self._target is not None
-    parent_framebuffer = rl.rl_get_active_framebuffer() if has_resources else None
+    parent_framebuffer = parent_target.id if parent_target is not None else (rl.rl_get_active_framebuffer() if has_resources else None)
     released_framebuffer = self._target.id if self._target is not None else None
+    if has_resources:
+      rl.rl_draw_render_batch_active()
     for mesh in self._meshes:
       mesh.close()
     self._meshes.clear()
