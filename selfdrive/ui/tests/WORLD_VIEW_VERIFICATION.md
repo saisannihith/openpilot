@@ -222,6 +222,47 @@ lead metrics simultaneously; they are not a reconstructed complete road scene.
   colors. The pixel test clears its framebuffer exactly as GuiApplication does.
 - Physical live-camera stream reacquisition while driving was not tested offroad.
 
+## Full-Screen Framing And Radar Avatars, 2026-09-16
+
+- The approved 2160x1080 composition uses a closer camera and viewport clipping
+  rather than dropping offscreen ribbon endpoints. Existing near-field lane
+  tangents continue behind the ego avatar for presentation only. No detected
+  path, lane, road-edge, or vehicle position is moved or written back to controls.
+- Display-only radar history uses at most 128 input IDs and the existing 16-object
+  scene cap. Measured, continuous targets moving within confident lane geometry
+  can receive a muted generic car avatar after at least 0.3 seconds / four samples.
+  This is a visualization heuristic, not an OEM vehicle classification or a new
+  control-qualified lead. Uncertain/static returns stay dots; a previously moving
+  target may remain an avatar when it stops while observations remain continuous.
+- Identity jumps, missing IDs, error flags, stale input and new drives reset the
+  visual history. Raw radar avatars are centered at the radar reflection location;
+  their body dimensions are illustrative. No lane snapping or unseen rear traffic.
+  Estimated traffic direction uses consistent ego-plus-relative longitudinal
+  velocity and road tangent, not measured vehicle yaw or divided-road classification.
+- 130 native tests passed, including lifecycle, identity reuse, duplicates,
+  stationary clutter, opposing motion, 128-ID bounds, projection and existing UI.
+  Three unrelated pytest configuration warnings reflect absent optional plugins.
+- Six unique recorded segments passed UI replay: 114,674 relevant messages and
+  719 sampled GPU frames. Recorded lane counts span 0-4; radar avatars appeared
+  in multiple segments, with up to three simultaneous radar-only avatars.
+  Replay advances scene state for every relevant message before sampling renders.
+- Two exact camera/model frame matches from directly identified device recordings
+  were inspected: a vehicle in the left lane and two vehicles ahead on an
+  undivided road. These are spot checks, not comprehensive object classification
+  ground truth. An older copied segment did not match the initially selected
+  current-route video by hash; that mismatched video was excluded from validation.
+- No sampled real segment contained a qualified oncoming avatar. That branch has
+  synthetic coverage only. No 360-degree tracking or unseen vehicles are implied.
+- Native GPU checks include 2160x1080 bottom-edge pixels, straight/left/right
+  geometry, label/icon alignment, rainbow on/off and 20 hot resource recreations.
+  No changes to control/radar qualification, steering safety, parameters or schemas.
+- The initial 2,200-update / 128-input stress run retained 1,096 Python bytes;
+  its repeated tangent work prompted an equivalent lane-membership optimization.
+  The optimized 800-update test retained 2,888 bytes after collection, with
+  18.63 ms median / 21.88 ms p99 whole-scene update time at the 128-input cap.
+  Both runs stayed at <=128 history entries and <=16 displayed objects. These
+  finite offroad tests do not establish unlimited leak-free or onroad performance.
+
 ## Reproduce
 
 From a configured repository, with a Raylib-capable Python environment:

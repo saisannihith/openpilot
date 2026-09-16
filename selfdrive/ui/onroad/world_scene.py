@@ -6,6 +6,7 @@ No track classification, brake-light state, or road topology is inferred.
 from dataclasses import dataclass
 from itertools import islice
 import math
+from openpilot.selfdrive.ui.onroad.radar_visual_tracks import RadarVisualTracks
 
 MAX_POINTS = 33
 MAX_OBJECTS = 16
@@ -38,6 +39,21 @@ def lateral_at(points, distance):
     if x0 <= distance <= x1:
       return y0 + (y1 - y0) * (distance - x0) / (x1 - x0)
   return points[-1][1]
+
+
+def display_lane_continuation(points):
+  """Illustrative near-field tail only; never change the detected scene data."""
+  if len(points) < 2 or not 0 <= points[0][0] <= 2.:
+    return points
+  x,y = points[0]
+  end = min(x+6.,points[-1][0])
+  if end-x < 1.:
+    return points
+  slope = (lateral_at(points,end)-y)/(end-x)
+  # No invented topology or unseen objects: only continue the current tangent
+  # behind the avatar so visible lane ribbons can reach the viewport boundary.
+  slope = max(-.4,min(.4,slope))
+  return ((-8.,y+(-8.-x)*slope),*points)
 
 
 def path_yaw(points):
@@ -74,7 +90,18 @@ def road_yaw(lanes, forward, right):
   return None
 
 
+def in_lane_corridor(lanes, forward, right):
+  """Same lane bounds as road_yaw, without computing four unused tangents."""
+  values = [lateral_at(line,forward) if line and min(line[-1][0],forward+4.)-max(line[0][0],forward-4.) >= 2.
+            else None for line in lanes]
+  return any(left is not None and other is not None and 2. <= other-left <= 5.5 and left <= right <= other
+             for left,other in zip(values,values[1:],strict=False))
+
+
 def vehicle_center(obj):
+  if obj.radar_avatar:
+    # Raw radar is a reflection location, not a verified front/rear bumper.
+    return obj.forward,obj.right
   # dRel is the rear reference, not the mesh center. Rotate the center offset
   # too, so the rear reference remains at the observed point through curves.
   angle = math.radians(obj.yaw)
@@ -91,6 +118,8 @@ class SceneObject:
   identity: tuple = ()
   yaw: float = 0.
   heading_time: float = 0.
+  radar_avatar: bool = False
+  direction: int = 1
 
 
 class WorldScene:
@@ -107,6 +136,9 @@ class WorldScene:
     self.revision = 0
     self.ego_yaw = 0.0
     self.heading_time = None
+    self.radar_visuals = RadarVisualTracks()
+    self.radar_visual_key = None
+    self.radar_avatars = {}
 
   @staticmethod
   def fresh(sm, name, started_frame, now):
@@ -140,7 +172,24 @@ class WorldScene:
 
     sources = ('radarState', 'starpilotRadarState', 'liveTracks')
     available = tuple(self.fresh(sm, key, started_frame, now) for key in sources)
-    object_key = (started_frame, *(sm.recv_frame[key] if ok else -1 for key, ok in zip(sources, available, strict=False)))
+    if available[2]:
+      errors = sm['liveTracks'].errors
+      available = (*available[:2], not (errors.canError or errors.radarFault or errors.wrongConfig or
+                                        errors.radarUnavailableTemporary))
+    radar_key = (started_frame,sm.recv_frame['liveTracks']) if available[2] else None
+    if not available[2] or not model_ok or not self.fresh(sm,'carState',started_frame,now):
+      self.radar_visuals.reset()
+      self.radar_avatars = {}
+      self.radar_visual_key = None
+    elif radar_key != self.radar_visual_key:
+      if self.radar_visual_key is None or self.radar_visual_key[0] != started_frame:
+        self.radar_visuals.reset()
+      self.radar_avatars = self.radar_visuals.update(
+        sm['liveTracks'].points,sm.recv_time['liveTracks'],float(sm['carState'].vEgo),
+        lambda d,y: in_lane_corridor(self.lanes,d,y))
+      self.radar_visual_key = radar_key
+    object_key = (started_frame, bool(self.radar_avatars),
+                  *(sm.recv_frame[key] if ok else -1 for key, ok in zip(sources, available, strict=False)))
     if object_key == self.object_key:
       if model_changed:
         self._orient_objects(sm.recv_time['modelV2'] if model_ok else now)
@@ -160,7 +209,11 @@ class WorldScene:
              (not (other.identity[0] == identity[0] == 'track') and
               abs(other.forward-d) < 2.5 and abs(other.right-y) < 1.0) for other in candidates):
         return
-      candidates.append(SceneObject(key, d, y, vehicle, received, identity))
+      candidate = SceneObject(key, d, y, vehicle, received, identity)
+      if not vehicle and tracked and track_id in self.radar_avatars:
+        candidate.radar_avatar = True
+        candidate.direction = self.radar_avatars[track_id]
+      candidates.append(candidate)
 
     if available[0]:
       rs = sm['radarState']
@@ -180,7 +233,7 @@ class WorldScene:
       if not (errors.canError or errors.radarFault or errors.wrongConfig or errors.radarUnavailableTemporary):
         for point in islice(radar.points, MAX_RADAR_INPUTS):
           add(('radar', int(point.trackId)), point, False, sm.recv_time['liveTracks'])
-    candidates.sort(key=lambda item: (not item.vehicle, item.forward))
+    candidates.sort(key=lambda item: (not item.vehicle, not item.radar_avatar, item.forward))
     previous = {obj.identity: obj for obj in self.objects} if same_drive else {}
     for obj in candidates[:MAX_OBJECTS]:
       old = previous.get(obj.identity)
@@ -195,16 +248,22 @@ class WorldScene:
 
   def _orient_objects(self, model_time):
     for obj in self.objects:
-      if not obj.vehicle:
+      if not (obj.vehicle or obj.radar_avatar):
+        continue
+      if obj.radar_avatar and obj.identity[1] not in self.radar_avatars:
+        obj.radar_avatar = False
         continue
       target = road_yaw(self.lanes,obj.forward,obj.right)
       received = max(model_time,obj.received)
       if target is None:
+        obj.radar_avatar = False
         obj.yaw,obj.heading_time = 0.,0.
         continue
+      if obj.radar_avatar and obj.direction < 0:
+        target += 180.
       dt = received-obj.heading_time
       blend = 1.0-math.exp(-dt/.12) if obj.heading_time and 0 <= dt < MAX_AGE else 1.
-      obj.yaw += blend*(target-obj.yaw)
+      obj.yaw += blend*((target-obj.yaw+180.)%360.-180.)
       obj.heading_time = received
 
   def path_half_width(self, forward, right):

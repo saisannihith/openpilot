@@ -9,7 +9,7 @@ from itertools import islice
 import numpy as np
 import pyray as rl
 
-from openpilot.selfdrive.ui.onroad.world_scene import lateral_at
+from openpilot.selfdrive.ui.onroad.world_scene import lateral_at, display_lane_continuation
 from openpilot.selfdrive.ui.onroad.starpilot.path import render_adjacent_lanes, render_path_edges
 from openpilot.system.ui.lib.shader_polygon import draw_polygon
 
@@ -87,18 +87,19 @@ def render_road(renderer, world, rect, state):
   renderer._path.projected_points = world.project_ribbon(path,pw*(1-edge),rect)
   renderer._track_edge_vertices = world.project_ribbon(path,pw,rect)
 
-  for lane in scene.lanes:
+  display_lanes = tuple(display_lane_continuation(lane) for lane in scene.lanes)
+  for lane in display_lanes:
     draw_polygon(rect,world.project_ribbon(lane,lw,rect),rl.WHITE)
   for boundary in scene.edges:
-    draw_polygon(rect,world.project_ribbon(boundary,ew,rect),rl.Color(230,48,48,255))
+    draw_polygon(rect,world.project_ribbon(display_lane_continuation(boundary),ew,rect),rl.Color(230,48,48,255))
 
-  for side,(left,right) in enumerate(((scene.lanes[0],scene.lanes[1]),(scene.lanes[2],scene.lanes[3]))):
+  for side,(left,right) in enumerate(((display_lanes[0],display_lanes[1]),(display_lanes[2],display_lanes[3]))):
     a,b = [],[]
     for x,y in left:
       other = lateral_at(right,x)
       if other is None or not .5 < other-y < 6.:
         continue
-      l,r = world.project(x,y,rect),world.project(x,other,rect)
+      l,r = world.project(x,y,rect,clip=False),world.project(x,other,rect,clip=False)
       if l is not None and r is not None:
         a.append(l)
         b.append(r)

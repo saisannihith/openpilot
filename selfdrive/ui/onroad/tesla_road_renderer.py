@@ -4,13 +4,14 @@ import time
 from functools import lru_cache
 import numpy as np
 import pyray as rl
-from openpilot.selfdrive.ui.onroad.world_scene import WorldScene, vehicle_center
+from openpilot.selfdrive.ui.onroad.world_scene import WorldScene, vehicle_center, display_lane_continuation
 
 CAPACITY = 4095
 # Existing onroad instruments use light text. Keep their contrast intact.
 BACKGROUND = rl.Color(0, 0, 0, 255)
 GROUND = rl.Color(0, 0, 0, 255)
 WHITE = rl.Color(255, 255, 255, 255)
+RADAR_AVATAR = rl.Color(185, 192, 200, 255)
 UP = rl.Vector3(0, 1, 0)
 ONE = rl.Vector3(1, 1, 1)
 ORIGIN = rl.Vector3(0, 0, 0)
@@ -40,9 +41,9 @@ class GpuMesh:
     self.model.meshes[0].triangleCount = count // 3
     self.model.meshes[0].vertexCount = count
 
-  def draw(self, position=ORIGIN, yaw=0.0):
+  def draw(self, position=ORIGIN, yaw=0.0, tint=WHITE):
     if self.model.meshes[0].triangleCount:
-      rl.draw_model_ex(self.model, position, UP, yaw, ONE, WHITE)
+      rl.draw_model_ex(self.model, position, UP, yaw, ONE, tint)
 
   def close(self):
     if not self.closed:
@@ -74,7 +75,9 @@ class TeslaRoadRenderer:
     self._colors = np.zeros((CAPACITY, 4), dtype=np.uint8)
     self._count = 0
     self.overlay_exclusions = []
-    self._camera = rl.Camera3D(rl.Vector3(0, 10.5, 20), rl.Vector3(0, 0, -10), UP, 46,
+    # Frame the road from just behind the ego vehicle, not a distant overview.
+    # Projection helpers share this camera so labels remain attached to cars.
+    self._camera = rl.Camera3D(rl.Vector3(0, 6, 12), rl.Vector3(0, 0, -2.8), UP, 46,
                               rl.CameraProjection.CAMERA_PERSPECTIVE)
     eye,target,up = (np.array([v.x,v.y,v.z],dtype=np.float64) for v in (self._camera.position,self._camera.target,self._camera.up))
     forward = target-eye
@@ -124,9 +127,9 @@ class TeslaRoadRenderer:
       return
     self._count = 0
     for edge in self.scene.edges:
-      self._ribbon(edge,.06,.008,(230,48,48,255))
+      self._ribbon(display_lane_continuation(edge),.06,.008,(230,48,48,255))
     for lane in self.scene.lanes:
-      self._ribbon(lane,.045,.014,(246,247,249,255))
+      self._ribbon(display_lane_continuation(lane),.045,.014,(246,247,249,255))
     fill = (40,149,246,255) if engaged else (166,179,189,255)
     self._ribbon(self.scene.path,.85,.018,fill,path=True)
     self._meshes[2].update(self._vertices,self._colors,self._count)
@@ -180,9 +183,9 @@ class TeslaRoadRenderer:
             rl.begin_mode_3d(self._camera)
             rl.rl_disable_backface_culling()
         for obj in self.scene.objects:
-          if obj.vehicle:
+          if obj.vehicle or obj.radar_avatar:
             forward,right = vehicle_center(obj)
-            self._meshes[1].draw(rl.Vector3(right,0,-forward),obj.yaw)
+            self._meshes[1].draw(rl.Vector3(right,0,-forward),obj.yaw,RADAR_AVATAR if obj.radar_avatar else WHITE)
           else:
             # A radar return has no verified body shape or vehicle class.
             rl.draw_sphere_ex(rl.Vector3(obj.right,.12,-obj.forward),.12,4,6,rl.Color(125,133,140,255))
@@ -213,10 +216,10 @@ class TeslaRoadRenderer:
     obj = next((obj for obj in self.scene.objects if obj.key == ('lead', index)), None)
     if obj is None or self._target_size is None:
       return None
-    forward,right = vehicle_center(obj) if obj.vehicle else (obj.forward,obj.right)
+    forward,right = vehicle_center(obj) if obj.vehicle or obj.radar_avatar else (obj.forward,obj.right)
     return self.project(forward,right,rect,height=1.8)
 
-  def project(self, forward, right, rect, height=0.02):
+  def project(self, forward, right, rect, height=0.02, clip=True):
     if self._target_size is None or not all(math.isfinite(v) for v in (forward,right,height)):
       return None
     dx,dy,dz = right-self._eye[0],height-self._eye[1],-forward-self._eye[2]
@@ -227,7 +230,7 @@ class TeslaRoadRenderer:
     focal = self._target_size[1]*self._focal_factor
     x = rect.x+rect.width*(.5+(h[0]*dx+h[1]*dy+h[2]*dz)*focal/depth/self._target_size[0])
     y = rect.y+rect.height*(.5-(v[0]*dx+v[1]*dy+v[2]*dz)*focal/depth/self._target_size[1])
-    return (x,y) if rect.x <= x <= rect.x+rect.width and rect.y <= y <= rect.y+rect.height else None
+    return (x,y) if not clip or (rect.x <= x <= rect.x+rect.width and rect.y <= y <= rect.y+rect.height) else None
 
   def project_ribbon(self, points, width, rect):
     if not points or not math.isfinite(width) or width < 0:
@@ -248,8 +251,8 @@ class TeslaRoadRenderer:
     screen = np.column_stack((rect.x+rect.width*(.5+view[:,0]*focal/depth/self._target_size[0]),
                               rect.y+rect.height*(.5-view[:,1]*focal/depth/self._target_size[1])))
     valid = (view[:,2] > .01) & np.isfinite(screen).all(axis=1)
-    valid &= (screen[:,0] >= rect.x) & (screen[:,0] <= rect.x+rect.width)
-    valid &= (screen[:,1] >= rect.y) & (screen[:,1] <= rect.y+rect.height)
+    # Keep offscreen endpoints: the GPU clips the connecting strip at the
+    # viewport. Dropping pairs here truncated lanes before the screen edge.
     n = len(p)
     paired = valid[:n] & valid[n:]
     return np.concatenate((screen[:n][paired],screen[n:][paired][::-1])).astype(np.float32)
