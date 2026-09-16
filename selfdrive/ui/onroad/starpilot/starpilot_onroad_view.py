@@ -1,4 +1,5 @@
 import pyray as rl
+import time
 from msgq.visionipc import VisionStreamType
 from openpilot.selfdrive.ui.onroad.augmented_road_view import AugmentedRoadView
 from openpilot.selfdrive.ui.onroad.starpilot.starpilot_border import render_behind, render_overlay, render_background_effects
@@ -39,6 +40,7 @@ AlertSize = log.SelfdriveState.AlertSize
 class StarPilotOnroadView(AugmentedRoadView):
   def __init__(self, stream_type: VisionStreamType = VisionStreamType.VISION_STREAM_ROAD):
     super().__init__(stream_type)
+    self._world_quality_external = True
     self._params = ui_state.ui_params
 
     self._font_bold = gui_app.font(FontWeight.BOLD)
@@ -100,6 +102,7 @@ class StarPilotOnroadView(AugmentedRoadView):
     self._hud_renderer._exp_button.wheel_tint = rivian_lateral_mode.wheel_tint
 
   def _render(self, rect: rl.Rectangle):
+    world_frame_start = time.perf_counter()
     border_width = self._get_border_width()
     border_roundness = get_border_roundness(rect, border_width)
     border_color = get_pulse_glide_border_color(ui_state.sm, get_screen_edge_color(ui_state))
@@ -136,7 +139,8 @@ class StarPilotOnroadView(AugmentedRoadView):
 
       if self._draw_hud_controls:
         dm = self.driver_state_renderer
-        self.layout_manager.update_layout(self._content_rect, is_rhd=dm.is_rhd if dm else False)
+        if not self._tesla_road_view or self._world_failed:
+          self.layout_manager.update_layout(self._content_rect, is_rhd=dm.is_rhd if dm else False)
         self._render_slc()
         self._render_overlays()
         self._render_road_name()
@@ -158,6 +162,8 @@ class StarPilotOnroadView(AugmentedRoadView):
         self._favorite_radial_menu.collapse()
     finally:
       gui_app.mouse_events[:] = original_events
+      if self._tesla_road_view and not self._world_failed:
+        self.tesla_road_renderer.quality.observe((time.perf_counter()-world_frame_start)*1000,time.monotonic())
 
   def _draw_border(self, rect: rl.Rectangle):
     border_width = self._get_border_width()
@@ -232,6 +238,15 @@ class StarPilotOnroadView(AugmentedRoadView):
   def _full_alert_showing(self) -> bool:
     alert_showing, _ = self.alert_renderer.will_render()
     return alert_showing is not None and alert_showing.size == AlertSize.full
+
+  def _world_hud_exclusions(self, rect):
+    occupied = super()._world_hud_exclusions(rect)
+    self.layout_manager.update_layout(rect,is_rhd=self.driver_state_renderer.is_rhd)
+    for zone in self.layout_manager.zones.values():
+      for widget in zone:
+        if widget.is_visible:
+          occupied.append(widget.rect)
+    return occupied
 
   def _handle_mouse_press(self, mouse_pos: MousePos):
     if self._favorite_input_consumed or self._favorite_radial_menu.blocks_pointer(mouse_pos):

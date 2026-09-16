@@ -717,11 +717,30 @@ class FavoriteRadialMenu:
     return rl.Color(r, g, b, alpha)
 
   def _draw_corner_hint(self) -> None:
+    from openpilot.system.ui.lib.application import gui_app
+
     scale = self._scale_for(self._rect)
     x0 = self._rect.x
     y0 = self._rect.y + self._rect.height
     is_pressed = self._corner_press is not None
+    # Two fixed-size textures, independent of viewport size or menu lifetime.
+    texture = gui_app.cached_render_texture(
+      f"favorites_corner_hint_v1_{int(is_pressed)}", 150, 150,
+      lambda: FavoriteRadialMenu._draw_corner_hint_vectors(0.0, 150.0, 1.0, is_pressed),
+    )
+    if texture is None:
+      self._draw_corner_hint_vectors(x0, y0, scale, is_pressed)
+      return
+    rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
+    try:
+      rl.draw_texture_pro(texture, rl.Rectangle(0, 0, 150, -150),
+                          rl.Rectangle(x0, y0 - 150 * scale, 150 * scale, 150 * scale),
+                          rl.Vector2(0, 0), 0.0, rl.WHITE)
+    finally:
+      rl.end_blend_mode()
 
+  @classmethod
+  def _draw_corner_hint_vectors(cls, x0: float, y0: float, scale: float, is_pressed: bool) -> None:
     size = 150.0 * scale
     steps = 48
 
@@ -745,7 +764,7 @@ class FavoriteRadialMenu:
       purple_a = int(purple_max_alpha * ((1.0 - t_mid) ** 1.75))
 
       for col in (rl.Color(8, 6, 18, base_a) if base_a > 0 else None,
-                  self._sample_aether_color(t_mid, purple_a) if purple_a > 0 else None):
+                  cls._sample_aether_color(t_mid, purple_a) if purple_a > 0 else None):
         if col is None:
           continue
         if i == 0:

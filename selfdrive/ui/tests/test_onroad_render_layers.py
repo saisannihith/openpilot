@@ -139,6 +139,8 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
   class Renderer:
     def __init__(self, name):
       self.name = name
+      self.overlay_exclusions = []
+      self.quality = SimpleNamespace(observe=lambda *_args: None)
 
     def render(self, _rect, *_args, **_kwargs):
       events.append(self.name)
@@ -163,6 +165,8 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
   view._is_in_reverse = lambda: False
   view._update_calibration = lambda: None
   view._get_border_width = lambda: 0
+  view._world_hud_exclusions = lambda _rect: []
+  view._draw_world_health = lambda _rect: None
   view._draw_border = lambda _rect: events.append("border")
   view.model_renderer = Renderer("model")
   view.tesla_road_renderer = Renderer("world")
@@ -191,6 +195,8 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
   camera_mode = mode in ('camera', 'world_stale')
   prefix = [] if camera_mode else ['camera_reset']
   content = ['camera', 'model', 'road_overlays'] if camera_mode else ['world']
+  if mode == 'world_stale':
+    content = ['camera']
   if mode == 'world_failure':
     content += ['error_log', 'world_close', 'camera']
   elif mode == 'world':
@@ -237,6 +243,7 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
     events.clear()
     view._render(augmented_road_view.rl.Rectangle(0,0,100,50))
     assert 'world_close' in events and 'camera' in events and 'alert' in events
+    assert 'model' not in events and 'road_overlays' not in events
 
 
 def test_offroad_releases_world_and_camera_resources(monkeypatch):

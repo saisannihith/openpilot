@@ -22,6 +22,11 @@ def polyline(line):
     x, y = float(x), float(y)
     if not (math.isfinite(x) and math.isfinite(y)):
       return ()
+    # At standstill, initial samples can wobble by micrometers around x=0.
+    # Ignore only a sub-millimeter duplicate of the accepted origin; preserve
+    # real reversals and every later forward-horizon truncation below.
+    if len(points) == 1 and abs(points[0][0]) <= .001 and abs(x-points[0][0]) <= .001 and abs(y-points[0][1]) <= .001:
+      continue
     # Stopped/turning trajectories can double back at the far horizon.
     # Keep their usable forward prefix instead of blanking the entire road.
     if x <= previous or abs(y) > 45.0 or x > MAX_DISTANCE:

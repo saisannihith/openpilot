@@ -5,7 +5,7 @@ from functools import lru_cache
 import numpy as np
 import pyray as rl
 from openpilot.selfdrive.ui.onroad.world_scene import WorldScene, display_lane_continuation
-from openpilot.selfdrive.ui.onroad.world_presentation import WorldPresentation
+from openpilot.selfdrive.ui.onroad.world_presentation import WorldPresentation, RenderQuality
 
 CAPACITY = 4095
 # Existing onroad instruments use light text. Keep their contrast intact.
@@ -52,12 +52,13 @@ class GpuMesh:
       self.closed = True
 
 
-@lru_cache(maxsize=1)
-def vehicle_mesh():
+@lru_cache(maxsize=2)
+def vehicle_mesh(distant=False):
   # Author-modeled CC0 mesh, baked offline: no OBJ parsing or textures onroad.
   from openpilot.common.basedir import BASEDIR
   from pathlib import Path
-  with np.load(Path(BASEDIR)/'selfdrive/assets/world/sedan.npz',allow_pickle=False) as asset:
+  name = 'sedan_lod.npz' if distant else 'sedan.npz'
+  with np.load(Path(BASEDIR)/'selfdrive/assets/world'/name,allow_pickle=False) as asset:
     vertices,colors = asset['vertices'],asset['colors']
   if (vertices.dtype != np.float32 or colors.dtype != np.uint8 or vertices.shape != (len(colors),3)
       or colors.shape != (len(vertices),4) or not 0 < len(vertices) <= 20000 or len(vertices)%3
@@ -69,6 +70,8 @@ class TeslaRoadRenderer:
   def __init__(self):
     self.scene = WorldScene()
     self.presentation = WorldPresentation()
+    self.quality = RenderQuality()
+    self._far_ids = set()
     self._meshes = []
     self._target = None
     self._target_size = None
@@ -94,8 +97,8 @@ class TeslaRoadRenderer:
     if self._meshes:
       return
     try:
-      for _ in range(2):
-        self._meshes.append(GpuMesh(*vehicle_mesh()))
+      for distant in (False, True):
+        self._meshes.append(GpuMesh(*vehicle_mesh(distant)))
       self._meshes.append(GpuMesh(self._vertices, self._colors, dynamic=True))
     except Exception:
       self.close()
@@ -140,10 +143,10 @@ class TeslaRoadRenderer:
   def render(self, rect, sm, started_frame, engaged, now=None, parent_target=None, road_overlay=None):
     now = time.monotonic() if now is None else now
     self.scene.update(sm, started_frame, now)
-    self.presentation.update(self.scene.objects, started_frame, now)
+    self.presentation.update(self.scene.objects, started_frame, now, self.scene.revision)
     self.overlay_exclusions.clear()
     # One color/depth target reused every frame, bounded independently of DPI.
-    scale = min(1.0, 1440.0/max(1,rect.width), 810.0/max(1,rect.height))
+    scale = min(1.0, 1440.0/max(1,rect.width), 810.0/max(1,rect.height))*self.quality.scale
     size = (max(2,int(rect.width*scale)), max(2,int(rect.height*scale)))
     # Raylib texture modes are not a stack. Preserve the app's transform and
     # explicitly rebind its scaled/burn-in framebuffer before drawing the HUD.
@@ -185,13 +188,18 @@ class TeslaRoadRenderer:
           finally:
             rl.begin_mode_3d(self._camera)
             rl.rl_disable_backface_culling()
+        far_ids = set()
         for obj in self.scene.objects:
           if obj.vehicle or obj.radar_avatar:
             pose = self.presentation.pose(obj)
-            self._meshes[1].draw(rl.Vector3(pose.right,0,-pose.forward),pose.yaw,RADAR_AVATAR if obj.radar_avatar else WHITE)
+            distant = pose.forward > (50. if obj.identity in self._far_ids else 60.)
+            if distant:
+              far_ids.add(obj.identity)
+            self._meshes[int(distant)].draw(rl.Vector3(pose.right,0,-pose.forward),pose.yaw,RADAR_AVATAR if obj.radar_avatar else WHITE)
           else:
             # A radar return has no verified body shape or vehicle class.
             rl.draw_sphere_ex(rl.Vector3(obj.right,.12,-obj.forward),.12,4,6,rl.Color(125,133,140,255))
+        self._far_ids = far_ids
         yaw = self.scene.ego_yaw
         angle = math.radians(yaw)
         # Pivot at the nose/path origin so the avatar cannot drift sideways
@@ -281,3 +289,5 @@ class TeslaRoadRenderer:
     self._geometry_key = None
     self.scene.reset()
     self.presentation.reset()
+    self._far_ids.clear()
+    self.quality = RenderQuality()

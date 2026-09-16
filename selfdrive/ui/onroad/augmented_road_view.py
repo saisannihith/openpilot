@@ -73,6 +73,7 @@ class AugmentedRoadView(CameraView):
     self._world_failed = False
     self._using_world = False
     self._world_availability = WorldAvailability()
+    self._world_quality_external = False
     self._hud_renderer = HudRenderer()
     self.alert_renderer = AlertRenderer()
     self.driver_state_renderer = DriverStateRenderer()
@@ -83,10 +84,12 @@ class AugmentedRoadView(CameraView):
   def _render(self, rect):
     # Only render when system is started to avoid invalid data access
     start_draw = time.monotonic()
+    start_work = time.perf_counter()
     if not ui_state.started:
       return
 
     camera_view = self._camera_view()
+    world_selected = camera_view == CAMERA_VIEW_TESLA_ROAD
     if camera_view != CAMERA_VIEW_TESLA_ROAD:
       self._world_failed = False
     self._camera_view_none = camera_view == CAMERA_VIEW_NONE
@@ -106,7 +109,11 @@ class AugmentedRoadView(CameraView):
     self._switch_stream_if_needed(ui_state.sm, camera_view)
     self._driver_stream_active = self.stream_type == DRIVER_CAM
     self._draw_road_overlays = not in_reverse and not self._driver_stream_active and not (self._camera_view_none or self._tesla_road_view)
+    # A world-data outage must not turn stale geometry into camera guidance.
+    if world_selected and not self._tesla_road_view:
+      self._draw_road_overlays = False
     self._draw_hud_controls = self._camera_view_none or self._tesla_road_view or (not in_reverse and not self._driver_stream_active)
+    self._hud_renderer.world_mode = self._tesla_road_view
 
     # Update calibration before rendering
     self._update_calibration()
@@ -137,6 +144,7 @@ class AugmentedRoadView(CameraView):
                                         ui_state.status == UIStatus.ENGAGED, parent_target=gui_app._render_texture,
                                         road_overlay=self.model_renderer.render_world_road)
         self._render_world_overlays(self._content_rect)
+        self.tesla_road_renderer.overlay_exclusions.extend(self._world_hud_exclusions(self._content_rect))
         self.model_renderer.render_world_leads(self._content_rect, self.tesla_road_renderer)
       except Exception:
         cloudlog.exception("World view failed; returning to camera")
@@ -156,6 +164,8 @@ class AugmentedRoadView(CameraView):
       self._hud_renderer.render(self._content_rect)
     if self._draw_driver_state:
       self.driver_state_renderer.render(self._content_rect)
+    if camera_view in (CAMERA_VIEW_TESLA_ROAD, CAMERA_VIEW_STANDARD) and not in_reverse:
+      self._draw_world_health(self._content_rect)
     self.alert_renderer.render(self._content_rect)
 
     # Custom UI extension point - add custom overlays here
@@ -171,6 +181,34 @@ class AugmentedRoadView(CameraView):
     msg = messaging.new_message('uiDebug')
     msg.uiDebug.drawTimeMillis = (time.monotonic() - start_draw) * 1000
     self._pm.send('uiDebug', msg)
+    if self._tesla_road_view and not self._world_failed and not getattr(self,'_world_quality_external',False):
+      self.tesla_road_renderer.quality.observe((time.perf_counter()-start_work)*1000, start_draw)
+
+  def _world_hud_exclusions(self, rect):
+    from openpilot.selfdrive.ui.onroad.alert_renderer import ALERT_HEIGHTS, AlertSize
+    occupied = self._hud_renderer.world_exclusions(rect)
+    alert, _ = self.alert_renderer.will_render()
+    if alert is not None:
+      height = rect.height if alert.size == AlertSize.full else ALERT_HEIGHTS.get(alert.size, 0)+100
+      occupied.append(rl.Rectangle(rect.x,rect.y+rect.height-height,rect.width,height))
+    return occupied
+
+  def _draw_world_health(self, rect):
+    if self._camera_view() != CAMERA_VIEW_TESLA_ROAD or self.alert_renderer.will_render()[0] is not None:
+      return
+    from openpilot.selfdrive.ui.onroad.world_presentation import degraded_world_text
+    from openpilot.system.ui.lib.application import FontWeight
+    from openpilot.system.ui.lib.text_measure import measure_text_cached
+    text = degraded_world_text(ui_state.sm,ui_state.started_frame,time.monotonic(),self._tesla_road_view,self._world_failed)
+    if not text:
+      return
+    font = gui_app.font(FontWeight.MEDIUM)
+    size = measure_text_cached(font,text,28)
+    if size.x+32 > rect.width:
+      return
+    x,y = rect.x+(rect.width-size.x)/2,rect.y+rect.height-90
+    rl.draw_rectangle(int(x-12),int(y-6),int(size.x+24),40,rl.BLACK)
+    rl.draw_text_ex(font,text,rl.Vector2(x,y),28,0,rl.Color(245,194,91,255))
 
   def _render_world_overlays(self, rect: rl.Rectangle) -> None:
     pass

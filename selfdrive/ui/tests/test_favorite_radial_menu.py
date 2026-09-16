@@ -87,6 +87,44 @@ def _menu(clock, options=None):
   return FavoriteRadialMenu(params, memory, lambda: options, clock=lambda: clock[0]), params, memory
 
 
+def test_corner_hint_cache_has_only_two_keys_and_keeps_draw_bounds(monkeypatch):
+  from openpilot.system.ui.lib.application import gui_app
+
+  menu, _, _ = _menu([0.0])
+  requests = []
+  draws = []
+  texture = object()
+  monkeypatch.setattr(gui_app, "cached_render_texture", lambda key, w, h, fn: requests.append((key, w, h, fn)) or texture)
+  monkeypatch.setattr(rl, "begin_blend_mode", lambda *args: None)
+  monkeypatch.setattr(rl, "end_blend_mode", lambda: None)
+  monkeypatch.setattr(rl, "draw_texture_pro", lambda *args: draws.append(args))
+  monkeypatch.setattr(menu, "_draw_corner_hint_vectors", lambda *args: (_ for _ in ()).throw(AssertionError("cache hit redrew vectors")))
+  for width, height in ((2160, 1080), (1920, 1080), (1080, 540)):
+    menu._rect = rl.Rectangle(20, 30, width, height)
+    for pressed in (None, object()):
+      menu._corner_press = pressed
+      menu._draw_corner_hint()
+      destination = draws[-1][2]
+      assert destination.x == 20
+      assert abs(destination.y + destination.height - (30 + height)) < 0.001
+      assert destination.width == destination.height
+      assert draws[-1][1].height == -150
+  assert len({r[0] for r in requests}) == 2
+  assert all(r[1:3] == (150, 150) for r in requests)
+
+
+def test_corner_hint_cache_miss_draws_vectors_without_blank_frame(monkeypatch):
+  from openpilot.system.ui.lib.application import gui_app
+
+  menu, _, _ = _menu([0.0])
+  menu._rect = rl.Rectangle(20, 30, 2160, 1080)
+  calls = []
+  monkeypatch.setattr(gui_app, "cached_render_texture", lambda *args: None)
+  monkeypatch.setattr(menu, "_draw_corner_hint_vectors", lambda *args: calls.append(args))
+  menu._draw_corner_hint()
+  assert calls == [(20, 1110, menu._scale_for(menu._rect), False)]
+
+
 def test_radial_menu_opens_from_corner_tap_and_arranges_three_slots_on_an_arc():
   clock = [0.0]
   menu, _params, _memory = _menu(clock)

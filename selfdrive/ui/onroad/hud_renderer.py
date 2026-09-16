@@ -81,6 +81,7 @@ class HudRenderer(Widget):
     self.draw_set_speed = True
     self.draw_current_speed = True
     self.draw_exp_button = True
+    self.world_mode = False
 
   def _update_state(self) -> None:
     """Update HUD state based on car state and controls state."""
@@ -145,6 +146,29 @@ class HudRenderer(Widget):
   def user_interacting(self) -> bool:
     return self._exp_button.is_pressed or self._navigation_card.is_pressed
 
+  def world_exclusions(self, rect):
+    """Reserve instruments before the world draws optional lead text."""
+    occupied = []
+    if self.draw_current_speed and not ui_state.starpilot_toggles.get('hide_speed', False):
+      width = max(measure_text_cached(self._font_bold, '888', FONT_SIZES.current_speed).x, 260.)+40.
+      occupied.append(rl.Rectangle(self._speed_center(rect)-width/2, rect.y+35, width, 310))
+    if self.draw_set_speed and not ui_state.starpilot_toggles.get('hide_max_speed', False):
+      occupied.append(rl.Rectangle(rect.x+15,rect.y+35,CONTROL_WIDTH+30,SET_SPEED_HEIGHT+20))
+    if self.draw_exp_button:
+      occupied.append(rl.Rectangle(rect.x+rect.width-UI_CONFIG.button_size-40,rect.y+20,
+                                   UI_CONFIG.button_size+20,UI_CONFIG.button_size+20))
+    nav = self._navigation_card._interactive_rect
+    if self._navigation_card._valid and nav.width > 0:
+      occupied.append(nav)
+    return occupied
+
+  def _speed_center(self, rect):
+    # The forward horizon occupies the center of the 3D scene. Keep the stock
+    # camera layout unchanged; full-width world views have room beside it.
+    if getattr(self,'world_mode',False) and rect.width >= 1400:
+      return rect.x+rect.width-540
+    return rect.x+rect.width/2
+
   def _draw_set_speed(self, rect: rl.Rectangle) -> None:
     """Draw the MAX speed indicator box."""
     set_speed_width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
@@ -191,17 +215,17 @@ class HudRenderer(Widget):
     """Draw the current vehicle speed and unit."""
     speed_text = str(round(self.speed))
     speed_text_size = measure_text_cached(self._font_bold, speed_text, FONT_SIZES.current_speed)
-    speed_pos = rl.Vector2(rect.x + rect.width / 2 - speed_text_size.x / 2, 180 - speed_text_size.y / 2)
+    speed_pos = rl.Vector2(self._speed_center(rect) - speed_text_size.x / 2, 180 - speed_text_size.y / 2)
     rl.draw_text_ex(self._font_bold, speed_text, speed_pos, FONT_SIZES.current_speed, 0, COLORS.WHITE)
 
     unit_text = tr("km/h") if ui_state.is_metric else tr("mph")
     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
-    unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
+    unit_pos = rl.Vector2(self._speed_center(rect) - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
 
     compass_text = get_compass_text()
     if compass_text:
       compass_font_size = 50
       compass_size = measure_text_cached(self._font_bold, compass_text, compass_font_size)
-      compass_pos = rl.Vector2(rect.x + rect.width / 2 - compass_size.x / 2, 65 - compass_size.y / 2)
+      compass_pos = rl.Vector2(self._speed_center(rect) - compass_size.x / 2, 65 - compass_size.y / 2)
       draw_text_with_shadow(self._font_bold, compass_text, compass_pos, compass_font_size, rl.WHITE)

@@ -1,8 +1,11 @@
 import pyray as rl
+from collections import OrderedDict
 from openpilot.system.ui.lib.application import FONT_SCALE, font_fallback
 from openpilot.system.ui.lib.emoji import find_emoji
 
-_cache: dict[int, rl.Vector2] = {}
+MAX_CACHE_ENTRIES = 2048
+MAX_CACHE_TEXT_LENGTH = 256
+_cache: OrderedDict[tuple, rl.Vector2] = OrderedDict()
 
 
 def draw_text_with_shadow(font: rl.Font, text: str, pos: rl.Vector2, font_size: int, color: rl.Color,
@@ -15,8 +18,9 @@ def measure_text_cached(font: rl.Font, text: str, font_size: int, spacing: float
   """Caches text measurements to avoid redundant calculations."""
   font = font_fallback(font)
   spacing = round(spacing, 4)
-  key = hash((font.texture.id, text, font_size, spacing))
+  key = (font.texture.id, text, font_size, spacing)
   if key in _cache:
+    _cache.move_to_end(key)
     return _cache[key]
 
   # Measure normal characters without emojis, then add standard width for each found emoji
@@ -38,5 +42,8 @@ def measure_text_cached(font: rl.Font, text: str, font_size: int, spacing: float
     if result.y == 0:
       result.y = font_size * FONT_SCALE
 
-  _cache[key] = result
+  if len(text) <= MAX_CACHE_TEXT_LENGTH:
+    _cache[key] = result
+    if len(_cache) > MAX_CACHE_ENTRIES:
+      _cache.popitem(last=False)
   return result

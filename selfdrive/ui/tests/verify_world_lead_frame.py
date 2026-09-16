@@ -6,6 +6,38 @@ import time
 from types import SimpleNamespace as NS
 
 
+def verify_corner_cache():
+  import numpy as np
+  import pyray as rl
+  from openpilot.selfdrive.ui.onroad.starpilot.favorite_radial_menu import FavoriteRadialMenu
+  from openpilot.system.ui.lib.application import gui_app
+
+  for pressed in (False, True):
+    key = f'favorites_corner_hint_v1_{int(pressed)}'
+    gui_app.cached_render_texture(key, 150, 150,
+      lambda p=pressed: FavoriteRadialMenu._draw_corner_hint_vectors(0., 150., 1., p))
+    gui_app._populate_render_texture_cache()
+    texture = gui_app._cached_render_textures[key].texture
+    rl.begin_drawing()
+    rl.clear_background(rl.Color(60, 80, 100, 255))
+    FavoriteRadialMenu._draw_corner_hint_vectors(0., 150., 1., pressed)
+    rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
+    rl.draw_texture_pro(texture, rl.Rectangle(0, 0, 150, -150),
+                        rl.Rectangle(200, 0, 150, 150), rl.Vector2(0, 0), 0., rl.WHITE)
+    rl.end_blend_mode()
+    rl.end_drawing()
+    image = rl.load_image_from_screen()
+    try:
+      pixels = np.frombuffer(rl.ffi.buffer(image.data, image.width * image.height * 4), dtype=np.uint8)
+      pixels = pixels.reshape(image.height, image.width, 4).astype(np.int16)
+      delta = np.abs(pixels[:150, :150, :3] - pixels[:150, 200:350, :3])
+      # Repeated translucent alpha blends round differently on the cached pass.
+      assert np.mean(delta) < 3.0 and np.percentile(delta, 99) < 15, (pressed, np.mean(delta), np.max(delta))
+      print('CORNER_CACHE_PIXELS_OK', pressed, float(np.mean(delta)), flush=True)
+    finally:
+      rl.unload_image(image)
+
+
 def replay_routes(routes, world, overlay, settings, out):
   import pyray as rl
   from cereal import messaging
@@ -136,6 +168,8 @@ def main():
     package.__path__.insert(0,str(args.source))
     import openpilot.selfdrive.ui.onroad.starpilot as sp_package
     sp_package.__path__.insert(0,str(args.source))
+    import openpilot.system.ui.lib as ui_lib
+    ui_lib.__path__.insert(0,str(args.source))
   import pyray as rl
   from openpilot.selfdrive.ui.onroad import model_renderer
   from openpilot.selfdrive.ui.onroad.tesla_road_renderer import TeslaRoadRenderer
@@ -148,12 +182,14 @@ def main():
   rl.init_window(args.width,args.height,'World lead overlay verification')
   assert rl.is_window_ready()
   gui_app._load_fonts()
+  verify_corner_cache()
   if args.source and (args.source/'selfdrive/assets/world/sedan.npz').exists():
     from openpilot.common import basedir
     old_base = basedir.BASEDIR
     try:
       basedir.BASEDIR = str(args.source)
       tesla_road_renderer.vehicle_mesh()
+      tesla_road_renderer.vehicle_mesh(True)
     finally:
       basedir.BASEDIR = old_base
   world = TeslaRoadRenderer()
@@ -263,15 +299,18 @@ def main():
     original_scissor = rl.begin_scissor_mode
     try:
       rl.begin_scissor_mode = lambda x,y,w,h: original_scissor(int(x*.75),int(y*.75),int(w*.75),int(h*.75))
-      for width in (1920,700)*10:
+      for iteration,width in enumerate((1920,700)*10):
         rl.begin_texture_mode(parent)
         rl.clear_background(rl.MAGENTA)
         rl.rl_push_matrix()
         rl.rl_scalef(.75,.75,1.)
         now = time.monotonic()
         sm.tick(5000,now)
+        world.quality.level = iteration%3
         world.render(rl.Rectangle(0,0,width,960),sm,0,True,now=now,parent_target=parent,
                      road_overlay=overlay.render_world_road)
+        expected_scale = min(1.,1440/width,810/960)*world.quality.scale
+        assert world._target_size == (max(2,int(width*expected_scale)),max(2,int(960*expected_scale)))
         rl.draw_rectangle(80,40,80,40,rl.RED)
         world.close(parent_target=parent)
         rl.draw_rectangle(200,40,80,40,rl.GREEN)

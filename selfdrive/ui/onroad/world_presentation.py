@@ -21,12 +21,15 @@ class Transition:
   source: tuple
 
 
-def interpolate(transition, now):
+def interpolate(transition, now, output=None):
   amount = min(1., max(0., (now-transition.stamp)/.05))
   a, b = transition.start, transition.target
   yaw_delta = (b.yaw-a.yaw+180.) % 360.-180.
-  return Pose(a.forward+(b.forward-a.forward)*amount, a.right+(b.right-a.right)*amount,
-              a.yaw+yaw_delta*amount)
+  output = Pose(0.,0.,0.) if output is None else output
+  output.forward = a.forward+(b.forward-a.forward)*amount
+  output.right = a.right+(b.right-a.right)*amount
+  output.yaw = a.yaw+yaw_delta*amount
+  return output
 
 
 class WorldPresentation:
@@ -38,11 +41,20 @@ class WorldPresentation:
     self.poses = {}
     self.drive = None
     self.time = None
+    self.object_snapshot = None
+    self.snapshot_revision = None
 
-  def update(self, objects, drive, now):
+  def update(self, objects, drive, now, revision=None):
     if drive != self.drive or self.time is None or not 0 <= now-self.time <= MAX_AGE:
       self.reset()
     self.drive, self.time = drive, now
+    if (revision is not None and revision == self.snapshot_revision and objects is self.object_snapshot
+        and all(0 <= now-t.received <= MAX_AGE for t in self.transitions.values())):
+      for identity, transition in self.transitions.items():
+        interpolate(transition, now, self.poses[identity])
+      return
+    self.object_snapshot = objects
+    self.snapshot_revision = revision
     transitions, poses = {}, {}
     for obj in objects[:MAX_OBJECTS]:
       if not (obj.vehicle or obj.radar_avatar) or not 0 <= now-obj.received <= MAX_AGE:
@@ -80,15 +92,20 @@ class WorldAvailability:
     self.since = None
     self.active = False
     self.last_time = None
+    self.model_key = None
+    self.geometry_valid = False
 
   def update(self, sm, drive, now):
     if drive != self.drive or (self.last_time is not None and not 0 <= now-self.last_time <= MAX_AGE):
       self.since, self.active = None, False
     self.drive, self.last_time = drive, now
     usable = WorldScene.fresh(sm, 'modelV2', drive, now)
-    if usable:
+    key = (drive, sm.recv_frame['modelV2']) if usable else None
+    if key != self.model_key:
+      self.model_key = key
       # No lane lines required: unmarked roads still have a model path.
-      usable = bool(polyline(sm['modelV2'].position))
+      self.geometry_valid = usable and bool(polyline(sm['modelV2'].position))
+    usable = usable and self.geometry_valid
     if not usable:
       self.since, self.active = None, False
     elif self.since is None:
@@ -109,3 +126,58 @@ def world_lead_lines(distance, speed, ego, desired, distance_unit, speed_unit, d
   if details:
     lines.append('  |  '.join(details))
   return lines
+
+
+class RenderQuality:
+  """Three bounded world-only resolutions, with warmup and asymmetric recovery."""
+  scales = (1., .85, .7)
+
+  def __init__(self):
+    self.level = 0
+    self.warmup = 20
+    self.slow = self.fast = 0
+    self.changed = -math.inf
+    self.enabled = True
+
+  @property
+  def scale(self):
+    return self.scales[self.level] if self.enabled else 1.
+
+  def observe(self, milliseconds, now):
+    if not self.enabled or not math.isfinite(milliseconds) or milliseconds < 0:
+      return
+    if self.warmup:
+      self.warmup -= 1
+      return
+    self.slow = self.slow+1 if milliseconds > 35. else 0
+    self.fast = self.fast+1 if milliseconds < 18. else 0
+    if now-self.changed < 5.:
+      return
+    next_level = self.level
+    if self.slow >= 12:
+      next_level = min(2, self.level+1)
+    elif self.fast >= 200:
+      next_level = max(0, self.level-1)
+    if next_level != self.level:
+      self.level, self.changed = next_level, now
+      self.slow = self.fast = 0
+      self.warmup = 20
+
+
+def degraded_world_text(sm, drive, now, active, failed):
+  if failed:
+    return 'World rendering unavailable - camera view'
+  if not active:
+    return 'World data unavailable - camera view'
+  if not WorldScene.fresh(sm, 'radarState', drive, now):
+    return 'Lead data unavailable'
+  # Empty fresh returns are not an outage. A never-seen optional raw stream
+  # does not indicate a fault on vehicles that do not publish radar tracks.
+  if sm.recv_frame.get('liveTracks', -1) <= drive:
+    return ''
+  if not WorldScene.fresh(sm, 'liveTracks', drive, now):
+    return 'Radar visualization unavailable'
+  errors = sm['liveTracks'].errors
+  if errors.canError or errors.radarFault or errors.wrongConfig or errors.radarUnavailableTemporary:
+    return 'Radar visualization unavailable'
+  return ''

@@ -11,6 +11,16 @@ runtime textures, external downloads or OBJ parser are needed. Generic cars
 represent model-associated vehicles; the UI does not infer sedan/truck class.
 Tail lamps are static decoration, not a claimed braking measurement.
 
+`sedan_lod.npz` is a 1,000-triangle distant derivative of the same CC0 asset.
+Offline 0.16 m vertex clustering removes degenerate/reversed triangles and
+preserves baked colors. The renderer switches beyond 60 m, returning to the
+full mesh below 50 m; the ego and nearby cars always retain the original mesh.
+
+```sh
+python selfdrive/ui/tests/bake_world_lod.py \
+  selfdrive/assets/world/sedan.npz selfdrive/assets/world/sedan_lod.npz
+```
+
 Rebuild offline with a Raylib-capable Python environment:
 
 ```sh

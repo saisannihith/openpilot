@@ -6,6 +6,15 @@ import pytest
 from openpilot.selfdrive.ui.onroad.world_scene import MAX_OBJECTS, SceneObject, WorldScene, lateral_at, path_yaw, polyline, road_yaw, vehicle_center
 
 
+def test_standstill_origin_noise_keeps_forward_display_path():
+  points = polyline(NS(x=[0, -0.000033496, 0.00003, .05, .3, .55], y=[0, 0, 0, .01, .02, .03]))
+  assert points == ((0., 0.), (.05, .01), (.3, .02), (.55, .03))
+  assert not polyline(NS(x=[0, -.01, .3], y=[0, 0, 0]))
+  assert not polyline(NS(x=[0, -.00003, .3], y=[0, .02, 0]))
+  assert not polyline(NS(x=[0, 0, 0], y=[0, 0, 0]))
+  assert polyline(NS(x=[0, 10, 9.9999, 20], y=[0, 0, 0, 0])) == ((0., 0.), (10., 0.))
+
+
 class Messages(dict):
   def tick(self, frame, now):
     self.valid = dict.fromkeys(self, True)

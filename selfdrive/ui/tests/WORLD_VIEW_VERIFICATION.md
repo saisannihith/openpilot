@@ -302,6 +302,65 @@ lead metrics simultaneously; they are not a reconstructed complete road scene.
   Camera fallback depends on a functioning camera stream. This display cannot
   compensate for a missing perception model or make driving decisions.
 
+## Full-HUD Performance And Resilience, 2026-09-16
+
+- Distant vehicles use a CC0 derivative with 3,000 vertices instead of 8,622
+  (65.2% fewer). A 60 m entry / 50 m exit band avoids detail-level flicker.
+  Ego and nearby vehicles keep the original mesh. No detection or control changes.
+- Unchanged presentation poses and model-path validation reuse their prior work.
+  World-only render resolution has three bounded levels, warmup, sustained-load
+  thresholds and a five-second cooldown. HUD/text remain full-resolution.
+- Cached the existing favorites corner artwork in two 150x150 textures. Native
+  GPU comparison against the vector artwork on a nonblack background had mean
+  channel errors of 0.1775 and 0.1926 out of 255 for normal/pressed states.
+  Gesture zones are unchanged; cache misses draw vectors without a blank frame.
+- Shared text measurements now use full tuple keys and a 2,048-entry LRU cache.
+  Strings longer than 256 characters are measured but not retained. Tests cover
+  eviction, key collisions, spacing, long strings and emoji measurements.
+- World-view speed moves right on wide layouts so the lead label has room above
+  its vehicle. Labels avoid HUD instruments, visible widgets, STOP and alerts.
+  Camera and narrow-screen speed positioning are unchanged.
+- Model outages restore camera-only imagery without stale lane/path/lead graphics.
+  Small availability notices distinguish missing world/lead/radar visualization
+  data from valid empty radar returns. Driver alerts retain priority.
+- 207 native tests passed (three existing optional pytest-plugin warnings).
+  Native GPU checks passed at 2160x1080, narrower/scaled parent targets, all three
+  quality levels, rainbow switching, STOP overlays and 20 resource recreations.
+  Three recorded segments replayed 57,341 messages / 3,600 model frames / 360
+  sampled GPU frames. Oncoming-avatar behavior remains synthetic-only coverage.
+- A 1,200-frame paced replay of route 28 segment 20 with the actual StarPilot HUD
+  compared installed baseline 6219451581 to this candidate, after 100 warmup
+  frames. Work timing includes rendering and a test-only GPU readback fence:
+
+  | Metric | Baseline | Candidate |
+  | --- | ---: | ---: |
+  | Median render work | 36.919 ms | 32.235 ms |
+  | p95 render work | 44.581 ms | 39.292 ms |
+  | p99 render work | 49.132 ms | 43.524 ms |
+  | Median process CPU | 32.073 ms | 27.221 ms |
+
+  This is about 12.7% less median render work on this offroad workload, not a
+  promised onroad FPS or thermal improvement. Adaptive resolution stayed at full
+  quality in this run. Instrumented overload exercised all three levels in a
+  separate run; profiler timings must not be compared with this table.
+- RSS grew similarly in baseline and candidate replay processes (roughly 14 MiB,
+  including the log-reader/Cap'n Proto workload). Therefore these results do NOT
+  establish that the complete UI is leak-free. The newly bounded caches are
+  independently tested; sustained real onroad memory/thermal behavior is unproven.
+- The full-HUD camera test uses a unique local VisionIPC publisher and synthetic
+  gray NV12 frames, not the production camera or controls publishers. It withholds
+  model updates, checks actual restored camera pixels and fresh-model recovery.
+  This tests the native IPC path offroad, not physical-camera recovery while driving.
+- The first route-27 recovery test failed for a legitimate reason: stopped model
+  paths had tiny backward origin samples (for example -0.000033496 m), which the
+  display rejected. The display now skips only sub-millimeter near-origin
+  duplicates in both x and y. Real reversals, invalid values and later-horizon
+  truncation retain their prior handling; all-coincident paths remain invalid.
+  This changes visualization geometry only, not any model or planner output.
+  The repeated 450-frame route-27 native IPC test then passed, including 31
+  camera fallback frames and restoration of the world after model recovery.
+- Steering, braking, Panda, radar fusion and TOI/EPS code are unchanged.
+
 ## Reproduce
 
 From a configured repository, with a Raylib-capable Python environment:
@@ -309,6 +368,9 @@ From a configured repository, with a Raylib-capable Python environment:
 ```sh
 python selfdrive/ui/tests/verify_world_view.py --out /tmp/world-ui-check --frames 6000
 # Add --route /absolute/path/rlog.zst for each archived segment.
+python selfdrive/ui/tests/profile_world_hud.py --route /absolute/path/rlog.zst \
+  --out /tmp/world-hud-check --frames 1200 --realtime
+# Add --camera-check for the isolated native VisionIPC outage/recovery test.
 ```
 
 For desktop CI without a display, prefix with `xvfb-run -a`.
