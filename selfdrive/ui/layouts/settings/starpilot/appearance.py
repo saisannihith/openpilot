@@ -30,7 +30,7 @@ THEME_KEY_CONFIG = {
 }
 
 COLOR_PRESETS = ["Stock", "#FFFFFF", "#178644", "#3B82F6", "#E63956", "#8B5CF6", "#F59E0B"]
-CAMERA_VIEWS = ["Auto", "Driver", "Standard", "Wide", "None", "Tesla Road"]
+CAMERA_VIEWS = ["Auto", "Driver", "Standard", "Wide", "None"]
 
 # Keys are the int values stored in DeveloperSidebarMetric{1..7}; values are the
 # human-readable labels shown in both the row value and the picker dialog.
@@ -177,6 +177,9 @@ class StarPilotAppearanceLayout(_SettingsPage):
 
         # ═══ 1. Model & Path Visualization ═══
         self._model_rows = [
+            SettingRow("TeslaRoad", "toggle", tr_noop("Tesla Road"),
+                       get_state=lambda: self._params.get_int("CameraView", return_default=True, default=2) == 5,
+                       set_state=self._set_tesla_road),
             SettingRow("DynamicPathWidth", "toggle", tr_noop("Dynamic Path"),
                        subtitle="",
                        get_state=lambda: self._params.get_bool("DynamicPathWidth"),
@@ -396,7 +399,7 @@ class StarPilotAppearanceLayout(_SettingsPage):
         self._system_rows = [
             SettingRow("CameraView", "value", tr_noop("Camera View"),
                        subtitle="",
-                       get_value=lambda: tr(CAMERA_VIEWS[max(0, min(self._params.get_int("CameraView", return_default=True, default=2), len(CAMERA_VIEWS) - 1))]),
+                       get_value=self._get_camera_view_display,
                        on_click=self._show_camera_view_selector),
             SettingRow("DriverCamera", "toggle", tr_noop("Driver Camera"),
                        subtitle="",
@@ -601,8 +604,22 @@ class StarPilotAppearanceLayout(_SettingsPage):
 
     # ── Camera view ──
 
+    def _set_tesla_road(self, enabled):
+        current = self._params.get_int("CameraView", return_default=True, default=2)
+        if enabled and current != 5:
+            self._camera_before_world = current if current in range(len(CAMERA_VIEWS)) else 2
+            self._params.put_int("CameraView", 5)
+        elif not enabled and current == 5:
+            self._params.put_int("CameraView", getattr(self, "_camera_before_world", 2))
+
+    def _get_camera_view_display(self):
+        current = self._params.get_int("CameraView", return_default=True, default=2)
+        return tr("Tesla Road" if current == 5 else CAMERA_VIEWS[current if current in range(len(CAMERA_VIEWS)) else 2])
+
     def _show_camera_view_selector(self):
-        current = max(0, min(self._params.get_int("CameraView", return_default=True, default=2), len(CAMERA_VIEWS) - 1))
+        current = self._params.get_int("CameraView", return_default=True, default=2)
+        if current not in range(len(CAMERA_VIEWS)):
+            current = getattr(self, "_camera_before_world", 2)
 
         def on_select(res):
             if res == DialogResult.CONFIRM and dialog.selection:

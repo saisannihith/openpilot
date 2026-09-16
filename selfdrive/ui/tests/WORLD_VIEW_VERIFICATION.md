@@ -196,6 +196,32 @@ lead metrics simultaneously; they are not a reconstructed complete road scene.
 - 96 native unit tests pass. Native-font straight/left/right captures and scaled
   framebuffer checks pass both with and without the synthetic STOP state.
 
+## Live Tesla Road Toggle, 2026-09-16
+
+- Tesla Road is now an explicit toggle under Appearance > Model & Path
+  Visualization, available even when the Model UI parent is off. It writes only
+  the existing CameraView integer (5); TeslaRoad is a UI row ID, not a new native
+  parameter. No params library rebuild or data migration is required.
+- The old Camera View picker contains only camera/blank modes. Turning Tesla Road
+  off restores the prior selection in this UI session; after a UI restart it
+  returns to Standard if no earlier selection is known. Choosing a camera also
+  turns the Tesla Road toggle off because they share the same stored value.
+- Settings writes invalidate the shared parameter cache immediately. Renderer
+  transitions release/recreate graphics and reset camera clients without restarting
+  the manager, model, controls, device or car.
+- A render failure still falls back to the camera without repeatedly retrying
+  each frame. Choosing another view or returning from settings clears the failure
+  latch, permitting a user-requested retry during the same drive.
+- 108 native tests passed: settings placement and real callbacks, cached readback,
+  20 toggle cycles for each of five camera modes, 30 renderer-switch cycles,
+  persisted-on disable, and injected-failure recovery, plus existing UI regressions.
+- Native GPU checks passed 20 hot resource recreation cycles and scaled HUD
+  framebuffer restoration. Actual path pixels changed with RainbowPath on and
+  matched the starting colors exactly when switched off, in the same process.
+  Rainbow uses the existing shared gradient and takes priority over acceleration
+  colors. The pixel test clears its framebuffer exactly as GuiApplication does.
+- Physical live-camera stream reacquisition while driving was not tested offroad.
+
 ## Reproduce
 
 From a configured repository, with a Raylib-capable Python environment:

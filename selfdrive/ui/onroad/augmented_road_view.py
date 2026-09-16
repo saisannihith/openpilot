@@ -85,6 +85,8 @@ class AugmentedRoadView(CameraView):
       return
 
     camera_view = self._camera_view()
+    if camera_view != CAMERA_VIEW_TESLA_ROAD:
+      self._world_failed = False
     self._camera_view_none = camera_view == CAMERA_VIEW_NONE
     in_reverse = self._is_in_reverse()
     reverse_camera_enabled = in_reverse and ui_state.ui_params.get_bool("DriverCamera")
@@ -167,6 +169,12 @@ class AugmentedRoadView(CameraView):
 
   def _render_world_overlays(self, rect: rl.Rectangle) -> None:
     pass
+
+  def show_event(self):
+    super().show_event()
+    # Returning from settings is an explicit retry opportunity, including
+    # off/on changes made while the driving view was hidden. No frame retry loop.
+    self._world_failed = False
 
   def _render_extra_road_overlays(self, rect: rl.Rectangle) -> None:
     """Render subclass road overlays inside the content scissor, above the model and below the HUD."""

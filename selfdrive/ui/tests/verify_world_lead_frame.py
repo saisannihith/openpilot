@@ -81,6 +81,7 @@ def main():
   parser.add_argument('--out', type=Path, required=True)
   parser.add_argument('--frames',type=int,default=3)
   parser.add_argument('--with-stop',action='store_true',help='Explicit synthetic STOP/collision test; not a detected sign')
+  parser.add_argument('--rainbow',action='store_true')
   parser.add_argument('--route',action='append',default=[])
   args = parser.parse_args()
   if Path('/AGNOS').exists():
@@ -114,7 +115,7 @@ def main():
   overlay = model_renderer.ModelRenderer()
   settings = {'LeadInfo':True,'ShowStoppingPoint':True,'ShowStoppingPointMetrics':True,
               'AdjacentPath':True,'BlindSpotPath':True,'ModelUI':True,'PathColor':'#2895f6',
-              'AccelerationPath':False,'RainbowPath':False}
+              'AccelerationPath':False,'RainbowPath':args.rainbow}
   overlay._params = NS(get_bool=lambda k,**kw: bool(settings.get(k,kw.get('default',False))),
                        get_int=lambda k,**kw: 50, get_float=lambda k,**kw: 3.5,
                        get=lambda k,**kw: settings.get(k))
@@ -177,13 +178,40 @@ def main():
       finally:
         rl.unload_image(screenshot)
     print('WORLD_AND_LEAD_GPU_OK: straight/left/right with production fonts, icons and metrics')
+    # Exercise live path-style changes on the same initialized renderer.
+    samples = []
+    for rainbow in (False,True,False):
+      settings['RainbowPath'] = rainbow
+      sm.tick(4000,time.monotonic())
+      rect = rl.Rectangle(0,0,1440,720)
+      rl.begin_drawing()
+      rl.clear_background(rl.BLACK)
+      world.render(rect,sm,0,True,road_overlay=overlay.render_world_road)
+      rl.end_scissor_mode()
+      rl.end_drawing()
+      shot = rl.load_image_from_screen()
+      try:
+        colors = []
+        for d in (5.,8.,11.):
+          y = world_overlays.lateral_at(world.scene.path,d)
+          x,sy = world.project(d,y,rect)
+          c = rl.get_image_color(shot,round(x),round(sy))
+          colors.append((c.r,c.g,c.b))
+        samples.append(colors)
+      finally:
+        rl.unload_image(shot)
+    print('PATH_TOGGLE_PIXELS',samples,flush=True)
+    assert samples[0] == samples[2], 'Turning rainbow off did not restore plain path'
+    assert any(max(abs(a-b) for a,b in zip(c,d,strict=True)) > 20
+               for c,d in zip(samples[0],samples[1],strict=True)), 'Rainbow toggle did not change path pixels'
+    print('LIVE_RAINBOW_PIXEL_TOGGLE_OK')
     import numpy as np
     print('FULL_OVERLAY_RENDER_MS',dict(zip(('median','p99','max'),np.percentile(render_times,[50,99,100]).round(2).tolist(),strict=True)))
     parent = rl.load_render_texture(1440,720)
     original_scissor = rl.begin_scissor_mode
     try:
       rl.begin_scissor_mode = lambda x,y,w,h: original_scissor(int(x*.75),int(y*.75),int(w*.75),int(h*.75))
-      for width in (1920,700):
+      for width in (1920,700)*10:
         rl.begin_texture_mode(parent)
         rl.clear_background(rl.MAGENTA)
         rl.rl_push_matrix()
@@ -206,7 +234,7 @@ def main():
           assert after.g > 200 and after.r < 100, 'World close lost HUD framebuffer'
         finally:
           rl.unload_image(screenshot)
-      print('SHARED_ROAD_SCALED_PARENT_OK: landscape and narrow')
+      print('SHARED_ROAD_SCALED_PARENT_OK: 20 hot resource recreations, landscape and narrow')
     finally:
       rl.begin_scissor_mode = original_scissor
       rl.unload_render_texture(parent)

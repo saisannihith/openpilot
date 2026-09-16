@@ -12,6 +12,9 @@ def _load_augmented_road_view(monkeypatch):
     monkeypatch.setitem(sys.modules, name, module)
 
   class CameraView:
+    def show_event(self):
+      self.events.append("camera_show")
+
     def _render(self, _rect):
       self.events.append("camera")
 
@@ -205,6 +208,23 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
     events.clear()
     view._render(augmented_road_view.rl.Rectangle(0, 0, 100, 50))
     assert 'world' not in events and 'camera' in events and 'alert' in events
+    view.show_event()
+    assert not view._world_failed
+    events.clear()
+    view._render(augmented_road_view.rl.Rectangle(0,0,100,50))
+    assert 'world' in events  # Exactly one retry after returning from settings.
+  elif mode == 'world':
+    for _ in range(30):
+      view._camera_view = lambda: augmented_road_view.CAMERA_VIEW_STANDARD
+      events.clear()
+      view._render(augmented_road_view.rl.Rectangle(0,0,100,50))
+      assert 'camera_reset' in events and 'world_close' in events and 'camera' in events
+      assert not view._using_world
+      view._camera_view = lambda: augmented_road_view.CAMERA_VIEW_TESLA_ROAD
+      events.clear()
+      view._render(augmented_road_view.rl.Rectangle(0,0,100,50))
+      assert 'world' in events and 'world_leads' in events and 'alert' in events
+      assert view._using_world
 
 
 def test_offroad_releases_world_and_camera_resources(monkeypatch):
