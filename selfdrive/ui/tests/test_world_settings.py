@@ -10,12 +10,16 @@ class Params:
   def __init__(self, view):
     self.view = view
     self.writes = []
+    self.bools = {}
 
   def get_int(self, key, **kwargs):
     return self.view if key == 'CameraView' else kwargs.get('default',0)
 
   def get_bool(self, key, **kwargs):
-    return False
+    return self.bools.get(key, False)
+
+  def put_bool(self, key, value):
+    self.bools[key] = value
 
   def put_int(self, key, value):
     assert key == 'CameraView'
@@ -57,6 +61,19 @@ def test_persisted_world_mode_can_be_disabled_after_ui_restart(monkeypatch):
   assert row.get_state()
   row.set_state(False)
   assert raw.view == 2
+
+
+def test_ambient_and_motion_are_scoped_to_tesla_road(monkeypatch):
+  obj,raw = layout(monkeypatch,2)
+  rows = {row.id: row for row in obj._model_rows}
+  assert rows['TeslaRoadAmbient'].visible() is False
+  assert rows['TeslaRoadMotion'].visible() is False
+  rows['TeslaRoad'].set_state(True)
+  assert rows['TeslaRoadAmbient'].visible() is True
+  assert rows['TeslaRoadMotion'].visible() is True
+  rows['TeslaRoadAmbient'].set_state(True)
+  rows['TeslaRoadMotion'].set_state(True)
+  assert raw.bools == {'TeslaRoadAmbient': True, 'TeslaRoadMotion': True}
 
 
 def test_camera_picker_has_no_world_option_or_none_mismatch(monkeypatch):

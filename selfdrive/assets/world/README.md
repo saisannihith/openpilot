@@ -30,6 +30,11 @@ coordinate transform required by the road renderer and OLED material-color
 baking. The source GLB is intentionally not shipped; the committed NPZ is the
 full-fidelity derivative used by the renderer.
 
+`carnival_aurora_ambient.png` is an original, display-only low-luminance
+panorama used only when `Ambient Landscape` is enabled in Tesla Road. It is
+behind the measured road, paths, lane lines, traffic, and safety labels; it
+does not represent camera, map, model, radar, or navigation data.
+
 Rebuild with a downloaded, licensed source GLB:
 
 ```sh

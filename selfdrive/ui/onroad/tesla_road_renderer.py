@@ -4,19 +4,20 @@ import time
 from functools import lru_cache
 import numpy as np
 import pyray as rl
-from openpilot.selfdrive.ui.onroad.world_scene import ROAD_SURFACE_RGBA, WorldScene, display_lane_continuation, road_surface_segments
+from openpilot.selfdrive.ui.onroad.world_scene import ROAD_SURFACE_RGBA, WorldScene, display_lane_continuation, lateral_at, road_surface_segments
 from openpilot.selfdrive.ui.onroad.world_presentation import WorldPresentation, RenderQuality
 
 CAPACITY = 4095
+FLOW_CAPACITY = 768
 WORLD_CAMERA_FOVY = 42.0
 # Existing onroad instruments use light text. Keep their contrast intact.
 BACKGROUND = rl.Color(0, 0, 0, 255)
-GROUND = rl.Color(0, 0, 0, 255)
 WHITE = rl.Color(255, 255, 255, 255)
 RADAR_AVATAR = rl.Color(185, 192, 200, 255)
 ROAD_EDGE_HALO = (74, 17, 23, 255)
 ROAD_EDGE = (244, 82, 82, 255)
 LANE_MARKING = (236, 242, 247, 255)
+ROAD_FLOW = (92, 178, 255, 150)
 UP = rl.Vector3(0, 1, 0)
 ONE = rl.Vector3(1, 1, 1)
 ORIGIN = rl.Vector3(0, 0, 0)
@@ -56,11 +57,15 @@ class GpuMesh:
       self.closed = True
 
 
-def _world_mesh(name, max_vertices=20_000):
-  # Offline-baked mesh only: no model parsing, textures, allocations, or I/O onroad.
+def _world_asset(name):
   from openpilot.common.basedir import BASEDIR
   from pathlib import Path
-  with np.load(Path(BASEDIR)/'selfdrive/assets/world'/name,allow_pickle=False) as asset:
+  return Path(BASEDIR)/'selfdrive/assets/world'/name
+
+
+def _world_mesh(name, max_vertices=20_000):
+  # Offline-baked mesh only: no model parsing, textures, allocations, or I/O onroad.
+  with np.load(_world_asset(name),allow_pickle=False) as asset:
     vertices,colors = asset['vertices'],asset['colors']
   if (vertices.dtype != np.float32 or colors.dtype != np.uint8 or vertices.shape != (len(colors),3)
       or colors.shape != (len(vertices),4) or not 0 < len(vertices) <= max_vertices or len(vertices)%3
@@ -93,12 +98,21 @@ class TeslaRoadRenderer:
     self._vertices = np.zeros((CAPACITY, 3), dtype=np.float32)
     self._colors = np.zeros((CAPACITY, 4), dtype=np.uint8)
     self._count = 0
+    self._flow_vertices = np.zeros((FLOW_CAPACITY, 3), dtype=np.float32)
+    self._flow_colors = np.zeros((FLOW_CAPACITY, 4), dtype=np.uint8)
+    self._flow_count = 0
+    self._flow_key = None
+    self._motion_time = None
+    self._motion_distance = 0.0
+    self._ambient_texture = None
     self.overlay_exclusions = []
     # Frame the road from just behind the ego vehicle, not a distant overview.
     # Projection helpers share this camera so labels remain attached to cars.
     # A slightly tighter third-person lens makes nearby measured traffic readable while
     # retaining its untouched physical world coordinates and true lead label.
-    self._camera = rl.Camera3D(rl.Vector3(0, 6, 12), rl.Vector3(0, 0, -2.8), UP, WORLD_CAMERA_FOVY,
+    # A lower eye line puts the model-road horizon at the landscape horizon
+    # rather than projecting distant vehicles into the sky.
+    self._camera = rl.Camera3D(rl.Vector3(0, 4, 12), rl.Vector3(0, 0, -2.8), UP, WORLD_CAMERA_FOVY,
                               rl.CameraProjection.CAMERA_PERSPECTIVE)
     eye,target,up = (np.array([v.x,v.y,v.z],dtype=np.float64) for v in (self._camera.position,self._camera.target,self._camera.up))
     forward = target-eye
@@ -117,6 +131,7 @@ class TeslaRoadRenderer:
         self._meshes.append(GpuMesh(*vehicle_mesh(distant)))
       self._meshes.append(GpuMesh(self._vertices, self._colors, dynamic=True))
       self._meshes.append(GpuMesh(*ego_vehicle_mesh()))
+      self._meshes.append(GpuMesh(self._flow_vertices, self._flow_colors, dynamic=True))
     except Exception:
       self.close()
       raise
@@ -150,6 +165,80 @@ class TeslaRoadRenderer:
       self._triangle(a,b,c,color)
       self._triangle(b,d,c,color)
 
+  def _flow_triangle(self, a, b, c, color):
+    if self._flow_count + 3 > FLOW_CAPACITY:
+      return
+    self._flow_vertices[self._flow_count:self._flow_count+3] = (a,b,c)
+    self._flow_colors[self._flow_count:self._flow_count+3] = color
+    self._flow_count += 3
+
+  def _flow_ribbon(self, points, half_width, height, color):
+    if len(points) != 2:
+      return
+    (x0,y0),(x1,y1) = points
+    dx,dy = x1-x0,y1-y0
+    length = math.hypot(dx,dy)
+    if length <= 1e-6:
+      return
+    nx,ny = -dy/length,dx/length
+    a,b = (y0-ny*half_width,height,-(x0-nx*half_width)),(y0+ny*half_width,height,-(x0+nx*half_width))
+    c,d = (y1-ny*half_width,height,-(x1-nx*half_width)),(y1+ny*half_width,height,-(x1+nx*half_width))
+    self._flow_triangle(a,b,c,color)
+    self._flow_triangle(b,d,c,color)
+
+  @staticmethod
+  def _ego_speed(sm):
+    try:
+      speed = float(sm['carState'].vEgo)
+    except (AttributeError, KeyError, TypeError, ValueError):
+      return 0.0
+    return min(40.0,max(0.0,speed)) if math.isfinite(speed) else 0.0
+
+  def _advance_motion(self, now, speed, enabled):
+    if self._motion_time is None or not 0.0 <= now-self._motion_time <= 1.0:
+      self._motion_time = now
+      return
+    elapsed = now-self._motion_time
+    self._motion_time = now
+    if enabled:
+      # This is literal travelled distance for visual flow only. It never moves
+      # model lanes, traffic positions, paths, or their safety labels.
+      self._motion_distance = (self._motion_distance+elapsed*speed) % 10.0
+
+  def _update_flow(self, enabled, speed):
+    key = (self.scene.revision, enabled, int(self._motion_distance*8), round(speed,1))
+    if key == self._flow_key:
+      return
+    self._flow_count = 0
+    if enabled and speed >= .5 and len(self.scene.path) >= 2:
+      horizon = min(72.0,self.scene.path[-1][0])
+      distance = max(3.0,10.0-self._motion_distance)
+      length = min(1.25,.36+speed*.026)
+      while distance < horizon:
+        end = min(horizon,distance+length)
+        start_y = lateral_at(self.scene.path,distance)
+        end_y = lateral_at(self.scene.path,end)
+        if start_y is not None and end_y is not None:
+          self._flow_ribbon(((distance,start_y),(end,end_y)),.065,.023,ROAD_FLOW)
+        distance += 10.0
+    self._meshes[4].update(self._flow_vertices,self._flow_colors,self._flow_count)
+    self._flow_key = key
+
+  def _ambient(self, size, motion):
+    if self._ambient_texture is None:
+      texture = rl.load_texture(str(_world_asset('carnival_aurora_ambient.png')))
+      if not texture.id:
+        raise RuntimeError('Ambient world texture unavailable')
+      self._ambient_texture = texture
+      rl.set_texture_filter(texture,rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
+    texture = self._ambient_texture
+    # The horizon only drifts a few pixels. It gives OLED pixels a gentle
+    # refresh without becoming a competing animation while driving.
+    offset = math.sin(self._motion_distance*.18)*size[0]*.008 if motion else 0.0
+    source = rl.Rectangle(0,0,texture.width,texture.height)
+    destination = rl.Rectangle(-size[0]*.02+offset,-size[1]*.01,size[0]*1.04,size[1]*1.02)
+    rl.draw_texture_pro(texture,source,destination,rl.Vector2(0,0),0,WHITE)
+
   def _update_geometry(self, engaged):
     key = (self.scene.revision, engaged)
     if key == self._geometry_key:
@@ -170,10 +259,13 @@ class TeslaRoadRenderer:
     self._meshes[2].update(self._vertices,self._colors,self._count)
     self._geometry_key = key
 
-  def render(self, rect, sm, started_frame, engaged, now=None, parent_target=None, road_overlay=None):
+  def render(self, rect, sm, started_frame, engaged, now=None, parent_target=None, road_overlay=None,
+             ambient=False, motion=False):
     now = time.monotonic() if now is None else now
     self.scene.update(sm, started_frame, now)
     self.presentation.update(self.scene.objects, started_frame, now, self.scene.revision)
+    speed = self._ego_speed(sm)
+    self._advance_motion(now,speed,motion)
     self.overlay_exclusions.clear()
     # One color/depth target reused every frame, bounded independently of DPI.
     scale = min(1.0, 1440.0/max(1,rect.width), 810.0/max(1,rect.height))*self.quality.scale
@@ -190,6 +282,7 @@ class TeslaRoadRenderer:
       self._initialize()
       if road_overlay is None:
         self._update_geometry(engaged)
+      self._update_flow(motion,speed)
       if size != self._target_size:
         if self._target is not None:
           rl.unload_render_texture(self._target)
@@ -202,10 +295,14 @@ class TeslaRoadRenderer:
         rl.set_texture_filter(target.texture, rl.TextureFilter.TEXTURE_FILTER_BILINEAR)
       rl.begin_texture_mode(self._target)
       rl.clear_background(BACKGROUND)
+      if ambient:
+        self._ambient(size,motion)
       rl.begin_mode_3d(self._camera)
       rl.rl_disable_backface_culling()
       try:
-        rl.draw_plane(rl.Vector3(0,-.02,-40), rl.Vector2(200,260), GROUND)
+        # The measured road surface is drawn by the shared overlay. Do not add
+        # a synthetic full-screen ground plane: it would hide the optional
+        # ambient landscape outside the real road boundaries.
         if road_overlay is None:
           self._meshes[2].draw()
         else:
@@ -218,6 +315,7 @@ class TeslaRoadRenderer:
           finally:
             rl.begin_mode_3d(self._camera)
             rl.rl_disable_backface_culling()
+        self._meshes[4].draw()
         far_ids = set()
         for obj in self.scene.objects:
           if obj.vehicle or obj.radar_avatar:
@@ -234,7 +332,11 @@ class TeslaRoadRenderer:
         angle = math.radians(yaw)
         # Pivot at the nose/path origin so the avatar cannot drift sideways
         # when showing near-path heading. This is intent, not measured yaw.
-        self._meshes[3].draw(rl.Vector3(2.4*math.sin(angle),0,2.4*math.cos(angle)), yaw)
+        speed_ratio = speed/40.0 if motion else 0.0
+        vibration = math.sin(now*(2.2+speed*.32))*speed_ratio*.016
+        lift = math.sin(now*(2.8+speed*.21))*speed_ratio*.009
+        self._meshes[3].draw(rl.Vector3(2.4*math.sin(angle)+vibration,lift,2.4*math.cos(angle)),
+                             yaw+math.sin(now*(1.8+speed*.12))*speed_ratio*.18)
       finally:
         rl.rl_enable_backface_culling()
         rl.end_mode_3d()
@@ -317,6 +419,12 @@ class TeslaRoadRenderer:
       rl.rl_enable_framebuffer(parent_framebuffer)
     self._target_size = None
     self._geometry_key = None
+    self._flow_key = None
+    self._motion_time = None
+    self._motion_distance = 0.0
+    if self._ambient_texture is not None:
+      rl.unload_texture(self._ambient_texture)
+      self._ambient_texture = None
     self.scene.reset()
     self.presentation.reset()
     self._far_ids.clear()

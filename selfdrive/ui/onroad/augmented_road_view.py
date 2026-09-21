@@ -142,7 +142,9 @@ class AugmentedRoadView(CameraView):
       try:
         self.tesla_road_renderer.render(self._content_rect, ui_state.sm, ui_state.started_frame,
                                         ui_state.status == UIStatus.ENGAGED, parent_target=gui_app._render_texture,
-                                        road_overlay=self.model_renderer.render_world_road)
+                                        road_overlay=self.model_renderer.render_world_road,
+                                        ambient=ui_state.ui_params.get_bool("TeslaRoadAmbient"),
+                                        motion=ui_state.ui_params.get_bool("TeslaRoadMotion"))
         self._render_world_overlays(self._content_rect)
         self.tesla_road_renderer.overlay_exclusions.extend(self._world_hud_exclusions(self._content_rect))
         self.model_renderer.render_world_leads(self._content_rect, self.tesla_road_renderer)

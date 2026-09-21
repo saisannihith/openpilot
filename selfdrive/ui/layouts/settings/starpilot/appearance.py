@@ -174,12 +174,23 @@ class StarPilotAppearanceLayout(_SettingsPage):
         hud_on = lambda: self._params.get_bool("CustomUI")
         dev_metrics_on = lambda: self._params.get_bool("DeveloperMetrics")
         dev_sidebar_on = lambda: self._params.get_bool("DeveloperSidebar")
+        tesla_road_on = lambda: self._params.get_int("CameraView", return_default=True, default=2) == 5
 
         # ═══ 1. Model & Path Visualization ═══
         self._model_rows = [
             SettingRow("TeslaRoad", "toggle", tr_noop("Tesla Road"),
                        get_state=lambda: self._params.get_int("CameraView", return_default=True, default=2) == 5,
                        set_state=self._set_tesla_road),
+            SettingRow("TeslaRoadAmbient", "toggle", tr_noop("Ambient Landscape"),
+                       subtitle="",
+                       get_state=lambda: self._params.get_bool("TeslaRoadAmbient"),
+                       set_state=lambda s: self._params.put_bool("TeslaRoadAmbient", s),
+                       visible=tesla_road_on),
+            SettingRow("TeslaRoadMotion", "toggle", tr_noop("Speed Motion"),
+                       subtitle="",
+                       get_state=lambda: self._params.get_bool("TeslaRoadMotion"),
+                       set_state=lambda s: self._params.put_bool("TeslaRoadMotion", s),
+                       visible=tesla_road_on),
             SettingRow("DynamicPathWidth", "toggle", tr_noop("Dynamic Path"),
                        subtitle="",
                        get_state=lambda: self._params.get_bool("DynamicPathWidth"),
