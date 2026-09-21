@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from openpilot.selfdrive.ui.onroad.world_scene import MAX_OBJECTS, SceneObject, WorldScene, lateral_at, path_yaw, polyline, road_yaw, vehicle_center
+from openpilot.selfdrive.ui.onroad.world_scene import MAX_OBJECTS, SceneObject, WorldScene, lateral_at, path_yaw, polyline, road_surface_segments, road_yaw, vehicle_center
 
 
 def test_standstill_origin_noise_keeps_forward_display_path():
@@ -72,6 +72,14 @@ def test_display_rate_does_not_move_objects_or_rebuild_geometry():
 def test_road_horizon_can_shorten_without_disappearing():
   assert polyline(NS(x=[0,10,20,19], y=[0,0,0,0])) == ((0.,0.),(10.,0.),(20.,0.))
   assert polyline(NS(x=[0,10,140], y=[0,0,0])) == ((0.,0.),(10.,0.))
+
+
+def test_road_surface_uses_only_plausible_paired_edge_segments():
+  left = ((0.,-7.),(10.,-7.),(20.,-7.),(30.,-7.))
+  right = ((0.,7.),(10.,7.),(20.,30.),(30.,7.))
+  assert road_surface_segments(left,right) == (((0.,-7.,7.),(10.,-7.,7.)),)
+  assert not road_surface_segments(left,())
+  assert not road_surface_segments(((0.,-7.),(10.,-7.)), ((0.,30.),(10.,30.)))
 
 
 @pytest.mark.parametrize('bad', [math.nan, math.inf, -math.inf])
@@ -164,9 +172,7 @@ def test_vehicle_tangent_across_lanes_and_crossings_without_snapping(curve,offse
   assert yaw == pytest.approx(-math.degrees(math.atan(2*curve*forward)))
   obj = SceneObject(('lead',0),forward,right,True,10.,yaw=yaw)
   center_x,center_y = vehicle_center(obj)
-  a = math.radians(yaw)
-  assert center_x-2.4*math.cos(a) == pytest.approx(forward)
-  assert center_y+2.4*math.sin(a) == pytest.approx(right)
+  assert (center_x,center_y) == (forward,right)
   assert (obj.forward,obj.right) == (forward,right)
 
 

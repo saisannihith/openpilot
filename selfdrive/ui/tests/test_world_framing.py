@@ -2,14 +2,20 @@
 import pytest
 import pyray as rl
 import numpy as np
+import math
 
-from openpilot.selfdrive.ui.onroad.tesla_road_renderer import TeslaRoadRenderer
+from openpilot.selfdrive.ui.onroad.tesla_road_renderer import TeslaRoadRenderer, WORLD_CAMERA_FOVY
 from openpilot.selfdrive.ui.onroad.world_scene import display_lane_continuation
 
 
 @pytest.mark.parametrize('width,height', [(2160,1080),(1440,720),(1920,960)])
 def test_landscape_framing_uses_display_and_keeps_near_and_far_visible(width,height):
   world = TeslaRoadRenderer()
+  assert world._camera.fovy == WORLD_CAMERA_FOVY == 42.
+  old_focal = .5 / math.tan(math.radians(46.) / 2.)
+  assert world._focal_factor == pytest.approx(.5 / math.tan(math.radians(WORLD_CAMERA_FOVY) / 2.))
+  # Same physical coordinates, but about 13% more visual scale for nearby traffic.
+  assert world._focal_factor / old_focal > 1.13
   scale = min(1.,1440/width,810/height)
   world._target_size = (int(width*scale),int(height*scale))
   rect = rl.Rectangle(30,20,width,height)

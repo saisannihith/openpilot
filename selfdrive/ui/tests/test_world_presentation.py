@@ -51,7 +51,7 @@ def test_asynchronous_identity_handoff_can_have_older_fresh_timestamp():
   view.update([old],0,10.)
   new = car(t=9.98)
   view.update([new],0,10.01)
-  assert view.pose(new).forward == view.pose(old).forward == 22.4
+  assert view.pose(new).forward == view.pose(old).forward == 20.
   view.update([new],0,10.07)
   assert view.pose(new).forward == 20.
 

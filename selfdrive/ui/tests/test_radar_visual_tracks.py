@@ -2,7 +2,7 @@ import math
 from types import SimpleNamespace as NS
 import pytest
 from openpilot.selfdrive.ui.onroad.radar_visual_tracks import RadarVisualTracks
-from openpilot.selfdrive.ui.onroad.world_scene import WorldScene, vehicle_center, in_lane_corridor, road_yaw
+from openpilot.selfdrive.ui.onroad.world_scene import SceneObject, WorldScene, vehicle_center, in_lane_corridor, path_yaw_at, road_yaw
 
 
 def point(d=40.,v=-5.,y=-3.5,track=17,measured=True):
@@ -22,8 +22,8 @@ def test_fast_lane_membership_matches_existing_tangent_qualification():
 def run(track, velocity=-5., ego=20.):
   result = {}
   for i in range(10):
-    result = track.update([point(d=40+velocity*i*.05,v=velocity)],10+i*.05,ego,lambda d,y:True)
-    if i < 6:
+    result = track.update([point(d=40+velocity*i*.05,v=velocity)],10+i*.05,ego)
+    if i < 2:
       assert not result
   return result
 
@@ -36,6 +36,14 @@ def test_persistent_motion_gets_generic_avatar_direction(velocity,direction):
 
 def test_stationary_returns_are_not_parked_cars():
   assert not run(RadarVisualTracks(),-20.)
+
+
+def test_persistent_moving_target_becomes_avatar_without_lane_lines():
+  tracker = RadarVisualTracks()
+  result = {}
+  for i in range(3):
+    result = tracker.update([point(d=30-i*.2,y=8,v=-4)],20+i*.05,20.)
+  assert result == {17: 1}
 
 
 def test_observed_moving_target_can_stop_without_disappearing():
@@ -63,9 +71,32 @@ def test_dropout_jump_recycled_id_offroad_geometry_and_duplicate_reset_history()
   run(tracker)
   assert not tracker.update([point()],11.,20,lambda d,y:True)
   assert not tracker.update([point()],11.05,20,lambda d,y:False)
-  assert not tracker.history
+  assert tracker.history
   assert not tracker.update([point(),point()],11.1,20,lambda d,y:True)
   assert not tracker.history
+
+
+def test_path_tangent_falls_back_for_radar_avatar_orientation_without_lanes():
+  curve = tuple((float(x), .08*x) for x in range(0,60,5))
+  assert path_yaw_at(curve,25.) == pytest.approx(-math.degrees(math.atan(.08)))
+  assert path_yaw_at((),25.) is None
+  assert path_yaw_at(((0.,0.),(1.,0.)),.5) is None
+
+
+def test_radar_avatar_keeps_path_heading_when_lanes_disappear():
+  scene = WorldScene()
+  scene.path = tuple((float(x), .06*x) for x in range(0,80,5))
+  obj = SceneObject(('radar',17), 25., 4., False, 10., ('track',17), radar_avatar=True)
+  scene.objects = (obj,)
+  scene.radar_avatars = {17: 1}
+  scene._orient_objects(10.)
+  assert obj.radar_avatar
+  assert obj.yaw == pytest.approx(-math.degrees(math.atan(.06)))
+
+
+def test_model_lead_stays_at_the_reported_drel_coordinate():
+  lead = SceneObject(('lead',0), 23., 1., True, 10.)
+  assert vehicle_center(lead) == (23.,1.)
 
 
 def test_history_is_bounded_for_changing_ids():

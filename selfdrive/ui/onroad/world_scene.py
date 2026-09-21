@@ -95,6 +95,38 @@ def road_yaw(lanes, forward, right):
   return None
 
 
+def path_yaw_at(points, forward):
+  """Model-path tangent for display-only radar avatars when lanes are weak."""
+  if not points:
+    return None
+  lo, hi = max(points[0][0], forward - 4.), min(points[-1][0], forward + 4.)
+  if hi - lo < 2.:
+    return None
+  y0, y1 = lateral_at(points, lo), lateral_at(points, hi)
+  if y0 is None or y1 is None:
+    return None
+  return max(-75., min(75., -math.degrees(math.atan((y1-y0)/(hi-lo)))))
+
+
+def road_surface_segments(first, second):
+  """Paired, measured road-edge spans for display-only asphalt geometry."""
+  if len(first) < 2 or len(second) < 2:
+    return ()
+  segments, current = [], []
+  for x, y in first:
+    other = lateral_at(second, x)
+    # Do not bridge unknown edge sections or paint implausibly wide topology.
+    if other is None or not 2.5 <= abs(other-y) <= 24.:
+      if len(current) >= 2:
+        segments.append(tuple(current))
+      current = []
+      continue
+    current.append((x, y, other))
+  if len(current) >= 2:
+    segments.append(tuple(current))
+  return tuple(segments)
+
+
 def in_lane_corridor(lanes, forward, right):
   """Same lane bounds as road_yaw, without computing four unused tangents."""
   values = [lateral_at(line,forward) if line and min(line[-1][0],forward+4.)-max(line[0][0],forward-4.) >= 2.
@@ -104,13 +136,10 @@ def in_lane_corridor(lanes, forward, right):
 
 
 def vehicle_center(obj):
-  if obj.radar_avatar:
-    # Raw radar is a reflection location, not a verified front/rear bumper.
-    return obj.forward,obj.right
-  # dRel is the rear reference, not the mesh center. Rotate the center offset
-  # too, so the rear reference remains at the observed point through curves.
-  angle = math.radians(obj.yaw)
-  return obj.forward+2.4*math.cos(angle),obj.right-2.4*math.sin(angle)
+  # RadarState dRel is expressed from the ego front bumper. It provides no
+  # validated target-bumper reference, so both model and raw-radar avatars use
+  # the reported world coordinate directly. The sedan asset is already centered.
+  return obj.forward,obj.right
 
 
 @dataclass(slots=True)
@@ -190,8 +219,7 @@ class WorldScene:
       if self.radar_visual_key is None or self.radar_visual_key[0] != started_frame:
         self.radar_visuals.reset()
       self.radar_avatars = self.radar_visuals.update(
-        sm['liveTracks'].points,sm.recv_time['liveTracks'],float(sm['carState'].vEgo),
-        lambda d,y: in_lane_corridor(self.lanes,d,y))
+        sm['liveTracks'].points, sm.recv_time['liveTracks'], float(sm['carState'].vEgo))
       self.radar_visual_key = radar_key
     object_key = (started_frame, bool(self.radar_avatars),
                   *(sm.recv_frame[key] if ok else -1 for key, ok in zip(sources, available, strict=False)))
@@ -259,11 +287,18 @@ class WorldScene:
         obj.radar_avatar = False
         continue
       target = road_yaw(self.lanes,obj.forward,obj.right)
+      # The radar provides no vehicle yaw. When lane pairs are unavailable,
+      # align its generic avatar to the model road path instead of discarding
+      # a confirmed moving track as a dot.
+      if target is None and obj.radar_avatar:
+        target = path_yaw_at(self.path,obj.forward)
       received = max(model_time,obj.received)
       if target is None:
-        obj.radar_avatar = False
-        obj.yaw,obj.heading_time = 0.,0.
-        continue
+        if obj.radar_avatar:
+          target = 0.
+        else:
+          obj.yaw,obj.heading_time = 0.,0.
+          continue
       if obj.radar_avatar and obj.direction < 0:
         target += 180.
       dt = received-obj.heading_time

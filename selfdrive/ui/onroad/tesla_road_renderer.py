@@ -4,15 +4,20 @@ import time
 from functools import lru_cache
 import numpy as np
 import pyray as rl
-from openpilot.selfdrive.ui.onroad.world_scene import WorldScene, display_lane_continuation
+from openpilot.selfdrive.ui.onroad.world_scene import WorldScene, display_lane_continuation, road_surface_segments
 from openpilot.selfdrive.ui.onroad.world_presentation import WorldPresentation, RenderQuality
 
 CAPACITY = 4095
+WORLD_CAMERA_FOVY = 42.0
 # Existing onroad instruments use light text. Keep their contrast intact.
 BACKGROUND = rl.Color(0, 0, 0, 255)
 GROUND = rl.Color(0, 0, 0, 255)
 WHITE = rl.Color(255, 255, 255, 255)
 RADAR_AVATAR = rl.Color(185, 192, 200, 255)
+ROAD_SURFACE = (7, 12, 16, 255)
+ROAD_EDGE_HALO = (74, 17, 23, 255)
+ROAD_EDGE = (244, 82, 82, 255)
+LANE_MARKING = (236, 242, 247, 255)
 UP = rl.Vector3(0, 1, 0)
 ONE = rl.Vector3(1, 1, 1)
 ORIGIN = rl.Vector3(0, 0, 0)
@@ -82,7 +87,9 @@ class TeslaRoadRenderer:
     self.overlay_exclusions = []
     # Frame the road from just behind the ego vehicle, not a distant overview.
     # Projection helpers share this camera so labels remain attached to cars.
-    self._camera = rl.Camera3D(rl.Vector3(0, 6, 12), rl.Vector3(0, 0, -2.8), UP, 46,
+    # A slightly tighter third-person lens makes nearby measured traffic readable while
+    # retaining its untouched physical world coordinates and true lead label.
+    self._camera = rl.Camera3D(rl.Vector3(0, 6, 12), rl.Vector3(0, 0, -2.8), UP, WORLD_CAMERA_FOVY,
                               rl.CameraProjection.CAMERA_PERSPECTIVE)
     eye,target,up = (np.array([v.x,v.y,v.z],dtype=np.float64) for v in (self._camera.position,self._camera.target,self._camera.up))
     forward = target-eye
@@ -126,15 +133,28 @@ class TeslaRoadRenderer:
       self._triangle(a,b,c,color)
       self._triangle(b,d,c,color)
 
+  def _road_surface(self, points, height, color):
+    for (x0, left0, right0), (x1, left1, right1) in zip(points, points[1:], strict=False):
+      a, b = (left0, height, -x0), (right0, height, -x0)
+      c, d = (left1, height, -x1), (right1, height, -x1)
+      self._triangle(a,b,c,color)
+      self._triangle(b,d,c,color)
+
   def _update_geometry(self, engaged):
     key = (self.scene.revision, engaged)
     if key == self._geometry_key:
       return
     self._count = 0
+    # Keep the world OLED-black except for a road area bounded by two fresh,
+    # plausible model edges. No map, lane-count, or road-type inference here.
+    for surface in road_surface_segments(*self.scene.edges):
+      self._road_surface(surface, .001, ROAD_SURFACE)
     for edge in self.scene.edges:
-      self._ribbon(display_lane_continuation(edge),.06,.008,(230,48,48,255))
+      display = display_lane_continuation(edge)
+      self._ribbon(display,.11,.006,ROAD_EDGE_HALO)
+      self._ribbon(display,.04,.009,ROAD_EDGE)
     for lane in self.scene.lanes:
-      self._ribbon(display_lane_continuation(lane),.045,.014,(246,247,249,255))
+      self._ribbon(display_lane_continuation(lane),.045,.014,LANE_MARKING)
     fill = (40,149,246,255) if engaged else (166,179,189,255)
     self._ribbon(self.scene.path,.85,.018,fill,path=True)
     self._meshes[2].update(self._vertices,self._colors,self._count)
