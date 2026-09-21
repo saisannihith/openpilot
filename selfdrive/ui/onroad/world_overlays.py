@@ -100,15 +100,17 @@ def render_road(renderer, world, rect, state):
   renderer._path.projected_points = world.project_ribbon(path,pw*(1-edge),rect)
   renderer._track_edge_vertices = world.project_ribbon(path,pw,rect)
 
+  # Use the same bounded near-field tangent as the edge strokes so the measured
+  # road surface reaches the viewport instead of ending at the ego origin.
+  display_edges = tuple(display_lane_continuation(edge) for edge in scene.edges)
   # A road polygon exists only where both confident model edges agree on a
   # plausible span. Everything outside it remains true OLED black.
-  for surface in road_surface_segments(*scene.edges):
+  for surface in road_surface_segments(*display_edges):
     draw_polygon(rect,project_road_surface(world,surface,rect),rl.Color(*ROAD_SURFACE_RGBA))
   display_lanes = tuple(display_lane_continuation(lane) for lane in scene.lanes)
   for lane in display_lanes:
     draw_polygon(rect,world.project_ribbon(lane,lw,rect),rl.Color(236,242,247,255))
-  for boundary in scene.edges:
-    display = display_lane_continuation(boundary)
+  for display in display_edges:
     halo = min(.16,max(.07,ew*3.))
     draw_polygon(rect,world.project_ribbon(display,halo,rect),rl.Color(74,17,23,255))
     draw_polygon(rect,world.project_ribbon(display,ew,rect),rl.Color(244,82,82,255))

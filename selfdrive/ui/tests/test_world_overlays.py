@@ -140,7 +140,7 @@ def test_measured_road_surface_precedes_lanes_and_boundaries(monkeypatch):
   monkeypatch.setattr(wo,'draw_polygon',lambda _,points,color: calls.append((points,color)))
   wo.render_road(renderer,world,rl.Rectangle(0,0,1000,700),state)
   assert calls[0][1] == rl.Color(9,15,20,255)
-  assert calls[0][0].shape == (6,2)
+  assert calls[0][0].shape == (8,2)
   assert any(color == rl.Color(244,82,82,255) for _,color in calls)
 
 
