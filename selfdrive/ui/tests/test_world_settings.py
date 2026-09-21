@@ -1,4 +1,5 @@
 from types import SimpleNamespace as NS
+from pathlib import Path
 
 import pytest
 
@@ -74,6 +75,12 @@ def test_ambient_and_motion_are_scoped_to_tesla_road(monkeypatch):
   rows['TeslaRoadAmbient'].set_state(True)
   rows['TeslaRoadMotion'].set_state(True)
   assert raw.bools == {'TeslaRoadAmbient': True, 'TeslaRoadMotion': True}
+
+
+def test_world_visual_settings_are_registered_as_persistent_booleans():
+  registry = (Path(__file__).parents[3] / 'common/params_keys.h').read_text()
+  for key in ('TeslaRoadAmbient', 'TeslaRoadMotion'):
+    assert f'{{"{key}", {{PERSISTENT, BOOL, "0", "0", 2}}}}' in registry
 
 
 def test_camera_picker_has_no_world_option_or_none_mismatch(monkeypatch):
