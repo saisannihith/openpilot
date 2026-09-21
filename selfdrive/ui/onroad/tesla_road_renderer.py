@@ -56,19 +56,29 @@ class GpuMesh:
       self.closed = True
 
 
-@lru_cache(maxsize=2)
-def vehicle_mesh(distant=False):
-  # Author-modeled CC0 mesh, baked offline: no OBJ parsing or textures onroad.
+def _world_mesh(name, max_vertices=20_000):
+  # Offline-baked mesh only: no model parsing, textures, allocations, or I/O onroad.
   from openpilot.common.basedir import BASEDIR
   from pathlib import Path
-  name = 'sedan_lod.npz' if distant else 'sedan.npz'
   with np.load(Path(BASEDIR)/'selfdrive/assets/world'/name,allow_pickle=False) as asset:
     vertices,colors = asset['vertices'],asset['colors']
   if (vertices.dtype != np.float32 or colors.dtype != np.uint8 or vertices.shape != (len(colors),3)
-      or colors.shape != (len(vertices),4) or not 0 < len(vertices) <= 20000 or len(vertices)%3
+      or colors.shape != (len(vertices),4) or not 0 < len(vertices) <= max_vertices or len(vertices)%3
       or not np.isfinite(vertices).all()):
     raise ValueError('Invalid world vehicle asset')
   return vertices,colors
+
+
+@lru_cache(maxsize=2)
+def vehicle_mesh(distant=False):
+  # Generic CC0 traffic mesh. Sensor data does not establish vehicle make/model.
+  return _world_mesh('sedan_lod.npz' if distant else 'sedan.npz')
+
+
+@lru_cache(maxsize=1)
+def ego_vehicle_mesh():
+  # CC-BY Carnival asset is display-only and applies to the known ego car only.
+  return _world_mesh('carnival.npz', max_vertices=1_500_000)
 
 class TeslaRoadRenderer:
   def __init__(self):
@@ -106,6 +116,7 @@ class TeslaRoadRenderer:
       for distant in (False, True):
         self._meshes.append(GpuMesh(*vehicle_mesh(distant)))
       self._meshes.append(GpuMesh(self._vertices, self._colors, dynamic=True))
+      self._meshes.append(GpuMesh(*ego_vehicle_mesh()))
     except Exception:
       self.close()
       raise
@@ -223,7 +234,7 @@ class TeslaRoadRenderer:
         angle = math.radians(yaw)
         # Pivot at the nose/path origin so the avatar cannot drift sideways
         # when showing near-path heading. This is intent, not measured yaw.
-        self._meshes[0].draw(rl.Vector3(2.4*math.sin(angle),0,2.4*math.cos(angle)), yaw)
+        self._meshes[3].draw(rl.Vector3(2.4*math.sin(angle),0,2.4*math.cos(angle)), yaw)
       finally:
         rl.rl_enable_backface_culling()
         rl.end_mode_3d()

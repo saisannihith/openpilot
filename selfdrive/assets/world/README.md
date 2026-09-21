@@ -16,6 +16,27 @@ Offline 0.16 m vertex clustering removes degenerate/reversed triangles and
 preserves baked colors. The renderer switches beyond 60 m, returning to the
 full mesh below 50 m; the ego and nearby cars always retain the original mesh.
 
+## 2024 Kia Carnival ego vehicle
+
+`carnival.npz` is the display-only mesh for the known ego vehicle. It is never
+used for sensor-tracked traffic, because model and radar messages do not report
+vehicle make or model.
+
+Source: [Kia Carnival](https://sketchfab.com/3d-models/kia-carnival-85cc817cc9984fafb879760df5af3ae8)
+by [Nieve5677](https://sketchfab.com/niev), licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The committed asset
+preserves every source triangle and authored normal; it applies only the
+coordinate transform required by the road renderer and OLED material-color
+baking. The source GLB is intentionally not shipped; the committed NPZ is the
+full-fidelity derivative used by the renderer.
+
+Rebuild with a downloaded, licensed source GLB:
+
+```sh
+python selfdrive/ui/tests/build_world_carnival.py \
+  /path/to/kia_carnival.glb selfdrive/assets/world/carnival.npz
+```
+
 ```sh
 python selfdrive/ui/tests/bake_world_lod.py \
   selfdrive/assets/world/sedan.npz selfdrive/assets/world/sedan_lod.npz
