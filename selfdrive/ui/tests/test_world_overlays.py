@@ -126,5 +126,23 @@ def test_world_path_styles_use_existing_methods_and_reset_camera_projection(monk
   assert renderer._path.projected_points.size == 0
 
 
+def test_measured_road_surface_precedes_lanes_and_boundaries(monkeypatch):
+  state,world,params,_ = fixture(monkeypatch)
+  world.scene.edges = (((0.,-7.),(20.,-7.),(40.,-3.)), ((0.,7.),(20.,7.),(40.,11.)))
+  renderer = object.__new__(mr.ModelRenderer)
+  renderer._params = params
+  renderer._path = NS(projected_points=None)
+  renderer._rainbow_path = NS(update=lambda _:None)
+  renderer._update_experimental_gradient = lambda:None
+  renderer._draw_path = lambda _:None
+  world.project_ribbon = lambda *_: np.zeros((6,2),np.float32)
+  calls = []
+  monkeypatch.setattr(wo,'draw_polygon',lambda _,points,color: calls.append((points,color)))
+  wo.render_road(renderer,world,rl.Rectangle(0,0,1000,700),state)
+  assert calls[0][1] == rl.Color(9,15,20,255)
+  assert calls[0][0].shape == (6,2)
+  assert any(color == rl.Color(244,82,82,255) for _,color in calls)
+
+
 def test_primary_clipping_does_not_jump_to_secondary_lead():
   assert wo.clipped_path(((0,0),(10,0),(20,4)),15) == ((0,0),(10,0),(15,2))

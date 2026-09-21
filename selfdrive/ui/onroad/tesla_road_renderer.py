@@ -4,7 +4,7 @@ import time
 from functools import lru_cache
 import numpy as np
 import pyray as rl
-from openpilot.selfdrive.ui.onroad.world_scene import WorldScene, display_lane_continuation, road_surface_segments
+from openpilot.selfdrive.ui.onroad.world_scene import ROAD_SURFACE_RGBA, WorldScene, display_lane_continuation, road_surface_segments
 from openpilot.selfdrive.ui.onroad.world_presentation import WorldPresentation, RenderQuality
 
 CAPACITY = 4095
@@ -14,7 +14,6 @@ BACKGROUND = rl.Color(0, 0, 0, 255)
 GROUND = rl.Color(0, 0, 0, 255)
 WHITE = rl.Color(255, 255, 255, 255)
 RADAR_AVATAR = rl.Color(185, 192, 200, 255)
-ROAD_SURFACE = (7, 12, 16, 255)
 ROAD_EDGE_HALO = (74, 17, 23, 255)
 ROAD_EDGE = (244, 82, 82, 255)
 LANE_MARKING = (236, 242, 247, 255)
@@ -148,7 +147,7 @@ class TeslaRoadRenderer:
     # Keep the world OLED-black except for a road area bounded by two fresh,
     # plausible model edges. No map, lane-count, or road-type inference here.
     for surface in road_surface_segments(*self.scene.edges):
-      self._road_surface(surface, .001, ROAD_SURFACE)
+      self._road_surface(surface, .001, ROAD_SURFACE_RGBA)
     for edge in self.scene.edges:
       display = display_lane_continuation(edge)
       self._ribbon(display,.11,.006,ROAD_EDGE_HALO)

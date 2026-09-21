@@ -9,7 +9,7 @@ from itertools import islice
 import numpy as np
 import pyray as rl
 
-from openpilot.selfdrive.ui.onroad.world_scene import lateral_at, display_lane_continuation
+from openpilot.selfdrive.ui.onroad.world_scene import ROAD_SURFACE_RGBA, display_lane_continuation, lateral_at, road_surface_segments
 from openpilot.selfdrive.ui.onroad.starpilot.path import render_path_edges
 from openpilot.system.ui.lib.shader_polygon import draw_polygon
 
@@ -22,6 +22,19 @@ def clipped_path(points, end):
   if y is not None:
     result.append((end,y))
   return tuple(result)
+
+
+def project_road_surface(world, points, rect):
+  """Project a measured road-edge span without filling unknown topology."""
+  left, right = [], []
+  for distance, left_y, right_y in points:
+    a = world.project(distance, left_y, rect, height=.003, clip=False)
+    b = world.project(distance, right_y, rect, height=.003, clip=False)
+    if a is None or b is None:
+      return np.empty((0,2),np.float32)
+    left.append(a)
+    right.append(b)
+  return np.asarray((*left,*reversed(right)),np.float32) if len(left) >= 2 else np.empty((0,2),np.float32)
 
 
 def stop_anchor(world, rect, state, distance):
@@ -87,11 +100,18 @@ def render_road(renderer, world, rect, state):
   renderer._path.projected_points = world.project_ribbon(path,pw*(1-edge),rect)
   renderer._track_edge_vertices = world.project_ribbon(path,pw,rect)
 
+  # A road polygon exists only where both confident model edges agree on a
+  # plausible span. Everything outside it remains true OLED black.
+  for surface in road_surface_segments(*scene.edges):
+    draw_polygon(rect,project_road_surface(world,surface,rect),rl.Color(*ROAD_SURFACE_RGBA))
   display_lanes = tuple(display_lane_continuation(lane) for lane in scene.lanes)
   for lane in display_lanes:
-    draw_polygon(rect,world.project_ribbon(lane,lw,rect),rl.WHITE)
+    draw_polygon(rect,world.project_ribbon(lane,lw,rect),rl.Color(236,242,247,255))
   for boundary in scene.edges:
-    draw_polygon(rect,world.project_ribbon(display_lane_continuation(boundary),ew,rect),rl.Color(230,48,48,255))
+    display = display_lane_continuation(boundary)
+    halo = min(.16,max(.07,ew*3.))
+    draw_polygon(rect,world.project_ribbon(display,halo,rect),rl.Color(74,17,23,255))
+    draw_polygon(rect,world.project_ribbon(display,ew,rect),rl.Color(244,82,82,255))
 
   # Geometry does not establish adjacent traffic direction or lane availability.
   # Leave neighboring road surfaces black, not red/green "unsafe/safe" lanes.
