@@ -4,7 +4,8 @@ import pyray as rl
 import numpy as np
 import math
 
-from openpilot.selfdrive.ui.onroad.tesla_road_renderer import TeslaRoadRenderer, WORLD_CAMERA_FOVY
+from openpilot.selfdrive.ui.onroad.tesla_road_renderer import (TeslaRoadRenderer, WORLD_CAMERA_FOVY,
+                                                                ego_rear_signal_positions, ego_signal_flash)
 from openpilot.selfdrive.ui.onroad.world_scene import display_lane_continuation
 
 
@@ -57,6 +58,22 @@ def test_speed_motion_is_visual_only_and_scales_with_ego_speed():
   assert world._motion_distance == pytest.approx(5.)
   world._advance_motion(13.0,20.,False)
   assert world._motion_distance == pytest.approx(5.)
+
+
+def test_ego_turn_signals_blink_together_with_the_existing_ui_cadence():
+  assert ego_signal_flash(True,False,.10) == (True,False)
+  assert ego_signal_flash(True,True,.60) == (False,False)
+  assert ego_signal_flash(False,True,1.10) == (False,True)
+
+
+def test_ego_turn_signal_positions_follow_the_carnival_display_yaw():
+  anchor = rl.Vector3(0.,0.,4.6)
+  left,right = ego_rear_signal_positions(anchor,0.)
+  assert (left.x,left.y,left.z) == pytest.approx((-.50,1.13,7.11))
+  assert (right.x,right.y,right.z) == pytest.approx((.50,1.13,7.11))
+  left,right = ego_rear_signal_positions(anchor,90.)
+  assert (left.x,left.z) == pytest.approx((2.51,5.10))
+  assert (right.x,right.z) == pytest.approx((2.51,4.10))
 
 
 @pytest.mark.parametrize('offset',[-7.1,-1.8,1.8,7.1])

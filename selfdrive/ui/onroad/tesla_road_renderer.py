@@ -11,6 +11,9 @@ CAPACITY = 4095
 FLOW_CAPACITY = 768
 WORLD_CAMERA_FOVY = 42.0
 EGO_CAMERA_OFFSET_M = 4.6
+# Median left/right coordinates from the baked Carnival rear-lens clusters.
+# These remain in the ego mesh frame and are rotated only with the avatar.
+EGO_REAR_SIGNAL_OFFSETS = ((-.50, 1.13, 2.51), (.50, 1.13, 2.51))
 # Existing onroad instruments use light text. Keep their contrast intact.
 BACKGROUND = rl.Color(0, 0, 0, 255)
 WHITE = rl.Color(255, 255, 255, 255)
@@ -19,6 +22,9 @@ ROAD_EDGE_HALO = (74, 17, 23, 255)
 ROAD_EDGE = (244, 82, 82, 255)
 LANE_MARKING = (236, 242, 247, 255)
 ROAD_FLOW = (92, 178, 255, 150)
+SIGNAL_GLOW = rl.Color(255, 213, 0, 120)
+SIGNAL_YELLOW = rl.Color(255, 239, 16, 255)
+SIGNAL_HOTSPOT = rl.Color(255, 255, 208, 255)
 UP = rl.Vector3(0, 1, 0)
 ONE = rl.Vector3(1, 1, 1)
 ORIGIN = rl.Vector3(0, 0, 0)
@@ -85,6 +91,24 @@ def vehicle_mesh(distant=False):
 def ego_vehicle_mesh():
   # CC-BY Carnival asset is display-only and applies to the known ego car only.
   return _world_mesh('carnival.npz', max_vertices=1_500_000)
+
+
+def ego_signal_flash(left, right, now):
+  """Match StarPilot's existing 500 ms turn-signal cadence."""
+  visible = int(now * 2.0) % 2 == 0
+  return bool(left) and visible, bool(right) and visible
+
+
+def _ego_display_point(anchor, yaw, x, y, z):
+  angle = math.radians(yaw)
+  sin, cos = math.sin(angle), math.cos(angle)
+  return rl.Vector3(anchor.x+x*cos+z*sin, anchor.y+y, anchor.z+z*cos-x*sin)
+
+
+def ego_rear_signal_positions(anchor, yaw):
+  """Transform the known Carnival rear lamp positions with its display yaw."""
+  return tuple(_ego_display_point(anchor,yaw,x,y,z) for x,y,z in EGO_REAR_SIGNAL_OFFSETS)
+
 
 class TeslaRoadRenderer:
   def __init__(self):
@@ -225,6 +249,30 @@ class TeslaRoadRenderer:
     self._meshes[4].update(self._flow_vertices,self._flow_colors,self._flow_count)
     self._flow_key = key
 
+  def _draw_ego_signals(self, sm, started_frame, now, anchor, yaw):
+    if not self.scene.fresh(sm,'carState',started_frame,now):
+      return
+    car_state = sm['carState']
+    active = ego_signal_flash(car_state.leftBlinker,car_state.rightBlinker,now)
+    if any(active):
+      # The independently baked mesh has no separate tail-lamp material. Its
+      # depth surface would otherwise hide a coplanar light, so thin cuboids
+      # overlay only the known lamp band and then restore depth.
+      rl.rl_disable_depth_test()
+      rl.rl_push_matrix()
+      try:
+        rl.rl_translatef(anchor.x,anchor.y,anchor.z)
+        rl.rl_rotatef(yaw,0,1,0)
+        for enabled,(x,y,z) in zip(active,EGO_REAR_SIGNAL_OFFSETS,strict=True):
+          if enabled:
+            # A thin, bright rectangular strip: never a circle or floating dot.
+            rl.draw_cube(rl.Vector3(x,y,z),.34,.085,.028,SIGNAL_GLOW)
+            rl.draw_cube(rl.Vector3(x,y,z+.016),.245,.042,.032,SIGNAL_YELLOW)
+            rl.draw_cube(rl.Vector3(x,y,z+.034),.105,.016,.036,SIGNAL_HOTSPOT)
+      finally:
+        rl.rl_pop_matrix()
+        rl.rl_enable_depth_test()
+
   def _ambient(self, size, motion):
     if self._ambient_texture is None:
       texture = rl.load_texture(str(_world_asset('carnival_aurora_ambient_v2.png')))
@@ -334,13 +382,16 @@ class TeslaRoadRenderer:
         # Pivot at the nose/path origin so the avatar cannot drift sideways
         # when showing near-path heading. This is intent, not measured yaw.
         speed_ratio = speed/40.0 if motion else 0.0
-        vibration = math.sin(now*(2.2+speed*.32))*speed_ratio*.016
-        lift = math.sin(now*(2.8+speed*.21))*speed_ratio*.009
-        # This is a presentation-only camera offset for the known ego avatar;
-        # measured road and traffic coordinates remain untouched.
-        self._meshes[3].draw(rl.Vector3(EGO_CAMERA_OFFSET_M*math.sin(angle)+vibration,lift,
-                                        EGO_CAMERA_OFFSET_M*math.cos(angle)),
-                             yaw+math.sin(now*(1.8+speed*.12))*speed_ratio*.18)
+        # The camera, model road, and detected traffic are deliberately fixed.
+        # Motion belongs exclusively to the on-screen ego chassis and scales
+        # with ego speed, never with any sensor position.
+        chassis_lateral = math.sin(now*(2.2+speed*.32))*speed_ratio*.008
+        chassis_lift = math.sin(now*(2.8+speed*.21))*speed_ratio*.016
+        anchor = rl.Vector3(EGO_CAMERA_OFFSET_M*math.sin(angle)+chassis_lateral,chassis_lift,
+                            EGO_CAMERA_OFFSET_M*math.cos(angle))
+        display_yaw = yaw+math.sin(now*(1.8+speed*.12))*speed_ratio*.10
+        self._meshes[3].draw(anchor,display_yaw)
+        self._draw_ego_signals(sm,started_frame,now,anchor,display_yaw)
       finally:
         rl.rl_enable_backface_culling()
         rl.end_mode_3d()
