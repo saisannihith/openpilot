@@ -10,6 +10,7 @@ from openpilot.selfdrive.ui.onroad.world_presentation import WorldPresentation, 
 CAPACITY = 4095
 FLOW_CAPACITY = 768
 WORLD_CAMERA_FOVY = 42.0
+EGO_CAMERA_OFFSET_M = 3.0
 # Existing onroad instruments use light text. Keep their contrast intact.
 BACKGROUND = rl.Color(0, 0, 0, 255)
 WHITE = rl.Color(255, 255, 255, 255)
@@ -335,7 +336,10 @@ class TeslaRoadRenderer:
         speed_ratio = speed/40.0 if motion else 0.0
         vibration = math.sin(now*(2.2+speed*.32))*speed_ratio*.016
         lift = math.sin(now*(2.8+speed*.21))*speed_ratio*.009
-        self._meshes[3].draw(rl.Vector3(2.4*math.sin(angle)+vibration,lift,2.4*math.cos(angle)),
+        # This is a presentation-only camera offset for the known ego avatar;
+        # measured road and traffic coordinates remain untouched.
+        self._meshes[3].draw(rl.Vector3(EGO_CAMERA_OFFSET_M*math.sin(angle)+vibration,lift,
+                                        EGO_CAMERA_OFFSET_M*math.cos(angle)),
                              yaw+math.sin(now*(1.8+speed*.12))*speed_ratio*.18)
       finally:
         rl.rl_enable_backface_culling()
