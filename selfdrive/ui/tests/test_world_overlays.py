@@ -104,7 +104,7 @@ def test_world_path_styles_use_existing_methods_and_reset_camera_projection(monk
   calls = []
   renderer._update_experimental_gradient = lambda:calls.append('gradient')
   renderer._draw_path = lambda sm:calls.append('shared_path')
-  monkeypatch.setattr(wo,'draw_polygon',lambda *args:None)
+  monkeypatch.setattr(wo,'draw_polygon',lambda *args,**kwargs:None)
   monkeypatch.setattr(wo,'render_path_edges',lambda *args:calls.append('edges'))
   widths = []
   world.project_ribbon = lambda points,w,rect: widths.append(w) or np.zeros((6,2),np.float32)
@@ -137,11 +137,19 @@ def test_measured_road_surface_precedes_lanes_and_boundaries(monkeypatch):
   renderer._draw_path = lambda _:None
   world.project_ribbon = lambda *_: np.zeros((6,2),np.float32)
   calls = []
-  monkeypatch.setattr(wo,'draw_polygon',lambda _,points,color: calls.append((points,color)))
+  monkeypatch.setattr(wo,'draw_polygon',lambda _,points,color=None,**kwargs: calls.append((points,color or kwargs.get('gradient'))))
   wo.render_road(renderer,world,rl.Rectangle(0,0,1000,700),state)
-  assert calls[0][1] == rl.Color(9,15,20,255)
+  assert calls[0][1] == wo.ROAD_ASPHALT_GRADIENT
   assert calls[0][0].shape == (8,2)
-  assert any(color == rl.Color(244,82,82,255) for _,color in calls)
+  assert any(color == wo.ROAD_EDGE_CORE for _,color in calls)
+
+
+def test_reflections_are_clipped_to_live_paired_road_edges(monkeypatch):
+  _,world,_,_ = fixture(monkeypatch)
+  surface = ((0.,-7.,7.),(20.,-6.,8.),(40.,-3.,11.))
+  points = wo.project_road_slice(world,surface,4.,12.,rl.Rectangle(0,0,1000,700))
+  assert points.shape == (4,2)
+  assert wo.project_road_slice(world,surface,-1.,12.,rl.Rectangle(0,0,1000,700)).size == 0
 
 
 def test_primary_clipping_does_not_jump_to_secondary_lead():

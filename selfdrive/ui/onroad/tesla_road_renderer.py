@@ -227,7 +227,7 @@ class TeslaRoadRenderer:
 
   def _ambient(self, size, motion):
     if self._ambient_texture is None:
-      texture = rl.load_texture(str(_world_asset('carnival_aurora_ambient.png')))
+      texture = rl.load_texture(str(_world_asset('carnival_aurora_ambient_v2.png')))
       if not texture.id:
         raise RuntimeError('Ambient world texture unavailable')
       self._ambient_texture = texture

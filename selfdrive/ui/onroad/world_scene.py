@@ -13,7 +13,9 @@ MAX_OBJECTS = 16
 MAX_RADAR_INPUTS = 128
 MAX_DISTANCE = 120.0
 MAX_AGE = 0.35
-ROAD_SURFACE_RGBA = (9, 15, 20, 255)
+# Tesla Road presentation uses live edge geometry; this is only the dark
+# asphalt material drawn inside the confident edge-pair polygon.
+ROAD_SURFACE_RGBA = (7, 14, 29, 255)
 
 
 def polyline(line):

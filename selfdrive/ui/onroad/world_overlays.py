@@ -9,9 +9,21 @@ from itertools import islice
 import numpy as np
 import pyray as rl
 
-from openpilot.selfdrive.ui.onroad.world_scene import ROAD_SURFACE_RGBA, display_lane_continuation, lateral_at, road_surface_segments
+from openpilot.selfdrive.ui.onroad.world_scene import display_lane_continuation, lateral_at, road_surface_segments
 from openpilot.selfdrive.ui.onroad.starpilot.path import render_path_edges
-from openpilot.system.ui.lib.shader_polygon import draw_polygon
+from openpilot.system.ui.lib.shader_polygon import Gradient, draw_polygon
+
+
+ROAD_ASPHALT_GRADIENT = Gradient(
+  start=(0., 1.), end=(0., .16),
+  colors=[rl.Color(7, 14, 29, 255), rl.Color(9, 23, 48, 255), rl.Color(12, 34, 66, 255)],
+  stops=[0., .65, 1.],
+)
+ROAD_REFLECTION = rl.Color(40, 109, 196, 76)
+ROAD_REFLECTION_HOT = rl.Color(131, 83, 224, 88)
+ROAD_EDGE_OUTER_GLOW = rl.Color(96, 10, 49, 70)
+ROAD_EDGE_INNER_GLOW = rl.Color(208, 25, 87, 130)
+ROAD_EDGE_CORE = rl.Color(255, 99, 133, 255)
 
 
 def clipped_path(points, end):
@@ -35,6 +47,32 @@ def project_road_surface(world, points, rect):
     left.append(a)
     right.append(b)
   return np.asarray((*left,*reversed(right)),np.float32) if len(left) >= 2 else np.empty((0,2),np.float32)
+
+
+def project_road_slice(world, points, start, end, rect):
+  """Project a short, live-edge-bounded asphalt section for visual sheen."""
+  if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+    return np.empty((0,2),np.float32)
+  left = tuple((x, y) for x, y, _ in points)
+  right = tuple((x, y) for x, _, y in points)
+  start_left, start_right = lateral_at(left,start), lateral_at(right,start)
+  end_left, end_right = lateral_at(left,end), lateral_at(right,end)
+  if None in (start_left,start_right,end_left,end_right):
+    return np.empty((0,2),np.float32)
+  return project_road_surface(world,((start,start_left,start_right),(end,end_left,end_right)),rect)
+
+
+def render_road_reflections(world, surface, rect):
+  """Subtle moving light on known asphalt, never on inferred road space."""
+  near,far = max(1.,surface[0][0]),min(90.,surface[-1][0])
+  if far-near < 5.:
+    return
+  phase = getattr(world,'_motion_distance',0.)
+  for index in range(6):
+    start = near+(index*13.-phase*1.15)%(far-near)
+    end = min(far,start+1.2+start*.035)
+    color = ROAD_REFLECTION_HOT if index % 3 == 0 else ROAD_REFLECTION
+    draw_polygon(rect,project_road_slice(world,surface,start,end,rect),color)
 
 
 def stop_anchor(world, rect, state, distance):
@@ -106,14 +144,20 @@ def render_road(renderer, world, rect, state):
   # A road polygon exists only where both confident model edges agree on a
   # plausible span. Everything outside it remains true OLED black.
   for surface in road_surface_segments(*display_edges):
-    draw_polygon(rect,project_road_surface(world,surface,rect),rl.Color(*ROAD_SURFACE_RGBA))
+    # A shader gradient gives the live polygon a dark-blue asphalt depth,
+    # without ever inventing road outside its confident paired edges.
+    draw_polygon(rect,project_road_surface(world,surface,rect),gradient=ROAD_ASPHALT_GRADIENT)
+    render_road_reflections(world,surface,rect)
   display_lanes = tuple(display_lane_continuation(lane) for lane in scene.lanes)
   for lane in display_lanes:
     draw_polygon(rect,world.project_ribbon(lane,lw,rect),rl.Color(236,242,247,255))
   for display in display_edges:
-    halo = min(.16,max(.07,ew*3.))
-    draw_polygon(rect,world.project_ribbon(display,halo,rect),rl.Color(74,17,23,255))
-    draw_polygon(rect,world.project_ribbon(display,ew,rect),rl.Color(244,82,82,255))
+    # Layered shoulder light reads as a road boundary at a glance while each
+    # stroke still follows only the fresh model road-edge coordinates.
+    halo = min(.22,max(.11,ew*5.))
+    draw_polygon(rect,world.project_ribbon(display,halo*2.4,rect),ROAD_EDGE_OUTER_GLOW)
+    draw_polygon(rect,world.project_ribbon(display,halo,rect),ROAD_EDGE_INNER_GLOW)
+    draw_polygon(rect,world.project_ribbon(display,ew,rect),ROAD_EDGE_CORE)
 
   # Geometry does not establish adjacent traffic direction or lane availability.
   # Leave neighboring road surfaces black, not red/green "unsafe/safe" lanes.
