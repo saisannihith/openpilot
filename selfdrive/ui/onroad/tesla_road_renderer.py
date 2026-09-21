@@ -10,7 +10,7 @@ from openpilot.selfdrive.ui.onroad.world_presentation import WorldPresentation, 
 CAPACITY = 4095
 FLOW_CAPACITY = 768
 WORLD_CAMERA_FOVY = 42.0
-EGO_CAMERA_OFFSET_M = 3.0
+EGO_CAMERA_OFFSET_M = 4.6
 # Existing onroad instruments use light text. Keep their contrast intact.
 BACKGROUND = rl.Color(0, 0, 0, 255)
 WHITE = rl.Color(255, 255, 255, 255)
