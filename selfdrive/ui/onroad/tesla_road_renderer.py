@@ -13,7 +13,7 @@ WORLD_CAMERA_FOVY = 42.0
 EGO_CAMERA_OFFSET_M = 4.6
 # Median left/right coordinates from the baked Carnival rear-lens clusters.
 # These remain in the ego mesh frame and are rotated only with the avatar.
-EGO_REAR_SIGNAL_OFFSETS = ((-.50, 1.13, 2.51), (.50, 1.13, 2.51))
+EGO_REAR_SIGNAL_OFFSETS = ((-.715, 1.13, 2.377), (.702, 1.13, 2.378))
 # Existing onroad instruments use light text. Keep their contrast intact.
 BACKGROUND = rl.Color(0, 0, 0, 255)
 WHITE = rl.Color(255, 255, 255, 255)
@@ -266,9 +266,9 @@ class TeslaRoadRenderer:
         for enabled,(x,y,z) in zip(active,EGO_REAR_SIGNAL_OFFSETS,strict=True):
           if enabled:
             # A thin, bright rectangular strip: never a circle or floating dot.
-            rl.draw_cube(rl.Vector3(x,y,z),.34,.085,.028,SIGNAL_GLOW)
-            rl.draw_cube(rl.Vector3(x,y,z+.016),.245,.042,.032,SIGNAL_YELLOW)
-            rl.draw_cube(rl.Vector3(x,y,z+.034),.105,.016,.036,SIGNAL_HOTSPOT)
+            rl.draw_cube(rl.Vector3(x,y,z),.22,.060,.024,SIGNAL_GLOW)
+            rl.draw_cube(rl.Vector3(x,y,z+.014),.16,.028,.028,SIGNAL_YELLOW)
+            rl.draw_cube(rl.Vector3(x,y,z+.030),.070,.009,.032,SIGNAL_HOTSPOT)
       finally:
         rl.rl_pop_matrix()
         rl.rl_enable_depth_test()

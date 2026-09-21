@@ -69,11 +69,11 @@ def test_ego_turn_signals_blink_together_with_the_existing_ui_cadence():
 def test_ego_turn_signal_positions_follow_the_carnival_display_yaw():
   anchor = rl.Vector3(0.,0.,4.6)
   left,right = ego_rear_signal_positions(anchor,0.)
-  assert (left.x,left.y,left.z) == pytest.approx((-.50,1.13,7.11))
-  assert (right.x,right.y,right.z) == pytest.approx((.50,1.13,7.11))
+  assert (left.x,left.y,left.z) == pytest.approx((-.715,1.13,6.977))
+  assert (right.x,right.y,right.z) == pytest.approx((.702,1.13,6.978))
   left,right = ego_rear_signal_positions(anchor,90.)
-  assert (left.x,left.z) == pytest.approx((2.51,5.10))
-  assert (right.x,right.z) == pytest.approx((2.51,4.10))
+  assert (left.x,left.z) == pytest.approx((2.377,5.315))
+  assert (right.x,right.z) == pytest.approx((2.378,3.898))
 
 
 @pytest.mark.parametrize('offset',[-7.1,-1.8,1.8,7.1])
