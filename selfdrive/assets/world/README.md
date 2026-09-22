@@ -1,26 +1,50 @@
-# World Vehicle Asset
+# Tesla Road Vehicle Assets
 
-Generic sedan: `NormalCar1` from Quaternius's Realistic Car Pack (November 2018).
-Author/source: https://quaternius.itch.io/lowpoly-cars
+## Generic traffic
+
+`sedan.npz` is `NormalCar1` from Quaternius's Realistic Car Pack (November
+2018), baked as 2,874 vertex-colored triangles. `sedan_lod.npz` is its
+1,000-triangle distant LOD. The original OBJ, MTL, and CC0 license are kept
+alongside the bake.
+
+Source: https://quaternius.itch.io/lowpoly-cars
+
 License: CC0 1.0, https://creativecommons.org/publicdomain/zero/1.0/
-The author's original license, OBJ and MTL are included alongside the bake.
 
-`sedan.npz` contains 2,874 triangles with baked white paint and vertex lighting.
-Wheels, arches, mirrors, pillars and glazing are authored mesh geometry. No
-runtime textures, external downloads or OBJ parser are needed. Generic cars
-represent model-associated vehicles; the UI does not infer sedan/truck class.
-Tail lamps are static decoration, not a claimed braking measurement.
+These remain generic proxies. Model/radar inputs do not provide a vehicle make
+or body class, so generic traffic must not be represented as a detected sedan,
+truck, or a particular OEM vehicle. Static lamp colors are decoration, not a
+braking-state measurement.
 
-`sedan_lod.npz` is a 1,000-triangle distant derivative of the same CC0 asset.
-Offline 0.16 m vertex clustering removes degenerate/reversed triangles and
-preserves baked colors. The renderer switches beyond 60 m, returning to the
-full mesh below 50 m; the ego and nearby cars always retain the original mesh.
+## Model-associated lead proxy
+
+`lead_vehicle.npz` and `lead_vehicle_lod.npz` are display-only, neutralized
+derivatives of the approved Carnival mesh. They preserve separate body, glass,
+trim, and lamp material families during offline voxel clustering, yielding
+18,883 and 4,580 triangles respectively. They are used only for a nearby
+model-associated `leadOne` or `leadTwo` object, with a 30/34 m hysteresis
+boundary. Other model-associated traffic continues to use the generic CC0
+asset, while unqualified radar tracks continue to render as dots or radar
+avatars.
+
+The proxy is not a claim that a tracked car is a Kia Carnival or that its class
+has been identified. Its purpose is a stable, high-quality visual silhouette
+for the one lead whose distance and speed are already shown by openpilot.
+
+Rebuild the proxy offline:
+
+```sh
+python selfdrive/ui/tests/build_world_lead_vehicle.py \
+  selfdrive/assets/world/carnival.npz \
+  selfdrive/assets/world/lead_vehicle.npz \
+  selfdrive/assets/world/lead_vehicle_lod.npz \
+  --full-cell .10 --lod-cell .22
+```
 
 ## 2024 Kia Carnival ego vehicle
 
 `carnival.npz` is the display-only mesh for the known ego vehicle. It is never
-used for sensor-tracked traffic, because model and radar messages do not report
-vehicle make or model.
+used for control or perception.
 
 Source: [Kia Carnival](https://sketchfab.com/3d-models/kia-carnival-85cc817cc9984fafb879760df5af3ae8)
 by [Nieve5677](https://sketchfab.com/niev), licensed under
@@ -30,13 +54,6 @@ coordinate transform required by the road renderer and OLED material-color
 baking. The source GLB is intentionally not shipped; the committed NPZ is the
 full-fidelity derivative used by the renderer.
 
-`carnival_aurora_ambient_v2.png` is an original, display-only edge-framed
-night landscape used only when `Ambient Landscape` is enabled in Tesla Road.
-It is behind the measured road, paths, lane lines, traffic, and safety labels;
-it does not represent camera, map, model, radar, or navigation data. The road
-asphalt, reflective lighting, and red shoulder glow are rendered from the
-fresh paired model road-edge geometry, never from this background image.
-
 Rebuild with a downloaded, licensed source GLB:
 
 ```sh
@@ -44,14 +61,8 @@ python selfdrive/ui/tests/build_world_carnival.py \
   /path/to/kia_carnival.glb selfdrive/assets/world/carnival.npz
 ```
 
-```sh
-python selfdrive/ui/tests/bake_world_lod.py \
-  selfdrive/assets/world/sedan.npz selfdrive/assets/world/sedan_lod.npz
-```
-
-Rebuild offline with a Raylib-capable Python environment:
-
-```sh
-xvfb-run -a python selfdrive/ui/tests/build_world_vehicle.py \
-  selfdrive/assets/world/NormalCar1.obj selfdrive/assets/world/sedan.npz
-```
+`carnival_aurora_ambient_v2.png` is an original, display-only edge-framed
+night landscape. It remains behind measured road, paths, lane lines, traffic,
+and safety labels; it never represents camera, map, model, radar, or
+navigation data. The asphalt, lane lighting, and red shoulder glow are drawn
+only from fresh paired model road-edge geometry.

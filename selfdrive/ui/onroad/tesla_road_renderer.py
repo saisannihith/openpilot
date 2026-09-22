@@ -19,12 +19,14 @@ EGO_REAR_SIGNAL_OFFSETS = ((-.715, 1.13, 2.377), (.702, 1.13, 2.378))
 BACKGROUND = rl.Color(0, 0, 0, 255)
 WHITE = rl.Color(255, 255, 255, 255)
 RADAR_AVATAR = rl.Color(185, 192, 200, 255)
-ROAD_EDGE_HALO = (74, 17, 23, 255)
-ROAD_EDGE = (244, 82, 82, 255)
-LANE_MARKING = (236, 242, 247, 255)
+ROAD_EDGE_HALO = (116, 21, 37, 138)
+ROAD_EDGE_MID = (198, 48, 61, 210)
+ROAD_EDGE = (255, 96, 98, 255)
+LANE_GLOW = (108, 148, 190, 76)
+LANE_MARKING = (242, 247, 252, 255)
 ROAD_FLOW = (92, 178, 255, 150)
-ROAD_SHEEN = (24, 62, 122, 128)
-ROAD_SHEEN_HOT = (52, 108, 194, 156)
+ROAD_SHEEN = (30, 78, 145, 64)
+ROAD_SHEEN_HOT = (64, 124, 208, 84)
 PATH_EDGE = (26, 225, 128, 220)
 SIGNAL_GLOW = rl.Color(255, 213, 0, 120)
 SIGNAL_YELLOW = rl.Color(255, 239, 16, 255)
@@ -69,9 +71,13 @@ class GpuMesh:
 
 
 def _world_asset(name):
+  from os import getenv
   from openpilot.common.basedir import BASEDIR
   from pathlib import Path
-  return Path(BASEDIR)/'selfdrive/assets/world'/name
+  # Isolated asset roots are useful for offroad renderer validation. Nothing
+  # outside this display-only loader observes the override.
+  root = getenv('TESLA_ROAD_ASSET_ROOT')
+  return (Path(root) if root else Path(BASEDIR)/'selfdrive/assets/world')/name
 
 
 def _world_mesh(name, max_vertices=20_000):
@@ -85,9 +91,13 @@ def _world_mesh(name, max_vertices=20_000):
   return vertices,colors
 
 
-@lru_cache(maxsize=2)
-def vehicle_mesh(distant=False):
-  # Generic CC0 traffic mesh. Sensor data does not establish vehicle make/model.
+@lru_cache(maxsize=4)
+def vehicle_mesh(distant=False, lead=False):
+  # Generic traffic never claims a make/model. Model-associated lead objects get
+  # a compact, neutralized high-detail proxy only while they are nearby.
+  if lead:
+    asset = 'lead_vehicle_lod.npz' if distant else 'lead_vehicle.npz'
+    return _world_mesh(asset, max_vertices=100_000)
   return _world_mesh('sedan_lod.npz' if distant else 'sedan.npz')
 
 
@@ -120,6 +130,8 @@ class TeslaRoadRenderer:
     self.presentation = WorldPresentation()
     self.quality = RenderQuality()
     self._far_ids = set()
+    self._lead_ids = frozenset()
+    self._lead_object_key = None
     self._meshes = []
     self._target = None
     self._target_size = None
@@ -214,6 +226,8 @@ class TeslaRoadRenderer:
       self._meshes.append(GpuMesh(self._vertices, self._colors, dynamic=True))
       self._meshes.append(GpuMesh(*ego_vehicle_mesh()))
       self._meshes.append(GpuMesh(self._flow_vertices, self._flow_colors, dynamic=True))
+      for distant in (False, True):
+        self._meshes.append(GpuMesh(*vehicle_mesh(distant, lead=True)))
     except Exception:
       self.close()
       raise
@@ -245,19 +259,22 @@ class TeslaRoadRenderer:
       self._triangle(b,d,c,segment_color)
 
   @staticmethod
-  def _asphalt_color(forward, height):
+  def _asphalt_color(forward, lateral, height):
     # A depth-varying road material makes only the measured edge polygon read
     # as asphalt. It does not add map-derived shoulders or topology.
     horizon = max(0., min(1., forward / 96.))
     grade = max(0., min(1., abs(height) / 2.5))
-    return (7+int(horizon*7), 14+int(horizon*16), 29+int(horizon*30+grade*5), 255)
+    # This is subtle material variation, not a lane or road classification.
+    grain = .5 + .5 * math.sin(forward*.21 + lateral*1.37) * math.sin(forward*.07-lateral*.83)
+    return (7+int(horizon*8+grain*2), 17+int(horizon*19+grain*3),
+            36+int(horizon*35+grade*6+grain*5), 255)
 
   def _road_surface(self, points):
     for (x0, left0, left_z0, right0, right_z0), (x1, left1, left_z1, right1, right_z1) in zip(points, points[1:], strict=False):
       a, b = (left0, left_z0+.001, -x0), (right0, right_z0+.001, -x0)
       c, d = (left1, left_z1+.001, -x1), (right1, right_z1+.001, -x1)
-      ca, cb = self._asphalt_color(x0, left_z0), self._asphalt_color(x0, right_z0)
-      cc, cd = self._asphalt_color(x1, left_z1), self._asphalt_color(x1, right_z1)
+      ca, cb = self._asphalt_color(x0, left0, left_z0), self._asphalt_color(x0, right0, right_z0)
+      cc, cd = self._asphalt_color(x1, left1, left_z1), self._asphalt_color(x1, right1, right_z1)
       self._triangle(a,b,c,ca,cb,cc)
       self._triangle(b,d,c,cb,cd,cc)
 
@@ -430,10 +447,12 @@ class TeslaRoadRenderer:
     for surface in road_surface_geometry(*display_edges):
       self._road_surface(surface)
     for display in display_edges:
-      self._ribbon(display,.11,.006,ROAD_EDGE_HALO)
-      self._ribbon(display,.04,.009,ROAD_EDGE)
+      self._ribbon(display,.18,.004,ROAD_EDGE_HALO)
+      self._ribbon(display,.08,.009,ROAD_EDGE_MID)
+      self._ribbon(display,.028,.014,ROAD_EDGE)
     for index in range(4):
-      self._ribbon(self.scene.lane_geometry(index),.045,.014,LANE_MARKING)
+      self._ribbon(self.scene.lane_geometry(index),.090,.010,LANE_GLOW)
+      self._ribbon(self.scene.lane_geometry(index),.026,.016,LANE_MARKING)
     path = self._intent_path or self.scene.path
     path_geometry = self.scene.path_geometry(path)
     if self._intent_edge > 0:
@@ -447,6 +466,9 @@ class TeslaRoadRenderer:
              ambient=False, motion=False):
     now = time.monotonic() if now is None else now
     self.scene.update(sm, started_frame, now)
+    if self.scene.object_key != self._lead_object_key:
+      self._lead_object_key = self.scene.object_key
+      self._lead_ids = frozenset(obj.identity for obj in self.scene.objects if obj.key[0] == 'lead')
     self.presentation.update(self.scene.objects, started_frame, now, self.scene.revision)
     speed = self._ego_speed(sm)
     self._advance_motion(now,speed,motion)
@@ -496,12 +518,18 @@ class TeslaRoadRenderer:
           if vehicle or radar_avatar:
             if pose.alpha <= .01:
               continue
-            distant = pose.forward > (50. if identity in self._far_ids else 60.)
+            lead_proxy = vehicle and identity in self._lead_ids
+            if lead_proxy:
+              switch_distance = 30. if identity in self._far_ids else 34.
+            else:
+              switch_distance = 50. if identity in self._far_ids else 60.
+            distant = pose.forward > switch_distance
             if distant:
               far_ids.add(identity)
             base = RADAR_AVATAR if radar_avatar else WHITE
             tint = rl.Color(base.r,base.g,base.b,round(base.a*pose.alpha))
-            self._meshes[int(distant)].draw(rl.Vector3(pose.right,self.scene.road_height(pose.forward),-pose.forward),pose.yaw,tint)
+            self._meshes[5+int(distant) if lead_proxy else int(distant)].draw(
+              rl.Vector3(pose.right,self.scene.road_height(pose.forward),-pose.forward),pose.yaw,tint)
         for obj in self.scene.objects:
           if not (obj.vehicle or obj.radar_avatar):
             # A radar return has no verified body shape or vehicle class.
@@ -620,4 +648,6 @@ class TeslaRoadRenderer:
     self.scene.reset()
     self.presentation.reset()
     self._far_ids.clear()
+    self._lead_ids = frozenset()
+    self._lead_object_key = None
     self.quality = RenderQuality()
