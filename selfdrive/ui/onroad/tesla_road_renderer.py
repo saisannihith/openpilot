@@ -7,8 +7,11 @@ import numpy as np
 import pyray as rl
 from openpilot.selfdrive.ui.onroad.world_scene import MAX_POINTS, WorldScene, elevation_at, lateral_at, road_surface_geometry
 from openpilot.selfdrive.ui.onroad.world_presentation import WorldPresentation, RenderQuality
+from openpilot.system.ui.lib.application import GL_VERSION
 
-CAPACITY = 4095
+# A medium-density fixed road surface carries the baked material variation;
+# the fragment shader supplies the fine grain. This keeps the 3X responsive.
+CAPACITY = 8192
 FLOW_CAPACITY = 768
 WORLD_CAMERA_FOVY = 42.0
 EGO_CAMERA_OFFSET_M = 4.6
@@ -35,23 +38,142 @@ UP = rl.Vector3(0, 1, 0)
 ONE = rl.Vector3(1, 1, 1)
 ORIGIN = rl.Vector3(0, 0, 0)
 
+# Kept intentionally compact: the comma's OpenGL ES renderer gets a tangible
+# paint, glass, and body-form upgrade without textures, scene lights, or runtime
+# allocations. It is used only by meshes carrying offline-baked normals.
+AUTOMOTIVE_VERTEX_SHADER = GL_VERSION + """
+in vec3 vertexPosition;
+in vec3 vertexNormal;
+in vec4 vertexColor;
+uniform mat4 mvp;
+out vec3 surfaceNormal;
+out vec3 surfacePosition;
+out vec4 surfaceColor;
+void main() {
+  surfaceNormal = vertexNormal;
+  surfacePosition = vertexPosition;
+  surfaceColor = vertexColor;
+  gl_Position = mvp * vec4(vertexPosition, 1.0);
+}
+"""
+
+AUTOMOTIVE_FRAGMENT_SHADER = GL_VERSION + """
+in vec3 surfaceNormal;
+in vec3 surfacePosition;
+in vec4 surfaceColor;
+uniform vec4 colDiffuse;
+out vec4 finalColor;
+void main() {
+  vec3 normal = normalize(surfaceNormal);
+  vec3 light = normalize(vec3(-0.42, 0.78, 0.46));
+  vec3 view = normalize(vec3(0.0, 0.55, 3.4) - surfacePosition);
+  float diffuse = max(dot(normal, light), 0.0);
+  float highlight = pow(max(dot(reflect(-light, normal), view), 0.0), 42.0);
+  vec3 base = surfaceColor.rgb*colDiffuse.rgb;
+  float style = floor(surfaceColor.a*255.0 + 0.5);
+  vec3 color;
+  if (style < 1.5 || style > 5.5) {
+    // Neutral traffic proxies carry a compact palette rather than a claimed
+    // vehicle identity. Recover paint/glass separation from that palette.
+    float luma = dot(base, vec3(0.2126, 0.7152, 0.0722));
+    float red = smoothstep(0.16, 0.34, base.r-max(base.g, base.b));
+    float dark = 1.0-smoothstep(0.10, 0.23, luma);
+    vec3 paint = mix(base, vec3(0.90, 0.94, 0.99), 0.72*smoothstep(0.22, 0.72, luma));
+    paint = paint*(0.65 + 0.35*diffuse) + vec3(0.88, 0.94, 1.0)*highlight*0.56;
+    vec3 glass = vec3(0.008, 0.022, 0.042) + vec3(0.22, 0.48, 0.78)*highlight;
+    vec3 lamp = vec3(0.08, 0.004, 0.008) + vec3(0.18, 0.01, 0.02)*highlight;
+    color = mix(paint, glass, dark*(1.0-red));
+    color = mix(color, lamp, red);
+  } else if (style < 2.5) {
+    // Factory body paint: deliberately clean white for a high-contrast OLED world.
+    color = vec3(0.90, 0.94, 0.99)*(0.68 + 0.32*diffuse) + vec3(1.0)*highlight*0.48;
+  } else if (style < 3.5) {
+    // This source combines lamp lenses with a large rear shell. Treat it as
+    // neutral inactive glass; only verified blinkers add a bright lamp state.
+    color = vec3(0.006, 0.016, 0.032)*(0.55 + 0.45*diffuse) + vec3(0.18, 0.42, 0.74)*highlight;
+  } else if (style < 4.5) {
+    vec3 glass = mix(vec3(0.008, 0.018, 0.032), vec3(0.055, 0.13, 0.21), max(normal.y, 0.0));
+    color = glass + vec3(0.66, 0.82, 1.0)*highlight*0.72;
+  } else if (style < 5.5) {
+    color = mix(base, vec3(0.74, 0.80, 0.88), 0.45)*(0.45 + 0.55*diffuse) + vec3(0.92, 0.97, 1.0)*highlight;
+  }
+  finalColor = vec4(min(color, vec3(1.0)), colDiffuse.a);
+}
+"""
+
+ROAD_VERTEX_SHADER = GL_VERSION + """
+in vec3 vertexPosition;
+in vec4 vertexColor;
+uniform mat4 mvp;
+out vec3 surfacePosition;
+out vec4 surfaceColor;
+void main() {
+  surfacePosition = vertexPosition;
+  surfaceColor = vertexColor;
+  gl_Position = mvp * vec4(vertexPosition, 1.0);
+}
+"""
+
+ROAD_FRAGMENT_SHADER = GL_VERSION + """
+in vec3 surfacePosition;
+in vec4 surfaceColor;
+uniform vec4 colDiffuse;
+out vec4 finalColor;
+float hash21(vec2 p) {
+  p = fract(p*vec2(123.34, 345.45));
+  p += dot(p, p+34.345);
+  return fract(p.x*p.y);
+}
+void main() {
+  vec3 base = surfaceColor.rgb*colDiffuse.rgb;
+  float luminance = dot(base, vec3(0.2126, 0.7152, 0.0722));
+  // Only the low-luminance measured road polygon receives the asphalt finish.
+  // Lane marks, red bounds, and the model path keep their source colors.
+  if (luminance < 0.22) {
+    vec2 plane = vec2(surfacePosition.x, surfacePosition.z);
+    float grain = hash21(floor(plane*18.0));
+    float aggregate = hash21(floor(plane*63.0));
+    float micro = hash21(floor(plane*131.0));
+    float longStreak = 0.5 + 0.5*sin(plane.y*0.34 + plane.x*1.9);
+    float depth = clamp(-surfacePosition.z/95.0, 0.0, 1.0);
+    // The offline asphalt image supplies the low-frequency color variation in
+    // vertex colors. These driver-safe aggregate terms restore the fine road
+    // grain that would otherwise require an unsupported sampler shader.
+    base *= .82 + .25*micro;
+    base += vec3(.024,.030,.040)*smoothstep(.82,.98,aggregate);
+    base += vec3(0.004, 0.012, 0.030)*(0.22 + 0.46*depth);
+    base += vec3(0.003, 0.010, 0.028)*(0.20*grain + 0.14*longStreak);
+  }
+  finalColor = vec4(min(base, vec3(1.0)), surfaceColor.a*colDiffuse.a);
+}
+"""
+
 
 class GpuMesh:
   """Own native heap buffers and one GPU mesh; release them together."""
-  def __init__(self, vertices, colors, dynamic=False):
+  def __init__(self, vertices, colors, normals=None, dynamic=False, shader=None):
     vertices = np.ascontiguousarray(vertices, dtype=np.float32).reshape(-1, 3)
     colors = np.ascontiguousarray(colors, dtype=np.uint8).reshape(-1, 4)
+    if normals is not None:
+      normals = np.ascontiguousarray(normals, dtype=np.float32).reshape(-1, 3)
+      if normals.shape != vertices.shape or not np.isfinite(normals).all():
+        raise ValueError('Invalid world vehicle normals')
     mesh = rl.Mesh()
     mesh.vertexCount, mesh.triangleCount = len(vertices), len(vertices) // 3
     mesh.vertices = rl.ffi.cast('float *', rl.mem_alloc(vertices.nbytes))
     mesh.colors = rl.ffi.cast('unsigned char *', rl.mem_alloc(colors.nbytes))
-    if mesh.vertices == rl.ffi.NULL or mesh.colors == rl.ffi.NULL:
+    mesh.normals = rl.ffi.cast('float *', rl.mem_alloc(normals.nbytes)) if normals is not None else rl.ffi.NULL
+    if mesh.vertices == rl.ffi.NULL or mesh.colors == rl.ffi.NULL or (normals is not None and mesh.normals == rl.ffi.NULL):
       rl.unload_mesh(mesh)
       raise MemoryError('3D scene mesh allocation failed')
     rl.ffi.memmove(mesh.vertices, rl.ffi.cast('void *', vertices.ctypes.data), vertices.nbytes)
     rl.ffi.memmove(mesh.colors, rl.ffi.cast('void *', colors.ctypes.data), colors.nbytes)
+    if normals is not None:
+      rl.ffi.memmove(mesh.normals, rl.ffi.cast('void *', normals.ctypes.data), normals.nbytes)
     rl.upload_mesh(mesh, dynamic)
     self.model = rl.load_model_from_mesh(mesh)
+    if shader is not None:
+      self.model.materials[0].shader = shader
     self.closed = False
 
   def update(self, vertices, colors, count):
@@ -84,11 +206,24 @@ def _world_mesh(name, max_vertices=20_000):
   # Offline-baked mesh only: no model parsing, textures, allocations, or I/O onroad.
   with np.load(_world_asset(name),allow_pickle=False) as asset:
     vertices,colors = asset['vertices'],asset['colors']
+    normals = asset['normals'] if 'normals' in asset.files else None
   if (vertices.dtype != np.float32 or colors.dtype != np.uint8 or vertices.shape != (len(colors),3)
       or colors.shape != (len(vertices),4) or not 0 < len(vertices) <= max_vertices or len(vertices)%3
       or not np.isfinite(vertices).all()):
     raise ValueError('Invalid world vehicle asset')
-  return vertices,colors
+  if normals is not None and (normals.dtype != np.float32 or normals.shape != vertices.shape or not np.isfinite(normals).all()):
+    raise ValueError('Invalid world vehicle normals')
+  return vertices,colors,normals
+
+
+def _asphalt_pixels():
+  """Load a small offline-baked color field; no image decoder is used onroad."""
+  with np.load(_world_asset('asphalt_aurora_dark.npz'), allow_pickle=False) as asset:
+    pixels = asset['pixels']
+  if (pixels.dtype != np.uint8 or pixels.ndim != 3 or pixels.shape[2] != 3
+      or pixels.shape[0] < 64 or pixels.shape[1] < 64):
+    raise ValueError('Invalid baked asphalt asset')
+  return np.ascontiguousarray(pixels)
 
 
 @lru_cache(maxsize=4)
@@ -96,15 +231,17 @@ def vehicle_mesh(distant=False, lead=False):
   # Generic traffic never claims a make/model. Model-associated lead objects get
   # a compact, neutralized high-detail proxy only while they are nearby.
   if lead:
-    asset = 'lead_vehicle_lod.npz' if distant else 'lead_vehicle.npz'
-    return _world_mesh(asset, max_vertices=100_000)
-  return _world_mesh('sedan_lod.npz' if distant else 'sedan.npz')
+    # Only the model-associated lead uses this higher-detail, neutral proxy.
+    # Other traffic keeps the lighter silhouette because its make/class is not known.
+    asset = 'traffic_vehicle_lod_hq.npz' if distant else 'traffic_vehicle_hq.npz'
+    return _world_mesh(asset, max_vertices=250_000)
+  return _world_mesh('traffic_vehicle_lod.npz' if distant else 'traffic_vehicle.npz', max_vertices=100_000)
 
 
 @lru_cache(maxsize=1)
 def ego_vehicle_mesh():
   # CC-BY Carnival asset is display-only and applies to the known ego car only.
-  return _world_mesh('carnival.npz', max_vertices=1_500_000)
+  return _world_mesh('carnival_pbr.npz', max_vertices=1_500_000)
 
 
 def ego_signal_flash(left, right, now):
@@ -146,6 +283,9 @@ class TeslaRoadRenderer:
     self._motion_time = None
     self._motion_distance = 0.0
     self._ambient_texture = None
+    self._asphalt_pixels = None
+    self._vehicle_shader = None
+    self._road_shader = None
     self.overlay_exclusions = []
     self._intent_path = ()
     self._intent_width = .85
@@ -221,13 +361,22 @@ class TeslaRoadRenderer:
     if self._meshes:
       return
     try:
+      self._asphalt_pixels = _asphalt_pixels()
+      self._vehicle_shader = rl.load_shader_from_memory(AUTOMOTIVE_VERTEX_SHADER, AUTOMOTIVE_FRAGMENT_SHADER)
+      if not self._vehicle_shader.id:
+        raise RuntimeError('3D vehicle material shader unavailable')
+      self._road_shader = rl.load_shader_from_memory(ROAD_VERTEX_SHADER, ROAD_FRAGMENT_SHADER)
+      if not self._road_shader.id:
+        raise RuntimeError('3D road material shader unavailable')
       for distant in (False, True):
-        self._meshes.append(GpuMesh(*vehicle_mesh(distant)))
-      self._meshes.append(GpuMesh(self._vertices, self._colors, dynamic=True))
-      self._meshes.append(GpuMesh(*ego_vehicle_mesh()))
+        asset = vehicle_mesh(distant)
+        self._meshes.append(GpuMesh(*asset, shader=self._vehicle_shader if asset[2] is not None else None))
+      self._meshes.append(GpuMesh(self._vertices, self._colors, dynamic=True, shader=self._road_shader))
+      self._meshes.append(GpuMesh(*ego_vehicle_mesh(), shader=self._vehicle_shader))
       self._meshes.append(GpuMesh(self._flow_vertices, self._flow_colors, dynamic=True))
       for distant in (False, True):
-        self._meshes.append(GpuMesh(*vehicle_mesh(distant, lead=True)))
+        asset = vehicle_mesh(distant, lead=True)
+        self._meshes.append(GpuMesh(*asset, shader=self._vehicle_shader if not distant and asset[2] is not None else None))
     except Exception:
       self.close()
       raise
@@ -258,25 +407,48 @@ class TeslaRoadRenderer:
       self._triangle(a,b,c,segment_color)
       self._triangle(b,d,c,segment_color)
 
-  @staticmethod
-  def _asphalt_color(forward, lateral, height):
-    # A depth-varying road material makes only the measured edge polygon read
-    # as asphalt. It does not add map-derived shoulders or topology.
+  def _asphalt_color(self, forward, lateral, height):
+    # Sample a generated asphalt color field into only the measured road
+    # polygon. The asset is decorative material, never a map or road classifier.
+    assert self._asphalt_pixels is not None
+    texture_height, texture_width, _ = self._asphalt_pixels.shape
+    sample_x = int((forward*.045 + lateral*.15) % 1.0 * texture_width)
+    sample_y = int((lateral*.11 - forward*.032) % 1.0 * texture_height)
+    sample = self._asphalt_pixels[sample_y, sample_x]
     horizon = max(0., min(1., forward / 96.))
     grade = max(0., min(1., abs(height) / 2.5))
-    # This is subtle material variation, not a lane or road classification.
-    grain = .5 + .5 * math.sin(forward*.21 + lateral*1.37) * math.sin(forward*.07-lateral*.83)
-    return (7+int(horizon*8+grain*2), 17+int(horizon*19+grain*3),
-            36+int(horizon*35+grade*6+grain*5), 255)
+    # Preserve the generated texture's blue-black variation at OLED-friendly
+    # luminance. Geometry still comes entirely from the live model edges.
+    return (5 + int(sample[0]*.30 + horizon*5),
+            11 + int(sample[1]*.40 + horizon*9),
+            21 + int(sample[2]*.50 + horizon*17 + grade*4), 255)
 
   def _road_surface(self, points):
     for (x0, left0, left_z0, right0, right_z0), (x1, left1, left_z1, right1, right_z1) in zip(points, points[1:], strict=False):
-      a, b = (left0, left_z0+.001, -x0), (right0, right_z0+.001, -x0)
-      c, d = (left1, left_z1+.001, -x1), (right1, right_z1+.001, -x1)
-      ca, cb = self._asphalt_color(x0, left0, left_z0), self._asphalt_color(x0, right0, right_z0)
-      cc, cd = self._asphalt_color(x1, left1, left_z1), self._asphalt_color(x1, right1, right_z1)
-      self._triangle(a,b,c,ca,cb,cc)
-      self._triangle(b,d,c,cb,cd,cc)
+      # The original model spacing is too coarse for a material surface. Split
+      # only between two accepted model cross-sections with a strict cap.
+      forward_steps = max(1, min(3, math.ceil(abs(x1-x0)/2.0)))
+      widest = max(abs(right0-left0), abs(right1-left1))
+      across_steps = max(2, min(3, math.ceil(widest/2.0)))
+      def sample(forward_fraction, lateral_fraction):
+        forward = x0 + (x1-x0)*forward_fraction
+        left = left0 + (left1-left0)*forward_fraction
+        right = right0 + (right1-right0)*forward_fraction
+        height = left_z0 + (left_z1-left_z0)*forward_fraction
+        right_height = right_z0 + (right_z1-right_z0)*forward_fraction
+        lateral = left + (right-left)*lateral_fraction
+        elevation = height + (right_height-height)*lateral_fraction
+        return (lateral,elevation+.001,-forward), self._asphalt_color(forward,lateral,elevation)
+      for forward_index in range(forward_steps):
+        before, after = forward_index/forward_steps, (forward_index+1)/forward_steps
+        for lateral_index in range(across_steps):
+          left_fraction, right_fraction = lateral_index/across_steps, (lateral_index+1)/across_steps
+          a, ca = sample(before,left_fraction)
+          b, cb = sample(before,right_fraction)
+          c, cc = sample(after,left_fraction)
+          d, cd = sample(after,right_fraction)
+          self._triangle(a,b,c,ca,cb,cc)
+          self._triangle(b,d,c,cb,cd,cc)
 
   def _flow_triangle(self, a, b, c, color):
     if self._flow_count + 3 > FLOW_CAPACITY:
@@ -408,6 +580,18 @@ class TeslaRoadRenderer:
         rl.rl_pop_matrix()
         rl.rl_enable_depth_test()
 
+  @staticmethod
+  def _draw_contact_shadow(anchor, yaw, width, length, alpha):
+    """A tiny flattened volume grounds measured cars without scene-light state."""
+    rl.rl_push_matrix()
+    try:
+      rl.rl_translatef(anchor.x, anchor.y+.012, anchor.z)
+      rl.rl_rotatef(yaw, 0, 1, 0)
+      rl.rl_scalef(width, .028, length)
+      rl.draw_sphere_ex(ORIGIN, 1.0, 10, 6, rl.Color(0, 0, 0, alpha))
+    finally:
+      rl.rl_pop_matrix()
+
   def _ambient(self, size, motion):
     if self._ambient_texture is None:
       texture = rl.load_texture(str(_world_asset('carnival_aurora_ambient_v2.png')))
@@ -474,7 +658,9 @@ class TeslaRoadRenderer:
     self._advance_motion(now,speed,motion)
     self.overlay_exclusions.clear()
     # One color/depth target reused every frame, bounded independently of DPI.
-    scale = min(1.0, 1440.0/max(1,rect.width), 810.0/max(1,rect.height))*self.quality.scale
+    # Temporary quality benchmark: 1728x864 is still below panel-native but
+    # removes a full tier of upscaling from small vehicle and lane detail.
+    scale = min(1.0, 1728.0/max(1,rect.width), 864.0/max(1,rect.height))*self.quality.scale
     size = (max(2,int(rect.width*scale)), max(2,int(rect.height*scale)))
     # Raylib texture modes are not a stack. Preserve the app's transform and
     # explicitly rebind its scaled/burn-in framebuffer before drawing the HUD.
@@ -528,8 +714,11 @@ class TeslaRoadRenderer:
               far_ids.add(identity)
             base = RADAR_AVATAR if radar_avatar else WHITE
             tint = rl.Color(base.r,base.g,base.b,round(base.a*pose.alpha))
-            self._meshes[5+int(distant) if lead_proxy else int(distant)].draw(
-              rl.Vector3(pose.right,self.scene.road_height(pose.forward),-pose.forward),pose.yaw,tint)
+            position = rl.Vector3(pose.right,self.scene.road_height(pose.forward),-pose.forward)
+            if vehicle:
+              self._draw_contact_shadow(position,pose.yaw,.72 if distant else .92,1.34 if distant else 1.75,
+                                        round(52*pose.alpha))
+            self._meshes[5+int(distant) if lead_proxy else int(distant)].draw(position,pose.yaw,tint)
         for obj in self.scene.objects:
           if not (obj.vehicle or obj.radar_avatar):
             # A radar return has no verified body shape or vehicle class.
@@ -549,6 +738,7 @@ class TeslaRoadRenderer:
         anchor = rl.Vector3(EGO_CAMERA_OFFSET_M*math.sin(angle)+chassis_lateral,self.scene.road_height(0.)+chassis_lift,
                             EGO_CAMERA_OFFSET_M*math.cos(angle))
         display_yaw = yaw+math.sin(now*(1.8+speed*.12))*speed_ratio*.10
+        self._draw_contact_shadow(anchor,display_yaw,1.12,2.62,92)
         self._meshes[3].draw(anchor,display_yaw)
         self._draw_ego_signals(sm,started_frame,now,anchor,display_yaw)
       finally:
@@ -619,7 +809,7 @@ class TeslaRoadRenderer:
     return np.concatenate((screen[:n][paired],screen[n:][paired][::-1])).astype(np.float32)
 
   def close(self, parent_target=None):
-    has_resources = bool(self._meshes) or self._target is not None
+    has_resources = bool(self._meshes) or self._target is not None or self._vehicle_shader is not None or self._road_shader is not None
     parent_framebuffer = parent_target.id if parent_target is not None else (rl.rl_get_active_framebuffer() if has_resources else None)
     released_framebuffer = self._target.id if self._target is not None else None
     if has_resources:
@@ -645,6 +835,12 @@ class TeslaRoadRenderer:
     if self._ambient_texture is not None:
       rl.unload_texture(self._ambient_texture)
       self._ambient_texture = None
+    if self._vehicle_shader is not None:
+      rl.unload_shader(self._vehicle_shader)
+      self._vehicle_shader = None
+    if self._road_shader is not None:
+      rl.unload_shader(self._road_shader)
+      self._road_shader = None
     self.scene.reset()
     self.presentation.reset()
     self._far_ids.clear()
