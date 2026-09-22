@@ -45,6 +45,22 @@ def test_observed_cut_in_and_pass_are_interpolated_not_lane_snapped_or_extrapola
   assert not view.poses and not view.transitions
 
 
+def test_actor_lifecycle_is_immediate_then_short_fade_without_a_ghost():
+  view = WorldPresentation()
+  obj = car()
+  view.update([obj], 0, 10.)
+  assert .34 <= view.pose(obj).alpha <= .36
+  view.update([obj], 0, 10.12)
+  assert view.pose(obj).alpha == pytest.approx(1.)
+  obj = car(t=10.12)
+  view.update([obj], 0, 10.12)
+  view.update([], 0, 10.17)
+  assert obj.identity in view.poses
+  assert 0. < view.poses[obj.identity].alpha < 1.
+  view.update([], 0, 10.25)
+  assert not view.poses and not view.transitions
+
+
 def test_asynchronous_identity_handoff_can_have_older_fresh_timestamp():
   view = WorldPresentation()
   old = car(vehicle=True)

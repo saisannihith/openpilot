@@ -10,6 +10,7 @@ class Pose:
   forward: float
   right: float
   yaw: float
+  alpha: float = 1.0
 
 
 @dataclass(slots=True)
@@ -19,16 +20,18 @@ class Transition:
   stamp: float
   received: float
   source: tuple
+  duration: float = .05
 
 
 def interpolate(transition, now, output=None):
-  amount = min(1., max(0., (now-transition.stamp)/.05))
+  amount = min(1., max(0., (now-transition.stamp)/transition.duration))
   a, b = transition.start, transition.target
   yaw_delta = (b.yaw-a.yaw+180.) % 360.-180.
   output = Pose(0.,0.,0.) if output is None else output
   output.forward = a.forward+(b.forward-a.forward)*amount
   output.right = a.right+(b.right-a.right)*amount
   output.yaw = a.yaw+yaw_delta*amount
+  output.alpha = a.alpha+(b.alpha-a.alpha)*amount
   return output
 
 
@@ -39,6 +42,7 @@ class WorldPresentation:
   def reset(self):
     self.transitions = {}
     self.poses = {}
+    self.styles = {}
     self.drive = None
     self.time = None
     self.object_snapshot = None
@@ -50,16 +54,22 @@ class WorldPresentation:
     self.drive, self.time = drive, now
     if (revision is not None and revision == self.snapshot_revision and objects is self.object_snapshot
         and all(0 <= now-t.received <= MAX_AGE for t in self.transitions.values())):
+      expired = tuple(identity for identity, transition in self.transitions.items()
+                      if transition.target.alpha == 0.0 and now-transition.received >= transition.duration)
+      for identity in expired:
+        self.transitions.pop(identity, None)
+        self.poses.pop(identity, None)
+        self.styles.pop(identity, None)
       for identity, transition in self.transitions.items():
         interpolate(transition, now, self.poses[identity])
       return
     self.object_snapshot = objects
     self.snapshot_revision = revision
-    transitions, poses = {}, {}
+    transitions, poses, styles = {}, {}, {}
     for obj in objects[:MAX_OBJECTS]:
       if not (obj.vehicle or obj.radar_avatar) or not 0 <= now-obj.received <= MAX_AGE:
         continue
-      target = Pose(*vehicle_center(obj), obj.yaw)
+      target = Pose(*vehicle_center(obj), obj.yaw, 1.0)
       old = self.transitions.get(obj.identity)
       # Radar and model publications are asynchronous. An identity-preserving
       # handoff may legitimately carry a slightly older (but still fresh) sample.
@@ -67,7 +77,9 @@ class WorldPresentation:
       continuous = old is not None and (abs(obj.received-old.received) < MAX_AGE if handoff
                                         else 0 <= obj.received-old.received < MAX_AGE)
       if not continuous:
-        current = target
+        # New model/radar avatars are visible immediately, but ease to full
+        # opacity instead of popping over a raw radar dot.
+        current = Pose(target.forward, target.right, target.yaw, .35) if old is None else target
       else:
         current = interpolate(old, now)
         # Recycled IDs, newly selected unrelated leads and teleports are not
@@ -75,10 +87,27 @@ class WorldPresentation:
         if abs(target.forward-current.forward) > 4. or abs(target.right-current.right) > 1.:
           current = target
       if old is None or target != old.target or obj.received != old.received or handoff:
-        old = Transition(current, target, now, obj.received, obj.key)
+        old = Transition(current, target, now, obj.received, obj.key, .12 if old is None else .05)
       transitions[obj.identity] = old
       poses[obj.identity] = interpolate(old, now)
-    self.transitions, self.poses = transitions, poses
+      styles[obj.identity] = (obj.vehicle, obj.radar_avatar)
+
+    # A target can disappear when a message is still fresh. Let the exact last
+    # observation dissolve for at most 120 ms; never extrapolate it or retain a
+    # visual ghost past the source's freshness budget.
+    for identity, old in self.transitions.items():
+      if identity in transitions:
+        continue
+      age = now-old.received
+      if not 0. <= age < .12:
+        continue
+      current = interpolate(old, now)
+      final = Pose(old.target.forward, old.target.right, old.target.yaw, 0.0)
+      retiring = old if old.target.alpha == 0.0 else Transition(current, final, old.received, old.received, old.source, .12)
+      transitions[identity] = retiring
+      poses[identity] = interpolate(retiring, now)
+      styles[identity] = self.styles.get(identity, (False, True))
+    self.transitions, self.poses, self.styles = transitions, poses, styles
 
   def pose(self, obj):
     pose = self.poses.get(obj.identity)

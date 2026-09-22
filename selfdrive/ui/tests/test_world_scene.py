@@ -3,7 +3,9 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from openpilot.selfdrive.ui.onroad.world_scene import MAX_OBJECTS, SceneObject, WorldScene, lateral_at, path_yaw, polyline, road_surface_segments, road_yaw, vehicle_center
+from openpilot.selfdrive.ui.onroad.world_scene import (MAX_OBJECTS, SceneObject, WorldScene, display_line_geometry,
+                                                        elevation_at, lateral_at, path_yaw, polyline, polyline_with_elevation,
+                                                        road_surface_geometry, road_surface_segments, road_yaw, vehicle_center)
 
 
 def test_standstill_origin_noise_keeps_forward_display_path():
@@ -80,6 +82,33 @@ def test_road_surface_uses_only_plausible_paired_edge_segments():
   assert road_surface_segments(left,right) == (((0.,-7.,7.),(10.,-7.,7.)),)
   assert not road_surface_segments(left,())
   assert not road_surface_segments(((0.,-7.),(10.,-7.)), ((0.,30.),(10.,30.)))
+
+
+def test_measured_grade_survives_into_paired_road_geometry():
+  left, left_z = polyline_with_elevation(NS(x=[0.,10.,20.], y=[-6.,-6.,-6.], z=[0.,.4,1.0]))
+  right, right_z = polyline_with_elevation(NS(x=[0.,10.,20.], y=[6.,6.,6.], z=[0.,.3,.9]))
+  left_line = display_line_geometry(left, left_z)
+  right_line = display_line_geometry(right, right_z)
+  surface = road_surface_geometry(left_line, right_line)
+  assert surface and surface[0][1][2] == pytest.approx(.4)
+  assert surface[0][1][4] == pytest.approx(.3)
+  assert elevation_at(left, left_z, 15.) == pytest.approx(.7)
+
+
+def test_missing_height_remains_a_flat_display_plane_without_dropping_geometry():
+  points, elevations = polyline_with_elevation(NS(x=[0.,10.,20.], y=[0.,.1,.2]))
+  assert points == ((0.,0.), (10.,.1), (20.,.2))
+  assert elevations == (0.,0.,0.)
+
+
+def test_display_grade_rejects_far_horizon_height_cliffs():
+  _, elevations = polyline_with_elevation(NS(x=[0.,10.,20.], y=[0.,0.,0.], z=[0.,100.,-100.]))
+  assert elevations == pytest.approx((0.,1.2,0.))
+
+
+def test_display_grade_cap_also_holds_for_near_origin_samples():
+  points, elevations = polyline_with_elevation(NS(x=[1.,1.00001,10.], y=[0.,0.,0.], z=[0.,1.,1.]))
+  assert (elevations[1]-elevations[0]) / (points[1][0]-points[0][0]) == pytest.approx(.12)
 
 
 @pytest.mark.parametrize('bad', [math.nan, math.inf, -math.inf])

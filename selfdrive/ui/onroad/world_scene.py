@@ -13,18 +13,36 @@ MAX_OBJECTS = 16
 MAX_RADAR_INPUTS = 128
 MAX_DISTANCE = 120.0
 MAX_AGE = 0.35
-# Tesla Road presentation uses live edge geometry; this is only the dark
-# asphalt material drawn inside the confident edge-pair polygon.
-ROAD_SURFACE_RGBA = (7, 14, 29, 255)
+MAX_DISPLAY_GRADE = .12
+MAX_DISPLAY_HEIGHT = 6.0
 
 
 def polyline(line):
+  return polyline_with_elevation(line)[0]
+
+
+def polyline_with_elevation(line):
+  """Keep measured height alongside the legacy forward/lateral polyline.
+
+  A few older model variants omit a height array. Height is display detail, so
+  a missing/invalid sample falls back to the local ground plane instead of
+  invalidating otherwise useful road geometry.
+  """
   points = []
+  elevations = []
   previous = -math.inf
-  for x, y in islice(zip(line.x, line.y, strict=False), MAX_POINTS):
+  height_origin = None
+  z_values = getattr(line, 'z', ())
+  for index, (x, y) in enumerate(islice(zip(line.x, line.y, strict=False), MAX_POINTS)):
     x, y = float(x), float(y)
     if not (math.isfinite(x) and math.isfinite(y)):
-      return ()
+      return (), ()
+    try:
+      raw_z = float(z_values[index])
+    except (IndexError, TypeError, ValueError):
+      raw_z = 0.0
+    if not math.isfinite(raw_z):
+      raw_z = 0.0
     # At standstill, initial samples can wobble by micrometers around x=0.
     # Ignore only a sub-millimeter duplicate of the accepted origin; preserve
     # real reversals and every later forward-horizon truncation below.
@@ -36,8 +54,22 @@ def polyline(line):
       break
     previous = x
     if 0 <= x <= MAX_DISTANCE:
+      if height_origin is None:
+        height_origin, z = raw_z, 0.0
+      else:
+        # Model height is useful for road grade, but its distant horizon can
+        # contain discontinuities. Normalize to the local ground sample, then
+        # make a bounded display-only continuation with no vertical cliffs.
+        z = raw_z-height_origin
+        # Keep the mathematical grade limit valid even for near-origin model
+        # samples separated by only micrometers. The renderer can handle the
+        # tiny segment; widening its delta would reintroduce a vertical kink.
+        dx = x-points[-1][0]
+        z = max(elevations[-1]-MAX_DISPLAY_GRADE*dx, min(elevations[-1]+MAX_DISPLAY_GRADE*dx, z))
+        z = max(-MAX_DISPLAY_HEIGHT, min(MAX_DISPLAY_HEIGHT, z))
       points.append((x, y))
-  return tuple(points) if len(points) > 1 else ()
+      elevations.append(z)
+  return (tuple(points), tuple(elevations)) if len(points) > 1 else ((), ())
 
 
 def lateral_at(points, distance):
@@ -47,6 +79,17 @@ def lateral_at(points, distance):
     if x0 <= distance <= x1:
       return y0 + (y1 - y0) * (distance - x0) / (x1 - x0)
   return points[-1][1]
+
+
+def elevation_at(points, elevations, distance):
+  """Interpolate only measured model height; missing height remains ground 0."""
+  if not points or len(points) != len(elevations) or distance < points[0][0] or distance > points[-1][0]:
+    return None
+  for index, ((x0, _), (x1, _)) in enumerate(zip(points, points[1:], strict=False)):
+    if x0 <= distance <= x1:
+      z0, z1 = elevations[index], elevations[index + 1]
+      return z0 + (z1 - z0) * (distance - x0) / (x1 - x0)
+  return elevations[-1]
 
 
 def display_lane_continuation(points):
@@ -62,6 +105,29 @@ def display_lane_continuation(points):
   # behind the avatar so visible lane ribbons can reach the viewport boundary.
   slope = max(-.4,min(.4,slope))
   return ((-8.,y+(-8.-x)*slope),*points)
+
+
+def display_line_geometry(points, elevations, reference_points=None, reference_elevations=None):
+  """Return a short near-field continuation with a bounded measured grade."""
+  display = display_lane_continuation(points)
+  if not display:
+    return ()
+  reference_points = points if reference_points is None else reference_points
+  reference_elevations = elevations if reference_elevations is None else reference_elevations
+  if not points or len(reference_points) != len(reference_elevations):
+    return tuple((x, y, 0.0) for x, y in display)
+  start = reference_points[0][0]
+  end = min(start + 6., reference_points[-1][0])
+  z0 = reference_elevations[0]
+  z1 = elevation_at(reference_points, reference_elevations, end)
+  grade = 0.0 if z1 is None or end - start < 1. else max(-.20, min(.20, (z1-z0)/(end-start)))
+  result = []
+  for x, y in display:
+    z = elevation_at(reference_points, reference_elevations, x)
+    if z is None:
+      z = z0 + (x-start) * grade
+    result.append((x, y, z))
+  return tuple(result)
 
 
 def path_yaw(points):
@@ -130,6 +196,27 @@ def road_surface_segments(first, second):
   return tuple(segments)
 
 
+def road_surface_geometry(first, second):
+  """Paired measured edge geometry: forward, lateral, and height per side."""
+  if len(first) < 2 or len(second) < 2:
+    return ()
+  second_xy = tuple((x, y) for x, y, _ in second)
+  second_z = tuple(z for _, _, z in second)
+  segments, current = [], []
+  for x, left_y, left_z in first:
+    right_y = lateral_at(second_xy, x)
+    right_z = elevation_at(second_xy, second_z, x)
+    if right_y is None or right_z is None or not 2.5 <= abs(right_y-left_y) <= 24.:
+      if len(current) >= 2:
+        segments.append(tuple(current))
+      current = []
+      continue
+    current.append((x, left_y, left_z, right_y, right_z))
+  if len(current) >= 2:
+    segments.append(tuple(current))
+  return tuple(segments)
+
+
 def in_lane_corridor(lanes, forward, right):
   """Same lane bounds as road_yaw, without computing four unused tangents."""
   values = [lateral_at(line,forward) if line and min(line[-1][0],forward+4.)-max(line[0][0],forward-4.) >= 2.
@@ -165,8 +252,11 @@ class WorldScene:
 
   def reset(self):
     self.path = ()
+    self.path_elevations = ()
     self.lanes = ((), (), (), ())
+    self.lane_elevations = ((), (), (), ())
     self.edges = ((), ())
+    self.edge_elevations = ((), ())
     self.objects = ()
     self.model_key = None
     self.object_key = None
@@ -190,15 +280,20 @@ class WorldScene:
     if model_key != self.model_key:
       self.model_key = model_key
       self.path, self.lanes, self.edges = (), ((), (), (), ()), ((), ())
+      self.path_elevations, self.lane_elevations, self.edge_elevations = (), ((), (), (), ()), ((), ())
       if model_ok:
         model = sm['modelV2']
-        self.path = polyline(model.position)
-        self.lanes = tuple(polyline(model.laneLines[i]) if i < len(model.laneLines)
-                           and i < len(model.laneLineProbs) and math.isfinite(model.laneLineProbs[i])
-                           and model.laneLineProbs[i] >= 0.5 else () for i in range(4))
-        self.edges = tuple(polyline(model.roadEdges[i]) if i < len(model.roadEdges)
-                           and i < len(model.roadEdgeStds) and math.isfinite(model.roadEdgeStds[i])
-                           and 0 <= model.roadEdgeStds[i] < 0.7 else () for i in range(2))
+        self.path, self.path_elevations = polyline_with_elevation(model.position)
+        lane_geometry = tuple(polyline_with_elevation(model.laneLines[i]) if i < len(model.laneLines)
+                              and i < len(model.laneLineProbs) and math.isfinite(model.laneLineProbs[i])
+                              and model.laneLineProbs[i] >= 0.5 else ((), ()) for i in range(4))
+        edge_geometry = tuple(polyline_with_elevation(model.roadEdges[i]) if i < len(model.roadEdges)
+                              and i < len(model.roadEdgeStds) and math.isfinite(model.roadEdgeStds[i])
+                              and 0 <= model.roadEdgeStds[i] < 0.7 else ((), ()) for i in range(2))
+        self.lanes = tuple(points for points, _ in lane_geometry)
+        self.lane_elevations = tuple(elevations for _, elevations in lane_geometry)
+        self.edges = tuple(points for points, _ in edge_geometry)
+        self.edge_elevations = tuple(elevations for _, elevations in edge_geometry)
       received = sm.recv_time['modelV2'] if model_ok else None
       target_yaw = path_yaw(self.path)
       dt = received - self.heading_time if received is not None and self.heading_time is not None else 0.0
@@ -315,3 +410,17 @@ class WorldScene:
     if left is not None and other is not None and left < right < other:
       return max(0.08, min(0.85, right - left - 0.12, other - right - 0.12))
     return 0.3
+
+  def path_geometry(self, points=None):
+    return display_line_geometry(self.path if points is None else points, self.path_elevations,
+                                 self.path, self.path_elevations)
+
+  def lane_geometry(self, index):
+    return display_line_geometry(self.lanes[index], self.lane_elevations[index])
+
+  def edge_geometry(self, index):
+    return display_line_geometry(self.edges[index], self.edge_elevations[index])
+
+  def road_height(self, forward):
+    height = elevation_at(self.path, self.path_elevations, forward)
+    return max(-4.0, min(4.0, height)) if height is not None else 0.0

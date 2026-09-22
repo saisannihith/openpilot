@@ -9,7 +9,7 @@ from itertools import islice
 import numpy as np
 import pyray as rl
 
-from openpilot.selfdrive.ui.onroad.world_scene import display_lane_continuation, lateral_at, road_surface_segments
+from openpilot.selfdrive.ui.onroad.world_scene import MAX_POINTS, display_lane_continuation, lateral_at, road_surface_segments
 from openpilot.selfdrive.ui.onroad.starpilot.path import render_path_edges
 from openpilot.system.ui.lib.shader_polygon import Gradient, draw_polygon
 
@@ -86,7 +86,7 @@ def stop_anchor(world, rect, state, distance):
   y = lateral_at(world.scene.path,distance)
   if y is None:
     return None
-  anchor = world.project(distance,y,rect,height=.1)
+  anchor = world.project(distance,y,rect,height=world.scene.road_height(distance)+.1)
   if anchor is None or anchor[1] < rect.y+105:
     return None
   # Leave room for the octagon and its optional distance label.
@@ -177,3 +177,43 @@ def render_road(renderer, world, rect, state):
     draw_polygon(rect,renderer._path.projected_points,rl.Color(40,149,246,180))
   if edge > 0:
     render_path_edges(renderer)
+
+
+def configure_world_intent(renderer, world, rect, state):
+  """Pass existing path settings into the 3D renderer without screen-space paint.
+
+  Tesla Road owns the measured road mesh. This adapter keeps StarPilot's live
+  path controls working while leaving stop/lead indicators to their factual HUD
+  renderers, where they already have source freshness checks.
+  """
+  sm, scene = state.sm, world.scene
+  now = time.monotonic()
+  if not scene.path:
+    world.configure_road_intent((), .85, 0., False, ())
+    return
+  params = renderer._params
+  custom = params.get_bool('ModelUI', default=True)
+
+  def width(key, default, converter, fallback):
+    changed, value = renderer._param_float_changed(key, default) if custom else (False, default)
+    value = converter(value) if changed else fallback
+    return float(np.clip(value, 0, 4)) if math.isfinite(value) else fallback
+
+  from openpilot.selfdrive.ui.onroad.model_renderer import DEFAULT_PATH_WIDTH, DEFAULT_PATH_EDGE_WIDTH
+  path_width = width('PathWidth', DEFAULT_PATH_WIDTH, renderer._path_width_to_half_m, .9)
+  changed, edge = renderer._param_float_changed('PathEdgeWidth', DEFAULT_PATH_EDGE_WIDTH) if custom else (False, 0)
+  edge = float(np.clip(edge / 100, 0, 1)) if changed and math.isfinite(edge) else 0.
+  if custom and params.get_bool('DynamicPathWidth'):
+    from openpilot.selfdrive.ui.ui_state import UIStatus
+    path_width *= 1. if state.status == UIStatus.ENGAGED else (.75 if state.always_on_lateral_active else .5)
+
+  path = scene.path
+  if scene.fresh(sm, 'radarState', state.started_frame, now) and sm['radarState'].leadOne.status:
+    distance = float(sm['radarState'].leadOne.dRel)
+    if math.isfinite(distance) and distance > 0:
+      path = clipped_path(path, distance * 2 - min(distance * .7, 10))
+  model = sm['modelV2']
+  acceleration = getattr(getattr(model, 'acceleration', None), 'x', ())
+  acceleration = tuple(np.nan_to_num(np.fromiter(islice(acceleration, MAX_POINTS), np.float32), nan=0, posinf=0, neginf=0))
+  rainbow = params.get_bool('RainbowPath')
+  world.configure_road_intent(path, path_width, edge, rainbow, acceleration if params.get_bool('AccelerationPath', default=True) else ())

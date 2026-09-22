@@ -213,8 +213,8 @@ class ModelRenderer(Widget):
     self._draw_lead_indicator(radar_state, above=True)
 
   def render_world_road(self, world, rect):
-    from openpilot.selfdrive.ui.onroad.world_overlays import render_road
-    render_road(self, world, rect, ui_state)
+    from openpilot.selfdrive.ui.onroad.world_overlays import configure_world_intent
+    configure_world_intent(self, world, rect, ui_state)
 
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
