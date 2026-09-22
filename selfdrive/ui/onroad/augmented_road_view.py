@@ -95,8 +95,11 @@ class AugmentedRoadView(CameraView):
     self._camera_view_none = camera_view == CAMERA_VIEW_NONE
     in_reverse = self._is_in_reverse()
     reverse_camera_enabled = in_reverse and ui_state.ui_params.get_bool("DriverCamera")
+    previous_fallback = getattr(self._world_availability, 'fallback_reason', None)
     world_ready = (camera_view == CAMERA_VIEW_TESLA_ROAD and
                    self._world_availability.update(ui_state.sm, ui_state.started_frame, start_draw))
+    if world_selected and previous_fallback is None and getattr(self._world_availability, 'fallback_reason', None) is not None:
+      cloudlog.warning(f"Tesla Road staying on camera after {self._world_availability.fallback_reason}")
     self._tesla_road_view = (camera_view == CAMERA_VIEW_TESLA_ROAD and not reverse_camera_enabled
                             and not self._world_failed and world_ready)
     if self._tesla_road_view != self._using_world:
@@ -220,6 +223,8 @@ class AugmentedRoadView(CameraView):
     # Returning from settings is an explicit retry opportunity, including
     # off/on changes made while the driving view was hidden. No frame retry loop.
     self._world_failed = False
+    if getattr(self._world_availability, 'fallback_reason', None) is not None:
+      self._world_availability = WorldAvailability()
 
   def _render_extra_road_overlays(self, rect: rl.Rectangle) -> None:
     """Render subclass road overlays inside the content scissor, above the model and below the HUD."""

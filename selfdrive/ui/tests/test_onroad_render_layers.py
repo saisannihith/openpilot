@@ -179,6 +179,7 @@ def test_extra_road_overlays_render_between_model_and_hud_and_alerts_last(monkey
   view._world_failed = False
   view._using_world = False
   view._world_availability = SimpleNamespace(update=lambda *_args: mode != 'world_stale')
+  view._world_availability.fallback_reason = None
   view._pm = SimpleNamespace(send=lambda *_args: events.append("publish"))
   monkeypatch.setattr(augmented_road_view.cloudlog, 'exception', lambda *_args: events.append('error_log'))
 
@@ -274,6 +275,18 @@ def test_full_alert_detection_uses_the_alert_size(monkeypatch):
 
   view.alert_renderer = SimpleNamespace(will_render=lambda: (None, True))
   assert not view._full_alert_showing()
+
+
+def test_settings_return_rearms_latched_camera_fallback(monkeypatch):
+  module = _load_augmented_road_view(monkeypatch)
+  view = object.__new__(module.AugmentedRoadView)
+  view.events = []
+  view._world_failed = True
+  view._world_availability = SimpleNamespace(fallback_reason='model data unavailable')
+  view.show_event()
+  assert view.events == ['camera_show']
+  assert not view._world_failed
+  assert view._world_availability.fallback_reason is None
 
 
 def test_starpilot_road_overlays_use_the_parent_scissor(monkeypatch):

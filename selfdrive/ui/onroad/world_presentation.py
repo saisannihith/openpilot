@@ -115,7 +115,7 @@ class WorldPresentation:
 
 
 class WorldAvailability:
-  """Fallback on stale/invalid model; require sustained recovery before return."""
+  """Keep the camera selected after an active world view loses model data."""
   def __init__(self):
     self.drive = None
     self.since = None
@@ -123,9 +123,15 @@ class WorldAvailability:
     self.last_time = None
     self.model_key = None
     self.geometry_valid = False
+    self.fallback_reason = None
 
   def update(self, sm, drive, now):
-    if drive != self.drive or (self.last_time is not None and not 0 <= now-self.last_time <= MAX_AGE):
+    if drive != self.drive:
+      self.fallback_reason = None
+      self.since, self.active = None, False
+    elif self.last_time is not None and not 0 <= now-self.last_time <= MAX_AGE:
+      if self.active:
+        self.fallback_reason = 'UI update gap'
       self.since, self.active = None, False
     self.drive, self.last_time = drive, now
     usable = WorldScene.fresh(sm, 'modelV2', drive, now)
@@ -136,7 +142,11 @@ class WorldAvailability:
       self.geometry_valid = usable and bool(polyline(sm['modelV2'].position))
     usable = usable and self.geometry_valid
     if not usable:
+      if self.active:
+        self.fallback_reason = 'model data unavailable'
       self.since, self.active = None, False
+    elif self.fallback_reason is not None:
+      return False
     elif self.since is None:
       self.since = now
     elif now-self.since >= .75:
