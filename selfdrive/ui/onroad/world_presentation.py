@@ -129,10 +129,9 @@ class WorldAvailability:
     if drive != self.drive:
       self.fallback_reason = None
       self.since, self.active = None, False
-    elif self.last_time is not None and not 0 <= now-self.last_time <= MAX_AGE:
-      if self.active:
-        self.fallback_reason = 'UI update gap'
-      self.since, self.active = None, False
+    elif self.last_time is not None and not 0 <= now-self.last_time <= MAX_AGE and not self.active:
+      # A slow render does not invalidate fresh model data. Only restart warmup.
+      self.since = None
     self.drive, self.last_time = drive, now
     usable = WorldScene.fresh(sm, 'modelV2', drive, now)
     key = (drive, sm.recv_frame['modelV2']) if usable else None

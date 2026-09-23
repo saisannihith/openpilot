@@ -160,20 +160,45 @@ def test_camera_fallback_stays_stable_after_active_world_loses_model():
     assert gate.update(sm,50,now) == (i >= 15)
 
 
-def test_ui_update_gap_latches_camera_until_new_drive():
+def test_ui_render_hitch_with_fresh_model_keeps_world_active():
   sm,gate = messages(),WorldAvailability()
   for i in range(17):
     now = 10+i*.05
     sm.tick(i+2,now)
     gate.update(sm,0,now)
   assert gate.active
-  sm.tick(20,11.5)
-  assert not gate.update(sm,0,11.5)
-  assert gate.fallback_reason == 'UI update gap'
+  sm.tick(20,11.56)
+  assert gate.update(sm,0,11.56)
+  assert gate.fallback_reason is None
   for i in range(20):
-    now = 11.55+i*.05
+    now = 11.61+i*.05
     sm.tick(i+21,now)
+    assert gate.update(sm,0,now)
+
+
+def test_ui_render_hitch_during_warmup_restarts_warmup():
+  sm,gate = messages(),WorldAvailability()
+  for i in range(5):
+    now = 10+i*.05
+    sm.tick(i+2,now)
     assert not gate.update(sm,0,now)
+  sm.tick(7,11.0)
+  assert not gate.update(sm,0,11.0)
+  for i in range(1,17):
+    now = 11+i*.05
+    sm.tick(i+7,now)
+    assert gate.update(sm,0,now) == (i >= 15)
+
+
+def test_ui_render_hitch_with_stale_model_falls_back():
+  sm,gate = messages(),WorldAvailability()
+  for i in range(17):
+    now = 10+i*.05
+    sm.tick(i+2,now)
+    gate.update(sm,0,now)
+  sm.recv_time['modelV2'] = 10.0
+  assert not gate.update(sm,0,11.56)
+  assert gate.fallback_reason == 'model data unavailable'
 
 
 @pytest.mark.parametrize('x,y', [([],[]),([0,0],[0,0]),([0,1],[0,math.nan]),([0],[0])])
