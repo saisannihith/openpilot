@@ -1874,7 +1874,6 @@ class StarMainLayout(MainLayout):
       raise
     self.page = StarShellPage(self.star, ShellMode.HOME, on_background_tap=self._on_background_tap)
     device_scroller = self._large_panels[Destination.DEVICE]._scroller
-    device_scroller._items.remove(self._large_panels[Destination.DEVICE]._power_off_btn)
     self.star.system_power_action = self._system_power_action
     device_scroller.add_widget(
       button_item("Galaxy", "OPEN", callback=self.star.galaxy_flow.open_large))

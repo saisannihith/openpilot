@@ -224,7 +224,15 @@ class NativeSettingsTests(unittest.TestCase):
     self.assertEqual(toggles._scroller._items[2].title, 'Safe Mode')
     self.assertEqual(toggles._scroller._items[7].title, 'Right Hand Driving')
     self.assertEqual(self.device._scroller._items[0].title, 'Galaxy')
-    self.assertNotIn(self.device._power_off_btn, self.device._scroller._items)
+    self.assertIn(self.device._power_off_btn, self.device._scroller._items)
+    adapter = layout._large_panels[Destination.DEVICE]
+    power_key = str(id(self.device._power_off_btn))
+    power_row = next(row for row in adapter.snapshot().rows if row.key == power_key)
+    self.assertEqual(power_row.actions, (("Reboot", True), ("Power Off", True)))
+    self.offroad = False
+    self.device._offroad_transition()
+    power_row = next(row for row in adapter.snapshot().rows if row.key == power_key)
+    self.assertEqual(power_row.actions, (("Reboot", True),))
     self.assertEqual(session.system_power_action, layout._system_power_action)
     galaxy = next(item for item in self.device._scroller._items if item.title == 'Galaxy')
     galaxy.callback()
