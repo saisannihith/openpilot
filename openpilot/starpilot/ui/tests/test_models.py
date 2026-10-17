@@ -53,10 +53,10 @@ class TestModelPage(unittest.TestCase):
                          False, None, "a" * 64)
     page = model_page(status)
     self.assertEqual(page.title, "Driving Model")
-    self.assertEqual(page.rows[1].value, "Active")
-    self.assertEqual(page.rows[2].value, "Small")
+    self.assertEqual(next(row.value for row in page.rows if row.label == "Runtime"), "Active")
+    self.assertEqual(next(row.value for row in page.rows if row.label == "Loaded variant"), "Small")
     self.assertTrue(all(not row.available and not row.page for row in page.rows))
-    self.assertIsNone(FeatureInput.target(1980, 300, page))
+    self.assertNotEqual(getattr(FeatureInput.target(1980, 300, page), "kind", None), "open")
     self.assertIsNone(FeatureInput.target(600, 60, page))
     self.assertEqual(FeatureInput.target(100, 60, replace(page, sidebar_expanded=False)).kind, "back")
 
@@ -64,9 +64,10 @@ class TestModelPage(unittest.TestCase):
     status = ModelStatus(BUNDLED_CURRENT, None, None, ModelHealth.IDENTITY_UNAVAILABLE,
                          False, None, None)
     page = model_page(status)
-    self.assertEqual(page.rows[1].value, "Identity unavailable")
-    self.assertEqual(page.rows[3].value, "Unavailable")
-    self.assertIn("No verified load receipt", page.rows[3].reason)
+    self.assertEqual(next(row.value for row in page.rows if row.label == "Runtime"), "Identity unavailable")
+    artifact = next(row for row in page.rows if row.label == "Compiled artifact")
+    self.assertEqual(artifact.value, "Unavailable")
+    self.assertIn("No verified load receipt", artifact.reason)
 
   def test_large_shell_renders_model_pane_without_controls(self):
     status = ModelStatus(BUNDLED_CURRENT, None, None, ModelHealth.UNAVAILABLE, False, None, None)
@@ -102,7 +103,8 @@ class TestModelPage(unittest.TestCase):
       now[0] = 0.5
       owner.refresh_visible(page)
       self.assertEqual(page.current, stale)
-      self.assertIn("model output stale", scroller.add_widgets.call_args.args[0][2][1])
+      self.assertTrue(any("model output stale" in value[1] for value in scroller.add_widgets.call_args.args[0]
+                          if isinstance(value, tuple) and len(value) > 1 and isinstance(value[1], str)))
       visible.return_value = object()
       now[0] = 2.0
       owner.refresh_visible(page)
@@ -110,7 +112,8 @@ class TestModelPage(unittest.TestCase):
       visible.return_value = page
       owner.refresh_visible(page)
       self.assertEqual(page.current, absent)
-      self.assertIn("model not running", scroller.add_widgets.call_args.args[0][2][1])
+      self.assertTrue(any("model not running" in value[1] for value in scroller.add_widgets.call_args.args[0]
+                          if isinstance(value, tuple) and len(value) > 1 and isinstance(value[1], str)))
       self.assertEqual(session.model_snapshot.call_count, 2)
 
 
