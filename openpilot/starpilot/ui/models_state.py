@@ -130,14 +130,6 @@ def model_catalog_page(data: dict, query: str = "", sort_mode: str = "date") -> 
           FeatureRow("", "Sort and Filter", {"date": "Newest", "date_oldest": "Oldest", "name": "Name",
                                                "favorites": "Your favorites", "community": "Community picks"}.get(sort_mode, "Newest"),
                      page="models:sort", available=True)]
-  if data.get("downloading"):
-    rows.append(FeatureRow("", "Cancel Download", data.get("progress", "In progress"),
-                           page="models:cancel", available=model_action_allowed(data, "cancel")))
-  else:
-    rows.append(FeatureRow("", "Download All Missing", f"{data.get('summary', {}).get('missing', 0)} missing",
-                           page="models:download_all", available=model_action_allowed(data, "download_all")))
-    rows.append(FeatureRow("", "Refresh Catalog", "Check for available models",
-                           page="models:refresh_manifest", available=model_action_allowed(data, "refresh_manifest")))
   models = model_catalog_rows(data, sort_mode)
   if query:
     words = query.casefold().split()
@@ -148,6 +140,14 @@ def model_catalog_page(data: dict, query: str = "", sort_mode: str = "date") -> 
                            page=f"models:detail:{model['value']}", available=True))
   if not models:
     rows.append(FeatureRow("", "No Models Found", "Change the search or filter"))
+  if data.get("downloading"):
+    rows.append(FeatureRow("", "Cancel Download", data.get("progress", "In progress"),
+                           page="models:cancel", available=model_action_allowed(data, "cancel")))
+  else:
+    rows.append(FeatureRow("", "Download All Missing", f"{data.get('summary', {}).get('missing', 0)} missing",
+                           page="models:download_all", available=model_action_allowed(data, "download_all")))
+    rows.append(FeatureRow("", "Refresh Catalog", "Check for available models",
+                           page="models:refresh_manifest", available=model_action_allowed(data, "refresh_manifest")))
   return FeatureSettingsState(page="models/catalog", title="All Models",
                               subtitle=f"{len(models)} models shown. Downloads do not change your active model.",
                               parent_title="Driving Model", rows=tuple(rows))

@@ -162,7 +162,9 @@ class TestModelManager(unittest.TestCase):
 
   def test_large_catalog_includes_missing_models_and_searches_by_name_or_id(self):
     all_models = model_catalog_page(self.data)
-    self.assertEqual([row.label for row in all_models.rows[-4:]], ["Big", "Missing", "Pending", "Small"])
+    self.assertEqual([row.label for row in all_models.rows if row.page.startswith("models:detail:")],
+                     ["Big", "Missing", "Pending", "Small"])
+    self.assertEqual(all_models.rows[3].label, "Big")
     self.assertEqual(all_models.rows[0].page, "models:overview")
     self.assertEqual(all_models.rows[1].page, "models:search")
     self.assertTrue(any(row.page == "models:detail:missing" for row in all_models.rows))
