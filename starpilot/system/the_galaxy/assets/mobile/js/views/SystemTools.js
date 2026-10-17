@@ -2,7 +2,6 @@ import { api, showSnackbar } from "../api.js"
 import { usePolling } from "../composables.js"
 import { GalaxyConfirm } from "../components/GalaxyModal.js"
 import { GalaxySection } from "../components/GalaxySection.js"
-import { GalaxySelect } from "../components/GalaxySelect.js"
 import { VersionHistoryPicker, versionTitle, releaseVersions } from "../components/VersionHistoryPicker.js"
 import { GxNotice } from "../components/GxNotice.js"
 
@@ -14,6 +13,51 @@ function toPercent(value) {
   const n = Number(value)
   if (!Number.isFinite(n)) return 0
   return Math.max(0, Math.min(100, n))
+}
+function githubRemoteUrl(remote, commitsUrl = "") {
+  let value = String(remote || "").trim()
+  if (!value) {
+    const commits = String(commitsUrl || "").trim()
+    const markerIndex = commits.indexOf("/commits/")
+    if (commits.startsWith("https://github.com/") && markerIndex > 0) value = commits.slice(0, markerIndex)
+    else return ""
+  }
+  if (value.startsWith("git@github.com:")) value = `https://github.com/${value.split(":", 2)[1] || ""}`
+  else if (value.startsWith("ssh://git@github.com/")) value = `https://github.com/${value.split("ssh://git@github.com/", 2)[1] || ""}`
+  else if (value.startsWith("http://github.com/")) value = `https://github.com/${value.split("http://github.com/", 2)[1] || ""}`
+  if (!value.startsWith("https://github.com/")) return ""
+  value = value.replace(/\/+$/, "")
+  return value.endsWith(".git") ? value.slice(0, -4) : value
+}
+
+function githubCommitUrl(remote, commitsUrl, commit) {
+  const sha = String(commit || "").trim()
+  if (!/^[a-f0-9]{7,40}$/i.test(sha)) return ""
+  const base = githubRemoteUrl(remote, commitsUrl)
+  return base ? `${base}/commit/${sha}` : ""
+}
+
+function githubCommitsUrl(remote, commitsUrl, branch) {
+  const suppliedUrl = String(commitsUrl || "").trim()
+  if (suppliedUrl) {
+    try {
+      const parsed = new URL(suppliedUrl)
+      if (parsed.protocol === "https:" && parsed.hostname === "github.com" && parsed.pathname.includes("/commits/")) {
+        return parsed.href
+      }
+    } catch (e) {
+    }
+  }
+
+  const base = githubRemoteUrl(remote, commitsUrl)
+  const normalizedBranch = String(branch || "").trim()
+  if (!base || !normalizedBranch) return ""
+  try {
+    if (new URL(base).hostname !== "github.com") return ""
+  } catch (e) {
+    return ""
+  }
+  return `${base}/commits/${encodeURIComponent(normalizedBranch)}/`
 }
 
 const CORE_UPDATE_BRANCHES = ["StarPilot", "Dom"]
@@ -59,7 +103,7 @@ async function resolveDeviceScope() {
 
 export const SystemTools = {
   name: "SystemTools",
-  components: { GalaxySection, GxNotice, GalaxySelect, VersionHistoryPicker },
+  components: { GalaxySection, GxNotice, VersionHistoryPicker },
   data() {
     return {
       branches: [],
@@ -154,6 +198,8 @@ export const SystemTools = {
         (this.versionMode === "earlier" && (this.versionLoading || !/^[a-f0-9]{40}$/.test(this.selectedCommit) || !this.versionChoices.some(commit => commit.sha === this.selectedCommit)))
     },
     updateAvailable() { return this.checkedForUpdates && !!this.fastStatus?.updateAvailable && !this.updateInProgress },
+    remoteCommitUrl() { return githubCommitUrl(this.fastStatus?.originRemote, this.fastStatus?.commitsUrl, this.fastStatus?.remoteCommit) },
+    recentCommitsUrl() { return githubCommitsUrl(this.fastStatus?.originRemote, this.fastStatus?.commitsUrl, this.fastStatus?.branch || this.currentBranch) },
     factoryResetStatus() {
       const s = this.fastStatus
       if (!s || String(s?.lastMode || "").trim() !== "factory-reset") return null
@@ -619,7 +665,8 @@ export const SystemTools = {
                 <div class="gx-row" style="border-top:none; min-height:0; padding:4px 0;"><span class="gx-row__label">Installed branch</span><span class="gx-row__value">{{ fastStatus.branch || currentBranch || '—' }}</span></div>
                 <div v-if="updateInProgress && !rebootPending" class="gx-row" style="border-top:none; min-height:0; padding:4px 0;"><span class="gx-row__label">Stage</span><span class="gx-row__value">{{ fastStatus.stage }} · {{ fastStatus.progressLabel }}</span></div>
                 <div class="gx-row" style="border-top:none; min-height:0; padding:4px 0;"><span class="gx-row__label">Local</span><span class="gx-row__value" style="font-family:monospace;">{{ shortCommit(fastStatus.localCommit) }}</span></div>
-                <div class="gx-row" style="border-top:none; min-height:0; padding:4px 0;"><span class="gx-row__label">Remote</span><span class="gx-row__value" style="font-family:monospace;">{{ shortCommit(fastStatus.remoteCommit) }}</span></div>
+                <div class="gx-row" style="border-top:none; min-height:0; padding:4px 0;"><span class="gx-row__label">Remote</span><span class="gx-row__value" style="font-family:monospace;"><a v-if="remoteCommitUrl" class="gx-link" :href="remoteCommitUrl" target="_blank" rel="noopener noreferrer" :title="fastStatus.remoteCommit">{{ shortCommit(fastStatus.remoteCommit) }}</a><template v-else>{{ shortCommit(fastStatus.remoteCommit) }}</template></span></div>
+                <a v-if="recentCommitsUrl" class="gx-btn gx-btn--tonal" style="justify-self:start; margin-top:4px;" :href="recentCommitsUrl" target="_blank" rel="noopener noreferrer"><i class="bi bi-github" aria-hidden="true"></i> Show recent commits on GitHub</a>
                 <div v-if="updateInProgress && !rebootPending" class="gx-update-progress" role="progressbar" aria-label="Update progress"
                   :aria-valuenow="Math.round(fastStatus.progressPercent || 0)" aria-valuemin="0" aria-valuemax="100">
                   <div class="gx-update-progress__track">

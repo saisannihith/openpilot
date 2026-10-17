@@ -1,6 +1,8 @@
 from __future__ import annotations
 import re
+import threading
 
+from openpilot.common.params import Params
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.widgets import DialogResult
@@ -18,7 +20,8 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
     CardHubManagerView,
 )
 from openpilot.selfdrive.ui.layouts.settings.starpilot.simple_download_manager import SimpleDownloadManager
-from openpilot.starpilot.common.starpilot_variables import THEME_SAVE_PATH
+from openpilot.starpilot.assets.theme_manager import ThemeManager
+from openpilot.starpilot.common.starpilot_variables import THEME_SAVE_PATH, get_starpilot_toggles
 
 PANEL_STYLE = DEFAULT_PANEL_STYLE
 
@@ -30,7 +33,7 @@ THEME_KEY_CONFIG = {
 }
 
 COLOR_PRESETS = ["Stock", "#FFFFFF", "#178644", "#3B82F6", "#E63956", "#8B5CF6", "#F59E0B"]
-CAMERA_VIEWS = ["Auto", "Driver", "Standard", "Wide", "None"]
+CAMERA_VIEWS = ["Auto", "Driver", "Standard", "Wide"]
 
 # Keys are the int values stored in DeveloperSidebarMetric{1..7}; values are the
 # human-readable labels shown in both the row value and the picker dialog.
@@ -130,6 +133,9 @@ class AppearanceManagerView(CardHubManagerView):
 class StarPilotAppearanceLayout(_SettingsPage):
     def __init__(self):
         super().__init__()
+        if self._params.get_int("CameraView", return_default=True, default=2) == 5:
+            self._params.put_int("CameraView", 2)
+        self._theme_refresh_thread = None
         self._build_view()
 
     def _make_parent(self, key: str, label: str, subtitle: str = "") -> ParentToggle:
@@ -174,23 +180,9 @@ class StarPilotAppearanceLayout(_SettingsPage):
         hud_on = lambda: self._params.get_bool("CustomUI")
         dev_metrics_on = lambda: self._params.get_bool("DeveloperMetrics")
         dev_sidebar_on = lambda: self._params.get_bool("DeveloperSidebar")
-        tesla_road_on = lambda: self._params.get_int("CameraView", return_default=True, default=2) == 5
 
         # ═══ 1. Model & Path Visualization ═══
         self._model_rows = [
-            SettingRow("TeslaRoad", "toggle", tr_noop("Tesla Road"),
-                       get_state=lambda: self._params.get_int("CameraView", return_default=True, default=2) == 5,
-                       set_state=self._set_tesla_road),
-            SettingRow("TeslaRoadAmbient", "toggle", tr_noop("Ambient Landscape"),
-                       subtitle="",
-                       get_state=lambda: self._params.get_bool("TeslaRoadAmbient"),
-                       set_state=lambda s: self._params.put_bool("TeslaRoadAmbient", s),
-                       visible=tesla_road_on),
-            SettingRow("TeslaRoadMotion", "toggle", tr_noop("Speed Motion"),
-                       subtitle="",
-                       get_state=lambda: self._params.get_bool("TeslaRoadMotion"),
-                       set_state=lambda s: self._params.put_bool("TeslaRoadMotion", s),
-                       visible=tesla_road_on),
             SettingRow("DynamicPathWidth", "toggle", tr_noop("Dynamic Path"),
                        subtitle="",
                        get_state=lambda: self._params.get_bool("DynamicPathWidth"),
@@ -410,7 +402,7 @@ class StarPilotAppearanceLayout(_SettingsPage):
         self._system_rows = [
             SettingRow("CameraView", "value", tr_noop("Camera View"),
                        subtitle="",
-                       get_value=self._get_camera_view_display,
+                       get_value=lambda: tr(CAMERA_VIEWS[self._camera_view_index()]),
                        on_click=self._show_camera_view_selector),
             SettingRow("DriverCamera", "toggle", tr_noop("Driver Camera"),
                        subtitle="",
@@ -615,22 +607,12 @@ class StarPilotAppearanceLayout(_SettingsPage):
 
     # ── Camera view ──
 
-    def _set_tesla_road(self, enabled):
+    def _camera_view_index(self):
         current = self._params.get_int("CameraView", return_default=True, default=2)
-        if enabled and current != 5:
-            self._camera_before_world = current if current in range(len(CAMERA_VIEWS)) else 2
-            self._params.put_int("CameraView", 5)
-        elif not enabled and current == 5:
-            self._params.put_int("CameraView", getattr(self, "_camera_before_world", 2))
-
-    def _get_camera_view_display(self):
-        current = self._params.get_int("CameraView", return_default=True, default=2)
-        return tr("Tesla Road" if current == 5 else CAMERA_VIEWS[current if current in range(len(CAMERA_VIEWS)) else 2])
+        return current if 0 <= current < len(CAMERA_VIEWS) else 2
 
     def _show_camera_view_selector(self):
-        current = self._params.get_int("CameraView", return_default=True, default=2)
-        if current not in range(len(CAMERA_VIEWS)):
-            current = getattr(self, "_camera_before_world", 2)
+        current = self._camera_view_index()
 
         def on_select(res):
             if res == DialogResult.CONFIRM and dialog.selection:
@@ -775,10 +757,15 @@ class StarPilotAppearanceLayout(_SettingsPage):
     # ── Boot logo manager ──
 
     def _show_boot_logo_manager(self):
+        if self._theme_refresh_thread is None or not self._theme_refresh_thread.is_alive():
+            self._theme_refresh_thread = threading.Thread(
+                target=lambda: ThemeManager(Params(), self._params_memory).update_themes(get_starpilot_toggles(), update_assets=False), daemon=True,
+            )
+            self._theme_refresh_thread.start()
         def on_close(res, val):
             pass
 
-        gui_app.push_widget(SimpleDownloadManager(
+        manager = SimpleDownloadManager(
             title=tr("Boot Logo"),
             asset_type="boot logo",
             directory=THEME_SAVE_PATH / "bootlogos",
@@ -788,4 +775,6 @@ class StarPilotAppearanceLayout(_SettingsPage):
             params=self._params,
             params_memory=self._params_memory,
             on_close=on_close,
-        ))
+        )
+        manager.refresh_thread = self._theme_refresh_thread
+        gui_app.push_widget(manager)

@@ -1,4 +1,5 @@
 import { api, showSnackbar } from "../api.js"
+import { GxNotice } from "./GxNotice.js"
 import {
   getMapboxSearchContext,
   addRouteToMap,
@@ -80,6 +81,7 @@ function secondaryLabel(place) {
 
 export const NavigationDestinationPanel = {
   name: "NavigationDestinationPanel",
+  components: { GxNotice },
   data() {
     return {
       loading: true,
@@ -426,9 +428,9 @@ export const NavigationDestinationPanel = {
       <div v-else ref="map" class="gx-navigation-map"></div>
 
       <div v-if="hasMapbox && !loading" class="gx-navigation-overlay">
-        <section v-if="!hasRoutingKey" class="gx-navigation-error gx-card">
+        <GxNotice v-if="!hasRoutingKey" tone="warn" icon="bi-key-fill" style="margin:0;">
           The map and destination search only use your public Mapbox key. Add a <a href="#/navigation/keys">secret Mapbox key in App Keys</a> before starting navigation so the comma can calculate the on-device route and provide turn desires.
-        </section>
+        </GxNotice>
         <section class="gx-navigation-search gx-card">
           <div class="gx-navigation-search__row">
             <i class="bi bi-search" aria-hidden="true"></i>
@@ -445,26 +447,29 @@ export const NavigationDestinationPanel = {
         </section>
 
         <section v-if="destination" class="gx-navigation-summary gx-card">
-          <div class="gx-navigation-summary__title">{{ destination.name || query || 'Destination' }}</div>
-          <div v-if="routeSummary" class="gx-navigation-summary__rows">
-            <div><span class="gx-navigation-summary__icon">🛣️</span><span>Distance:</span><strong>{{ formatDistance(routeSummary.distance) }}</strong></div>
-            <div><span class="gx-navigation-summary__icon">⌛</span><span>Duration:</span><strong>{{ formatDuration(routeSummary.duration) }}</strong></div>
-            <div><span class="gx-navigation-summary__icon">🕗</span><span>ETA:</span><strong>{{ formatEta(routeSummary.duration) }}</strong></div>
+          <div class="gx-navigation-summary__title">
+            <span class="gx-navigation-summary__name">{{ destination.name || query || 'Destination' }}</span>
+            <button type="button" class="gx-icon-btn gx-navigation-summary__fav" :class="{ active: isFavorite }" :aria-pressed="isFavorite" :title="isFavorite ? 'Remove from favorites' : 'Add to favorites'" @click="toggleFavorite">
+              <i class="bi" :class="isFavorite ? 'bi-heart-fill' : 'bi-heart'"></i>
+            </button>
+          </div>
+          <div v-if="routeSummary" class="gx-navigation-metrics">
+            <div class="gx-navigation-metric"><i class="bi bi-signpost-2" aria-hidden="true"></i><span>Distance</span><strong>{{ formatDistance(routeSummary.distance) }}</strong></div>
+            <div class="gx-navigation-metric"><i class="bi bi-clock" aria-hidden="true"></i><span>Duration</span><strong>{{ formatDuration(routeSummary.duration) }}</strong></div>
+            <div class="gx-navigation-metric"><i class="bi bi-clock-history" aria-hidden="true"></i><span>ETA</span><strong>{{ formatEta(routeSummary.duration) }}</strong></div>
           </div>
           <div v-if="routes.length > 1" class="gx-navigation-route-picker" aria-label="Choose a route">
-            <div class="gx-navigation-route-picker__title">Routes</div>
             <button v-for="(route, index) in routes" :key="routeId(index)" type="button"
               class="gx-navigation-route-option" :class="{ selected: selectedRouteId === routeId(index) }"
               :aria-pressed="selectedRouteId === routeId(index)" :aria-label="'Select route ' + (index + 1)"
               @click="selectRoute(route, routeId(index))">
-              <span><strong>Route {{ index + 1 }}</strong><small>{{ selectedRouteId === routeId(index) ? 'Selected' : (index === 0 ? 'Recommended' : 'Alternative') }}</small></span>
-              <strong>{{ formatDistance(route.distance) }} · {{ formatDuration(route.duration) }}</strong>
+              <strong>Route {{ index + 1 }}</strong>
+              <small>{{ formatDistance(route.distance) }} · {{ formatDuration(route.duration) }}</small>
             </button>
           </div>
           <div class="gx-navigation-summary__actions">
             <button v-if="navigationStarted" type="button" class="gx-btn gx-btn--danger" @click="cancelNavigation"><i class="bi bi-x-lg"></i> Cancel Navigation</button>
             <button v-else type="button" class="gx-btn gx-btn--success" :disabled="loadingRoute || !hasRoutingKey" :title="hasRoutingKey ? 'Start Navigation' : 'A Mapbox secret key is required to start navigation'" @click="setDestination(destination)"><i class="bi bi-sign-turn-right"></i> {{ loadingRoute ? 'Calculating...' : 'Start Navigation' }}</button>
-            <button type="button" class="gx-btn gx-btn--favorite" :class="{ active: isFavorite }" @click="toggleFavorite"><i class="bi" :class="isFavorite ? 'bi-heart-fill' : 'bi-heart'"></i> {{ isFavorite ? 'Unfavorite' : 'Favorite' }}</button>
           </div>
         </section>
 
@@ -475,7 +480,7 @@ export const NavigationDestinationPanel = {
             <i class="bi" :class="isPlaceFavorite(place) ? 'bi-heart-fill' : 'bi-clock-history'"></i>
           </button>
         </section>
-        <p v-if="error" class="gx-navigation-error gx-card">{{ error }}</p>
+        <GxNotice v-if="error" tone="danger" :text="error" style="margin:0;" />
       </div>
     </div>
   `,

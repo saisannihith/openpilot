@@ -70,11 +70,13 @@ class FavoriteRadialMenu:
 
   def __init__(self, params: Any, params_memory: Any,
                option_provider: Callable[[], Iterable[dict[str, Any]]], *,
-               clock: Callable[[], float] = time.monotonic):
+               clock: Callable[[], float] = time.monotonic,
+               cache_render_texture: Callable[..., Any] | None = None):
     self._params = params
     self._params_memory = params_memory
     self._option_provider = option_provider
     self._clock = clock
+    self._cache_render_texture = cache_render_texture
 
     self._state = self.STATE_COLLAPSED
     self._selected_slot: int | None = None
@@ -194,13 +196,15 @@ class FavoriteRadialMenu:
   def render(self, rect: rl.Rectangle) -> None:
     self._layout(rect)
     self._collapse_if_idle()
-    if self._state == self.STATE_COLLAPSED:
-      self._draw_corner_hint()
-    elif self._state == self.STATE_RADIAL:
-      self._draw_corner_hint()
+    if self._state == self.STATE_RADIAL:
       self._draw_radial_menu()
-    else:
+    elif self._state == self.STATE_PICKER:
       self._draw_picker()
+
+  def render_corner_hint(self, rect: rl.Rectangle) -> None:
+    self._rect = rect
+    if not self.is_picker_open:
+      self._draw_corner_hint()
 
   def blocks_pointer(self, mouse_pos: Any) -> bool:
     """Whether a parent click at ``mouse_pos`` belongs to this menu."""
@@ -717,34 +721,52 @@ class FavoriteRadialMenu:
     return rl.Color(r, g, b, alpha)
 
   def _draw_corner_hint(self) -> None:
-    from openpilot.system.ui.lib.application import gui_app
-
     scale = self._scale_for(self._rect)
     x0 = self._rect.x
     y0 = self._rect.y + self._rect.height
     is_pressed = self._corner_press is not None
-    # Two fixed-size textures, independent of viewport size or menu lifetime.
-    texture = gui_app.cached_render_texture(
-      f"favorites_corner_hint_v1_{int(is_pressed)}", 150, 150,
-      lambda: FavoriteRadialMenu._draw_corner_hint_vectors(0.0, 150.0, 1.0, is_pressed),
-    )
-    if texture is None:
-      self._draw_corner_hint_vectors(x0, y0, scale, is_pressed)
+    size = 150.0 * scale
+    texture_size = max(1, int(round(size)))
+    texture_scale = texture_size / 150.0
+    # Cache the hint's two appearances instead of rebuilding the mesh every frame.
+    cache = self._cache_render_texture
+    texture = None
+    if cache is not None:
+      variant = "pressed" if is_pressed else "idle"
+      texture = cache(
+        f"favorite-corner-hint:{texture_size}:{variant}",
+        texture_size,
+        texture_size,
+        lambda: FavoriteRadialMenu._draw_corner_hint_geometry(
+          texture_scale, is_pressed, 0.0, float(texture_size),
+        ),
+      )
+
+    if texture is not None:
+      rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
+      try:
+        rl.draw_texture_pro(
+          texture,
+          rl.Rectangle(0, 0, texture_size, -texture_size),
+          rl.Rectangle(x0, y0 - size, size, size),
+          rl.Vector2(0, 0),
+          0.0,
+          rl.WHITE,
+        )
+      finally:
+        rl.end_blend_mode()
       return
-    rl.begin_blend_mode(rl.BlendMode.BLEND_ALPHA_PREMULTIPLY)
-    try:
-      rl.draw_texture_pro(texture, rl.Rectangle(0, 0, 150, -150),
-                          rl.Rectangle(x0, y0 - 150 * scale, 150 * scale, 150 * scale),
-                          rl.Vector2(0, 0), 0.0, rl.WHITE)
-    finally:
-      rl.end_blend_mode()
+
+    self._draw_corner_hint_geometry(scale, is_pressed, x0, y0)
 
   @classmethod
-  def _draw_corner_hint_vectors(cls, x0: float, y0: float, scale: float, is_pressed: bool) -> None:
+  def _draw_corner_hint_geometry(cls, scale: float, is_pressed: bool,
+                                 x0: float, y0: float) -> None:
     size = 150.0 * scale
+
     steps = 48
 
-    # 1. Precompute edge vertices to minimize per-frame allocations
+    # Build the gradient mesh once for this cached appearance.
     v_origin = rl.Vector2(x0, y0)
     inv_steps = 1.0 / steps
     pts_top = [rl.Vector2(x0, y0 - size * (k * inv_steps)) for k in range(steps + 1)]
@@ -774,8 +796,8 @@ class FavoriteRadialMenu:
           rl.draw_triangle(v_tb, v_ra, v_rb, col)
 
     # 3. Ultra-Polished Frosted-Glass Vector Arrow (Nestled deep in purple corner)
-    cx = x0 + 34.0 * scale
-    cy = y0 - 34.0 * scale
+    inset = (cls.CORNER_HINT_RING_RADIUS + cls.CORNER_HINT_EDGE_MARGIN) * scale
+    cx, cy = x0 + inset, y0 - inset
 
     tip = rl.Vector2(cx + 15.0 * scale, cy - 15.0 * scale)
     tail = rl.Vector2(cx - 15.0 * scale, cy + 15.0 * scale)

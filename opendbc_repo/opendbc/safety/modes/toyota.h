@@ -235,9 +235,9 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
 
     // the EPS faults when the steering angle rate is above a certain threshold for too long. to prevent this,
     // we allow setting STEER_REQUEST bit to 0 while maintaining the requested torque value for a single frame
-    .min_valid_request_frames = 18,
+    .min_valid_request_frames = 17,
     .max_invalid_request_frames = 1,
-    .min_valid_request_rt_interval = 171000,  // 171ms; a ~10% buffer on cutting every 19 frames
+    .min_valid_request_rt_interval = 162000,  // 162ms; a ~10% buffer on cutting every 18 frames
     .has_steer_req_tolerance = true,
   };
 
@@ -404,7 +404,12 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
       tx = false;
     }
 
-    if ((msg->addr == 0x344U) && toyota_stock_longitudinal) {
+    // Camry Auto Hold replaces the camera AEB message only while stopped.
+    if ((msg->addr == 0x344U) && ((alternative_experience & ALT_EXP_ALLOW_AEB) != 0)) {
+      if (vehicle_moving || gas_pressed || !acc_main_on) {
+        tx = false;
+      }
+    } else if ((msg->addr == 0x344U) && toyota_stock_longitudinal) {
       tx = false;
     }
   }
@@ -571,11 +576,21 @@ static safety_config toyota_init(uint16_t param) {
   return ret;
 }
 
+static bool toyota_fwd_hook(int bus_num, int addr) {
+  bool block_msg = false;
+  if (bus_num == 2) {
+    block_msg = (addr == 0x344) && ((alternative_experience & ALT_EXP_ALLOW_AEB) != 0) &&
+                !vehicle_moving && !gas_pressed && acc_main_on;
+  }
+  return block_msg;
+}
+
 const safety_hooks toyota_hooks = {
   .init = toyota_init,
   .rx = toyota_rx_hook,
   .rx_all = toyota_rx_all_hook,
   .tx = toyota_tx_hook,
+  .fwd = toyota_fwd_hook,
   .get_checksum = toyota_get_checksum,
   .compute_checksum = toyota_compute_checksum,
   .get_quality_flag_valid = toyota_get_quality_flag_valid,
