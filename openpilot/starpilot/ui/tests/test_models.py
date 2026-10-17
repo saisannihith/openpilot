@@ -8,10 +8,10 @@ from unittest import mock
 
 from openpilot.starpilot.models.catalog import BUNDLED_CURRENT, BY_ID
 from openpilot.starpilot.models.status import ModelHealth, ModelStatus, ModelVariant
-from openpilot.starpilot.ui.feature_settings_state import feature_row_top, FeatureInput
+from openpilot.starpilot.ui.feature_settings_state import feature_row_top, FeatureInput, FeatureUiAction
 from openpilot.starpilot.ui.models_compact import ModelsCompact, _ModelsPage, _display_text
-from openpilot.starpilot.ui.models_state import (model_page, model_action_allowed, model_catalog_rows, model_profile_choices, model_profile_request,
-                                                home_model_label)
+from openpilot.starpilot.ui.models_state import (model_page, model_action_allowed, model_catalog_page, model_catalog_rows,
+                                                model_detail_page, model_profile_choices, model_profile_request, home_model_label)
 from openpilot.starpilot.ui.presentation import Profile
 from openpilot.starpilot.ui.settings_state import Destination
 from openpilot.starpilot.ui.shell import ShellMode, ShellView
@@ -149,11 +149,59 @@ class TestModelManager(unittest.TestCase):
 
   def test_large_profile_rows_are_open_actions_and_receipt_stays_inert(self):
     state = model_page(ModelStatus(BUNDLED_CURRENT, None, None, ModelHealth.UNAVAILABLE, False, None, None), self.data)
+    self.assertEqual((state.rows[0].label, state.rows[0].page), ("All Models", "models:catalog"))
+    self.assertEqual(FeatureInput.target(1000, feature_row_top(state) + 20, state).kind, "open")
     self.assertEqual(state.rows[1].value, "Small")
     self.assertEqual(state.rows[1].source, b"small")
     action = FeatureInput.target(1000, feature_row_top(state) + 288, state)
     self.assertEqual((action.kind, action.row.page), ("open", "models:small"))
     self.assertTrue(all(not row.available for row in state.rows[3:]))
+
+  def test_large_catalog_includes_missing_models_and_searches_by_name_or_id(self):
+    all_models = model_catalog_page(self.data)
+    self.assertEqual([row.label for row in all_models.rows[-4:]], ["Big", "Missing", "Pending", "Small"])
+    self.assertEqual(all_models.rows[0].page, "models:overview")
+    self.assertEqual(all_models.rows[1].page, "models:search")
+    self.assertTrue(any(row.page == "models:detail:missing" for row in all_models.rows))
+    self.assertEqual([row.label for row in model_catalog_page(self.data, "MISSING").rows if row.page.startswith("models:detail:")],
+                     ["Missing"])
+    self.assertEqual([row.label for row in model_catalog_page(self.data, "big").rows if row.page.startswith("models:detail:")],
+                     ["Big"])
+
+  def test_large_model_detail_respects_offroad_and_installation(self):
+    missing = model_detail_page(self.data, "missing")
+    self.assertEqual(missing.rows[0].page, "models:catalog")
+    self.assertTrue(next(row for row in missing.rows if row.page == "models:download").available)
+    installed = model_detail_page(self.data, "small")
+    self.assertTrue(next(row for row in installed.rows if row.page == "models:active:small").available)
+    moving = model_detail_page({**self.data, "isOnroad": True}, "small")
+    self.assertFalse(next(row for row in moving.rows if row.page == "models:active:small").available)
+
+  def test_large_catalog_navigation_and_stale_model_action(self):
+    from openpilot.starpilot.ui.runtime_app import StarShellSession
+    session = StarShellSession.__new__(StarShellSession)
+    session._mode, session.selected = ShellMode.SETTINGS, Destination.DRIVING_MODEL
+    session.model_view, session.model_selected, session.model_scroll = "overview", "", 0
+    session.model_catalog_scroll, session.model_query, session.model_sort = 0, "", "date"
+    session.input = mock.Mock()
+    session._snapshot_cache = None
+    session.model_manager_snapshot = mock.Mock(return_value=self.data)
+    status = ModelStatus(BUNDLED_CURRENT, None, None, ModelHealth.UNAVAILABLE, False, None, None)
+    session.model_snapshot = lambda: (model_page(status, self.data) if session.model_view == "overview" else
+                                      model_catalog_page(self.data) if session.model_view == "catalog" else
+                                      model_detail_page(self.data, session.model_selected))
+    session._models_ui(FeatureUiAction("open", session.model_snapshot().rows[0]))
+    self.assertEqual(session.model_view, "catalog")
+    detail = next(row for row in session.model_snapshot().rows if row.page == "models:detail:missing")
+    session._models_ui(FeatureUiAction("open", detail))
+    self.assertEqual((session.model_view, session.model_selected), ("detail", "missing"))
+    session._models_ui(FeatureUiAction("back"))
+    self.assertEqual(session.model_view, "catalog")
+    session.model_manager_action = mock.Mock()
+    session._unavailable = mock.Mock()
+    session.model_manager_snapshot.return_value = {**self.data, "isOnroad": True}
+    session._model_command("download", "missing")
+    session.model_manager_action.assert_not_called()
 
   def test_compact_catalog_keeps_installation_and_exclusion_visible_first(self):
     session = mock.Mock()

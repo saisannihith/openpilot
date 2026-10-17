@@ -56,7 +56,8 @@ from openpilot.starpilot.ui.feature_settings_state import (
 from openpilot.starpilot.ui.lane_change_feature import KEYS as LANE_CHANGE_KEYS, RESET as LANE_CHANGE_RESET
 from openpilot.starpilot.models.runtime import ModelStatusSource
 from openpilot.starpilot.models.status import project_status
-from openpilot.starpilot.ui.models_state import model_page, model_profile_choices, model_profile_request, home_model_label
+from openpilot.starpilot.ui.models_state import (model_action_allowed, model_catalog_page, model_detail_page, model_page,
+                                                  model_profile_choices, model_profile_request, home_model_label)
 from openpilot.starpilot.ui.maps_state import MapStatusSource
 from openpilot.starpilot.galaxy.access import GalaxyAccessOwner, default_owner
 from openpilot.starpilot.ui.galaxy_access import GalaxyAccessFlow
@@ -207,6 +208,11 @@ class StarShellSession:
     self._home_model: tuple[float, str] | None = None
     self.map_source: MapStatusSource | None = None
     self.model_scroll = 0
+    self.model_view = "overview"
+    self.model_selected = ""
+    self.model_query = ""
+    self.model_sort = "date"
+    self.model_catalog_scroll = 0
     self.drive_state = DriveStateControl(DriveStateOwner(ui_state.params, starpilot_storage_root() / "drive-state"),
                                          PhysicalSource(ui_state.sm))
     self.system_power_action: Callable[[int], None] | None = None
@@ -843,9 +849,14 @@ class StarShellSession:
 
   def model_snapshot(self):
     try:
+      manager = self.model_manager_snapshot()
+      if self.model_view == "catalog":
+        return model_catalog_page(manager, self.model_query, self.model_sort)
+      if self.model_view == "detail":
+        return model_detail_page(manager, self.model_selected)
       if self.model_source is None:
         self.model_source = ModelStatusSource(self.adapter.ui_state.params)
-      return model_page(self.model_source.snapshot(), self.model_manager_snapshot())
+      return model_page(self.model_source.snapshot(), manager)
     except Exception:
       # Model status is optional diagnostics; UI remains usable without IPC.
       return model_page(project_status(None, None, None, None, time.monotonic_ns()))
@@ -862,16 +873,115 @@ class StarShellSession:
   def model_manager_action(self, action, payload):
     return self._model_manager().action(action, payload)
 
+  def _model_command(self, action: str, model_id: str = "", profile: str = "", confirmed: bool = False) -> None:
+    if self._mode != ShellMode.SETTINGS or self.selected != Destination.DRIVING_MODEL:
+      return
+    from openpilot.system.ui.lib.application import gui_app
+    from openpilot.system.ui.widgets import DialogResult
+    from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
+    try:
+      manager = self.model_manager_snapshot()
+      model = next((item for item in manager["models"] if item["value"] == model_id), None) if model_id else None
+      if not model_action_allowed(manager, action, model, profile):
+        self._unavailable("model action; reopen the catalog while offroad")
+        return
+      needs_gpu = (action == "download" and model and model.get("requiresGpu") and not model.get("gpuAvailable") or
+                   action == "download_all" and any(not item.get("installed") and item.get("downloadAvailable") and
+                                                    item.get("requiresGpu") and not item.get("gpuAvailable")
+                                                    for item in manager["models"]))
+      if needs_gpu and not confirmed:
+        gui_app.push_widget(ConfirmDialog("Download eGPU models for later use without Chestnut connected?", "Download",
+                                          callback=lambda result: self._model_command(action, model_id, profile, True)
+                                          if result == DialogResult.CONFIRM else None))
+        return
+      payload = {}
+      if action == "active":
+        payload = {"model": model_id, "profile": profile}
+      elif action == "download":
+        payload = {"model": model_id}
+      elif action == "preferences":
+        favorites = {item["value"] for item in manager["models"] if item.get("userFavorite")}
+        if model_id in favorites:
+          favorites.remove(model_id)
+        else:
+          favorites.add(model_id)
+        payload = {"userFavorites": sorted(favorites)}
+      elif action == "cancel":
+        payload = {"jobId": manager["jobId"]}
+      if action in ("download", "download_all"):
+        payload["allowGpuWithoutGpu"] = bool(needs_gpu and confirmed)
+      result = self.model_manager_action(action, payload)
+      self.notice, self.notice_until = result.get("message", "Model action saved"), time.monotonic() + 4.0
+    except (OSError, ValueError, RuntimeError, KeyError) as error:
+      self._unavailable(str(error))
+    finally:
+      self._snapshot_cache = None
+
   def _models_ui(self, action: FeatureUiAction) -> None:
     if self._mode != ShellMode.SETTINGS or self.selected != Destination.DRIVING_MODEL:
       return
     state = self.model_snapshot()
     if action.kind == "back":
-      self.selected = Destination.STAR
-      self.model_scroll = 0
+      if self.model_view == "detail":
+        self.model_view = "catalog"
+        self.model_scroll = self.model_catalog_scroll
+      elif self.model_view == "catalog":
+        self.model_view = "overview"
+        self.model_scroll = 0
+      else:
+        self.selected = Destination.STAR
+        self.model_scroll = 0
       self.input.cancel()
     elif action.kind == "scroll":
       self.model_scroll = feature_scroll(self.model_scroll, action.direction, len(state.rows))
+    elif action.kind == "open" and action.row in state.rows and action.row.available and action.row.page == "models:catalog":
+      returning = self.model_view == "detail"
+      self.model_view = "catalog"
+      self.model_scroll = self.model_catalog_scroll if returning else 0
+    elif action.kind == "open" and action.row in state.rows and action.row.available and action.row.page == "models:overview":
+      self.model_view = "overview"
+      self.model_scroll = 0
+    elif action.kind == "open" and action.row in state.rows and action.row.available and action.row.page.startswith("models:detail:"):
+      model_id = action.row.page.removeprefix("models:detail:")
+      if any(item.get("value") == model_id for item in self.model_manager_snapshot().get("models", ())):
+        self.model_catalog_scroll = self.model_scroll
+        self.model_selected = model_id
+        self.model_view = "detail"
+        self.model_scroll = 0
+    elif action.kind == "open" and action.row in state.rows and action.row.available and action.row.page == "models:search":
+      from openpilot.system.ui.lib.application import gui_app
+      from openpilot.system.ui.widgets import DialogResult
+      from openpilot.system.ui.widgets.keyboard import Keyboard
+      keyboard = Keyboard(max_text_size=64)
+      keyboard.set_title("Search Models", "Name or model ID")
+      keyboard.set_text(self.model_query)
+      def searched(result):
+        if result == DialogResult.CONFIRM and self.selected == Destination.DRIVING_MODEL and self.model_view == "catalog":
+          self.model_query = keyboard.text.strip()
+          self.model_scroll = 0
+          self._snapshot_cache = None
+      keyboard.set_callback(searched)
+      gui_app.push_widget(keyboard)
+    elif action.kind == "open" and action.row in state.rows and action.row.available and action.row.page == "models:sort":
+      from openpilot.system.ui.lib.application import gui_app
+      from openpilot.system.ui.widgets import DialogResult
+      from openpilot.system.ui.widgets.option_dialog import MultiOptionDialog
+      labels = {"date": "Newest", "date_oldest": "Oldest", "name": "Name", "favorites": "Your favorites",
+                "community": "Community picks"}
+      def sorted_models(result):
+        if result == DialogResult.CONFIRM and self.selected == Destination.DRIVING_MODEL and self.model_view == "catalog":
+          self.model_sort = next((key for key, label in labels.items() if label == dialog.selection), "date")
+          self.model_scroll = 0
+          self._snapshot_cache = None
+      dialog = MultiOptionDialog("Sort and Filter", list(labels.values()), labels.get(self.model_sort, "Newest"), callback=sorted_models)
+      gui_app.push_widget(dialog)
+    elif action.kind == "open" and action.row in state.rows and action.row.available and action.row.page.startswith("models:") and \
+         action.row.page in ("models:download", "models:download_all", "models:cancel", "models:refresh_manifest",
+                             "models:favorite", "models:active:small", "models:active:big"):
+      command = action.row.page.removeprefix("models:")
+      self._model_command("preferences" if command == "favorite" else "active" if command.startswith("active:") else command,
+                          self.model_selected if self.model_view == "detail" else "",
+                          command.split(":", 1)[1] if command.startswith("active:") else "")
     elif action.kind == "open" and action.row in state.rows and action.row.page in ("models:small", "models:big"):
       from openpilot.system.ui.lib.application import gui_app
       from openpilot.system.ui.widgets import DialogResult
@@ -1427,6 +1537,7 @@ class StarShellSession:
             self.display_edit_key = None
           elif destination == Destination.DRIVING_MODEL:
             self.model_scroll = 0
+            self.model_view = "overview"
         elif action.destination.available and self._on_compact_destination is not None:
           self._on_compact_destination(destination)
         else:

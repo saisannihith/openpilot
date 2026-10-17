@@ -42,6 +42,8 @@ def model_page(status: ModelStatus, manager: dict | None = None) -> FeatureSetti
     rows += (FeatureRow("", "Fallback", "Bundled driving model", reason="Selected model load or run failed"),)
   if manager is not None:
     rows = model_manager_rows(manager) + rows
+  else:
+    rows = (FeatureRow("", "All Models", "Catalog unavailable", reason="Reopen Driving Model to retry"),) + rows
   return FeatureSettingsState(title="Driving Model", subtitle="Selections apply at next start; runtime shows the loaded model.",
                               rows=rows)
 
@@ -109,7 +111,8 @@ def model_profile_request(data: dict, profile: str, model_id: str) -> dict | Non
 
 def model_manager_rows(data: dict) -> tuple[FeatureRow, ...]:
   summary = data.get("summary", {})
-  rows = [FeatureRow("", "Model catalog", f"{summary.get('installed', 0)} installed / {summary.get('total', 0)} total")]
+  rows = [FeatureRow("", "All Models", f"{summary.get('installed', 0)} installed / {summary.get('total', 0)} total",
+                     page="models:catalog", available=True)]
   for profile, field in (("small", "activeSmallModel"), ("big", "activeBigModel")):
     mid = data.get(field, "")
     label = next((m.get("label", mid) for m in data.get("models", ()) if m.get("value") == mid), mid or "None — always use Active Small")
@@ -119,6 +122,59 @@ def model_manager_rows(data: dict) -> tuple[FeatureRow, ...]:
                            reason="Randomizer selects at the next start" if data.get("randomizer") else
                            "Change for next start" if available else "Turn the vehicle off to change models", page=f"models:{profile}"))
   return tuple(rows)
+
+
+def model_catalog_page(data: dict, query: str = "", sort_mode: str = "date") -> FeatureSettingsState:
+  rows = [FeatureRow("", "Back to Driving Model", "Active model and runtime", page="models:overview", available=True),
+          FeatureRow("", "Search Models", query or "Search by name", page="models:search", available=True),
+          FeatureRow("", "Sort and Filter", {"date": "Newest", "date_oldest": "Oldest", "name": "Name",
+                                               "favorites": "Your favorites", "community": "Community picks"}.get(sort_mode, "Newest"),
+                     page="models:sort", available=True)]
+  if data.get("downloading"):
+    rows.append(FeatureRow("", "Cancel Download", data.get("progress", "In progress"),
+                           page="models:cancel", available=model_action_allowed(data, "cancel")))
+  else:
+    rows.append(FeatureRow("", "Download All Missing", f"{data.get('summary', {}).get('missing', 0)} missing",
+                           page="models:download_all", available=model_action_allowed(data, "download_all")))
+    rows.append(FeatureRow("", "Refresh Catalog", "Check for available models",
+                           page="models:refresh_manifest", available=model_action_allowed(data, "refresh_manifest")))
+  models = model_catalog_rows(data, sort_mode)
+  if query:
+    words = query.casefold().split()
+    models = [model for model in models if all(word in f"{model.get('label', '')} {model['value']}".casefold() for word in words)]
+  for model in models:
+    status = "Installed" if model.get("installed") else model.get("unavailableReason") or "Download required"
+    rows.append(FeatureRow("", model.get("label", model["value"]), status,
+                           page=f"models:detail:{model['value']}", available=True))
+  if not models:
+    rows.append(FeatureRow("", "No Models Found", "Change the search or filter"))
+  return FeatureSettingsState(page="models/catalog", title="All Models",
+                              subtitle=f"{len(models)} models shown. Downloads do not change your active model.",
+                              parent_title="Driving Model", rows=tuple(rows))
+
+
+def model_detail_page(data: dict, model_id: str) -> FeatureSettingsState:
+  model = next((item for item in data.get("models", ()) if item.get("value") == model_id), None)
+  if model is None:
+    return FeatureSettingsState(page="models/detail", title="Model Unavailable", parent_title="All Models",
+                                rows=(FeatureRow("", "Catalog Changed", "Return to All Models"),))
+  installed = bool(model.get("installed"))
+  rows = [FeatureRow("", "Back to All Models", "Browse the catalog", page="models:catalog", available=True),
+          FeatureRow("", "Status", "Installed" if installed else model.get("unavailableReason") or "Download required"),
+          FeatureRow("", "Version", str(model.get("version", "Unknown"))),
+          FeatureRow("", "Hardware", "Chestnut / eGPU" if model.get("requiresGpu") else "comma 3X")]
+  if installed:
+    for profile in ("small", "big"):
+      if model_fits_profile(model, profile):
+        rows.append(FeatureRow("", f"Set Active {profile.title()}", "Takes effect at next start",
+                               page=f"models:active:{profile}", available=model_action_allowed(data, "active", model, profile)))
+  else:
+    rows.append(FeatureRow("", "Download Model", "Does not activate automatically",
+                           page="models:download", available=model_action_allowed(data, "download", model)))
+  rows.append(FeatureRow("", "Remove Favorite" if model.get("userFavorite") else "Add Favorite", "Your model list",
+                         page="models:favorite", available=model_action_allowed(data, "preferences", model)))
+  return FeatureSettingsState(page=f"models/detail/{model_id}", title=model.get("label", model_id),
+                              parent_title="All Models", rows=tuple(rows))
 
 
 def model_display_text(value: str) -> str:
