@@ -150,7 +150,7 @@ class TestControllerFeature(unittest.TestCase):
     learning = self.require_row('ForceAutoTuneOff')
     self.assertTrue(learning.available)
     self.assertEqual(learning.value, 'On')
-    self.assertIn('currently unavailable', learning.reason)
+    self.assertIn('FLM tuning will attempt', learning.reason)
     self.assertTrue(self.owner.apply(required_change(learning)))  # Explicit Off for Ioniq.
     self.assertFalse(read_preference(self.params, self.cp).enabled)
     self.assertIsNone(self.params.get('ForceAutoTuneOff'))
