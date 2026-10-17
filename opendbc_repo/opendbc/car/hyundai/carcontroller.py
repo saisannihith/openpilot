@@ -21,6 +21,7 @@ from opendbc.car.hyundai.ray_pedal import create_ray_pedal_command, ray_pedal_ga
 from opendbc.car.hyundai.ioniq6_longitudinal import Ioniq6LongitudinalPolicy
 from opendbc.car.hyundai.canfd_dash_icons import CanFDDashIcons
 from opendbc.car.hyundai.canfd_stock_aol import qualified as qualified_canfd_stock_aol
+from opendbc.car.hyundai.carnival_steering import conflict_request, safety_rate_limited_unwind
 from opendbc.car.hyundai.ev6_aol import qualified as qualified_ev6_aol
 from opendbc.car.hyundai.g90_longitudinal import G90LongitudinalPolicy
 from opendbc.car.hyundai.gv70_longitudinal import is_gv70, scc_request, suppress_stock_cancel
@@ -105,6 +106,7 @@ class CarController(CarControllerBase):
 
     self.accel_last = 0
     self.apply_torque_last = 0
+    self.carnival_driver_conflict_hold_frames = 0
     self.car_fingerprint = CP.carFingerprint
     self.last_button_frame = 0
     self.cancel_counter = 0
@@ -172,6 +174,10 @@ class CarController(CarControllerBase):
     if self.CP.flags & HyundaiFlags.CANFD and self.angle_vm is None:
       self.params = CarControllerParams(self.CP, CS.out.vEgoRaw)
     new_torque = int(round(actuators.torque * self.params.STEER_MAX))
+    new_torque, self.carnival_driver_conflict_hold_frames, conflict_active = conflict_request(
+      self.CP.carFingerprint, new_torque, self.apply_torque_last, CS.out.steeringTorque,
+      CC.latActive, self.carnival_driver_conflict_hold_frames, CS.out.steerFaultTemporary,
+    )
     if _projection is not None:
       _projection.input(new_torque, self.params.STEER_MAX, self.apply_torque_last, CS.out.steeringTorque, self.params, limiter='driver')
     apply_torque = (0 if self.angle_vm is not None else
@@ -184,6 +190,8 @@ class CarController(CarControllerBase):
 
     if not CC.latActive:
       apply_torque = 0
+
+    apply_torque = safety_rate_limited_unwind(apply_torque, self.apply_torque_last, conflict_active)
 
     self.apply_torque_last = apply_torque
 

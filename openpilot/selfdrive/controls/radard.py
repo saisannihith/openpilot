@@ -21,6 +21,8 @@ from openpilot.starpilot.conditional_mode.adjacent import (
 )
 from openpilot.starpilot.feature_runtime import enabled as feature_enabled
 from openpilot.starpilot.longitudinal.voacc import selected as voacc_selected
+from openpilot.selfdrive.controls.carnival_radar import CarnivalRadarPolicy
+from opendbc.car.hyundai.values import CAR as HYUNDAI_CAR
 
 
 # Default lead acceleration decay set to 50% at 1s
@@ -201,8 +203,10 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
 
 class RadarD:
   def __init__(self, delay: float = 0.0, *, adjacent_enabled: bool = False, radar_available: bool = False,
-               clock_pair_fn=None, honda_bosch_a_radar: bool = False, use_voacc: bool = False):
+               clock_pair_fn=None, honda_bosch_a_radar: bool = False, use_voacc: bool = False,
+               carnival_r0100: bool = False):
     self.use_voacc = use_voacc
+    self.carnival_radar = CarnivalRadarPolicy() if carnival_r0100 else None
     self.tracks: dict[int, Track] = {}
     self.honda_bosch_a = None
     if honda_bosch_a_radar:
@@ -327,6 +331,10 @@ class RadarD:
           self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
         self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead)
 
+    if self.carnival_radar is not None:
+      self.carnival_radar.update(self.tracks, fresh=bool(sm.updated['radarTracks'] and sm.valid['radarTracks']),
+                                 sample_time=float(sm.logMonoTime['radarTracks']) * 1e-9)
+
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
     self.radar_state = log.RadarState.new_message()
@@ -354,6 +362,19 @@ class RadarD:
                                           self.lead_prob_filters[1].x, low_speed_override=False)
       elif self.honda_bosch_a is not None:
         self.radar_state.leadOne, self.radar_state.leadTwo = self.honda_bosch_a.leads(sm, self, model_v_ego)
+      elif self.carnival_radar is not None:
+        radar_age = int(sm.logMonoTime['modelV2']) - int(sm.logMonoTime['radarTracks'])
+        radar_usable = bool(sm.valid['radarTracks'] and -50_000_000 <= radar_age <= 150_000_000)
+        model_accel = sm['modelV2'].acceleration.x
+        model_a_ego = float(model_accel[0]) if len(model_accel) else 0.0
+        for i in range(2):
+          lead = self.carnival_radar.lead(i, self.tracks, leads_v3[i], sm['modelV2'], self.v_ego,
+                                          model_v_ego, model_a_ego, self.lead_prob_filters[i].x,
+                                          self.ready, radar_usable)
+          if i == 0:
+            self.radar_state.leadOne = lead
+          else:
+            self.radar_state.leadTwo = lead
       else:
         self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x, low_speed_override=True)
         self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
@@ -415,7 +436,8 @@ def main() -> None:
   from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
   honda_bosch_a = CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and not CP.radarUnavailable
   RD = RadarD(CP.radarDelay, adjacent_enabled=adjacent_enabled, radar_available=not CP.radarUnavailable,
-              honda_bosch_a_radar=honda_bosch_a, use_voacc=voacc_selected(params, CP))
+              honda_bosch_a_radar=honda_bosch_a, use_voacc=voacc_selected(params, CP),
+              carnival_r0100=CP.carFingerprint == HYUNDAI_CAR.KIA_CARNIVAL_4TH_GEN)
   set_core_affinity([4, 5])
 
   while 1:

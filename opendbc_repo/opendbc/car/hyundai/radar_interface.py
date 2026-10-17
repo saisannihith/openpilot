@@ -3,6 +3,7 @@ import math
 from opendbc.can import CANParser
 from opendbc.car import Bus, structs
 from opendbc.car.interfaces import RadarInterfaceBase
+from opendbc.car.hyundai.carnival_r0100 import CarnivalR0100
 from opendbc.car.hyundai.values import (CAR, DBC, HyundaiFlags, HYUNDAI_MRR35_RADAR_DBC, HYUNDAI_MRR30_RADAR_DBC,
                                         HYUNDAI_GV70_RADAR_DBC, HYUNDAI_G90_RADAR_DBC, is_blended)
 
@@ -84,10 +85,16 @@ class RadarInterface(RadarInterfaceBase):
 
     self.radar_off_can = CP.radarUnavailable
     self.rcp = get_radar_can_parser(CP)
+    self.carnival_r0100 = CarnivalR0100() if CP.carFingerprint == CAR.KIA_CARNIVAL_4TH_GEN else None
 
   def update(self, can_strings):
+    if self.carnival_r0100 is not None:
+      self.carnival_r0100.update(can_strings)
     if self.radar_off_can or (self.rcp is None):
-      return super().update(None)
+      result = super().update(None)
+      if result is not None and self.carnival_r0100 is not None:
+        self.carnival_r0100.add_points(result)
+      return result
 
     if (self.g90 or self.mrr30 or self.gv70 or self.mrr35 and self.CP.carFingerprint == CAR.HYUNDAI_IONIQ_6) and can_strings:
       expected_length = 8 if self.g90 else 32 if self.mrr30 or self.gv70 else 24
@@ -111,6 +118,8 @@ class RadarInterface(RadarInterfaceBase):
 
     rr = self._update(self.updated_messages)
     self.updated_messages.clear()
+    if self.carnival_r0100 is not None:
+      self.carnival_r0100.add_points(rr)
 
     return rr
 
