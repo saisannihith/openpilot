@@ -24,6 +24,6 @@ if [ -z "$AGNOS_VERSION" ]; then
   export AGNOS_VERSION="19.8.1"
 fi
 
-export AGNOS_UPDATE_POLICY="auto"
+export AGNOS_UPDATE_POLICY="retain"
 
 export STAGING_ROOT="/data/safe_staging"
