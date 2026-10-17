@@ -114,7 +114,7 @@ class CarnivalRadarPolicy:
             "vLead": v_lead, "vLeadK": v_lead, "aLeadK": float(lead.a[0]), "aLeadTau": 0.3,
             "modelProb": model_prob, "present": True, "radar": True, "radarTrackId": track.identifier}
 
-  def _low_speed_sane(self, track, model, v_ego: float, previously_selected: bool) -> bool:
+  def _low_speed_sane(self, track, model, v_ego: float, previously_selected: bool, new_sample: bool) -> bool:
     evidence = self.evidence[track.identifier]
     path_x, path_y = list(model.position.x), list(model.position.y)
     if len(path_x) < 2 or len(path_x) != len(path_y) or len(evidence.distances) < 8:
@@ -135,11 +135,13 @@ class CarnivalRadarPolicy:
       return (evidence.count >= 8 and v_ego < 4.0 and 1.5 < track.dRel < 25.0 and path_offset < 1.1)
     aligned = (evidence.count >= 20 and v_ego < 3.0 and 1.5 < track.dRel < 18.0 and
                abs(track.yRel) < 1.25 and path_offset < 0.65 and -1.5 < track.vLead < 6.0)
-    evidence.path_frames = evidence.path_frames + 1 if aligned else 0
-    return evidence.path_frames >= 8
+    if new_sample:
+      evidence.path_frames = evidence.path_frames + 1 if aligned else 0
+    return aligned and evidence.path_frames >= 8
 
   def lead(self, index: int, tracks, lead, model, v_ego: float, model_v_ego: float,
-           model_a_ego: float, model_prob: float, ready: bool, fresh: bool):
+           model_a_ego: float, model_prob: float, ready: bool, fresh: bool,
+           new_sample: bool = True):
     from openpilot.selfdrive.controls.radard import get_RadarState_from_vision
 
     previous = self.selected[index]
@@ -154,7 +156,8 @@ class CarnivalRadarPolicy:
 
     if index == 0 and fresh and ready:
       candidates = [track for identifier, track in tracks.items()
-                    if identifier in self.evidence and self._low_speed_sane(track, model, v_ego, identifier == previous)]
+                    if identifier in self.evidence and self._low_speed_sane(track, model, v_ego,
+                                                                            identifier == previous, new_sample)]
       if candidates:
         closest = min(candidates, key=lambda candidate: candidate.dRel)
         if not result["present"] or closest.dRel < result["dRel"]:

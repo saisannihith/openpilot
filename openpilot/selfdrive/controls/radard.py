@@ -370,7 +370,8 @@ class RadarD:
         for i in range(2):
           lead = self.carnival_radar.lead(i, self.tracks, leads_v3[i], sm['modelV2'], self.v_ego,
                                           model_v_ego, model_a_ego, self.lead_prob_filters[i].x,
-                                          self.ready, radar_usable)
+                                          self.ready, radar_usable,
+                                          bool(sm.updated['radarTracks'] and sm.valid['radarTracks']))
           if i == 0:
             self.radar_state.leadOne = lead
           else:

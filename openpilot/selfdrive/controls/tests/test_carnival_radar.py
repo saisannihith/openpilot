@@ -83,6 +83,22 @@ def test_lateral_mismatch_blocks_radar_association():
   assert result["present"] and not result["radar"]
 
 
+def test_cached_radar_does_not_advance_low_speed_qualification():
+  policy = CarnivalRadarPolicy()
+  track = Track(10.0, -1.0)
+  track.vLead = 1.0
+  for index in range(20):
+    track.dRel = 10.0 - index * 0.05
+    policy.update({track.identifier: track}, fresh=True, sample_time=(index + 1) * 0.05)
+    policy.lead(0, {track.identifier: track}, lead(prob=0.0), model(), 2.0, 2.0, 0.0,
+                0.0, True, True, new_sample=True)
+  for _ in range(20):
+    result = policy.lead(0, {track.identifier: track}, lead(prob=0.0), model(), 2.0, 2.0, 0.0,
+                         0.0, True, True, new_sample=False)
+    assert not result["present"]
+  assert policy.evidence[track.identifier].path_frames == 1
+
+
 def test_radard_carnival_path_keeps_model_velocity():
   class SubMaster:
     def __init__(self):
