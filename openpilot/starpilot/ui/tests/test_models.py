@@ -165,6 +165,17 @@ class TestModelManager(unittest.TestCase):
       owner._catalog(page, data)
     self.assertEqual(button.call_args.args[1], "installed • excluded from randomizer • small • your favorite")
 
+  def test_profile_selector_opens_full_catalog(self):
+    owner = ModelsCompact(mock.Mock())
+    page = cast(_ModelsPage, SimpleNamespace(profile="small", sort_mode="name"))
+    with mock.patch("openpilot.starpilot.ui.models_compact.GreyBigButton"), \
+         mock.patch("openpilot.starpilot.ui.models_compact.BigButton") as button, \
+         mock.patch.object(owner, "open") as open_catalog:
+      owner._catalog(page, self.data)
+      self.assertEqual(button.call_args_list[0].args[:2], ("all models", "browse and download"))
+      button.return_value.set_click_callback.call_args_list[0].args[0]()
+      open_catalog.assert_called_once_with("catalog")
+
   def test_compact_writes_profile_and_favorites_to_owner(self):
     session = mock.Mock()
     session.model_manager_snapshot.return_value = self.data

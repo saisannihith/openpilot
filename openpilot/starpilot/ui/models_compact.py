@@ -119,6 +119,8 @@ class ModelsCompact:
   def _catalog(self, page: _ModelsPage, data: dict) -> list:
     profile = page.profile
     cards = [_grey_card(f"active {profile}" if profile else "models", "choose a model" if profile else "browse the catalog")]
+    if profile:
+      cards.append(self._button("all models", "browse and download", lambda: self.open("catalog")))
     cards.append(self._button("sort and filter", self.SORTS[page.sort_mode], lambda: self._next_sort(page)))
     if profile == "big":
       cards.append(self._button("none", "always use active small", lambda: self._action(page, "active", profile="big"),
